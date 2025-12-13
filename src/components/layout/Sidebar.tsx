@@ -1,6 +1,8 @@
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, PhoneIncoming, PhoneOutgoing, MessageSquare, Info } from "lucide-react";
+import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, PhoneIncoming, PhoneOutgoing, MessageSquare, Info, Shield } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
+import { UserMenu } from "./UserMenu";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -14,6 +16,8 @@ const navigation = [
 ];
 
 export function Sidebar() {
+  const { profile, role, isAdmin } = useAuth();
+
   return (
     <aside className="fixed left-0 top-0 z-40 h-screen w-64 border-r border-sidebar-border bg-sidebar">
       <div className="flex h-full flex-col">
@@ -60,10 +64,19 @@ export function Sidebar() {
         </div>
         <div className="border-t border-sidebar-border p-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary text-sm font-medium text-foreground">BC</div>
+            <UserMenu />
             <div className="flex-1 truncate">
-              <p className="text-sm font-medium text-foreground">BeyondCode</p>
-              <p className="text-xs text-muted-foreground">Admin</p>
+              <p className="text-sm font-medium text-foreground">
+                {profile?.full_name || 'User'}
+              </p>
+              <div className="flex items-center gap-1">
+                {role && (
+                  <>
+                    <Shield className="h-3 w-3 text-muted-foreground" />
+                    <p className="text-xs text-muted-foreground capitalize">{role}</p>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>
