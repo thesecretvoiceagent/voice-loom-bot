@@ -13,6 +13,7 @@ import CallLogs from "./pages/CallLogs";
 import Analytics from "./pages/Analytics";
 import Settings from "./pages/Settings";
 import Widgets from "./pages/Widgets";
+import About from "./pages/About";
 import UserSettings from "./pages/settings/UserSettings";
 import OrganizationSettings from "./pages/settings/OrganizationSettings";
 import PlansSettings from "./pages/settings/PlansSettings";
@@ -40,6 +41,7 @@ const App = () => (
             <Route path="/calls" element={<CallLogs />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/widgets" element={<Widgets />} />
+            <Route path="/about" element={<About />} />
             <Route path="/settings" element={<Settings />}>
               <Route index element={<Navigate to="/settings/user" replace />} />
               <Route path="user" element={<UserSettings />} />

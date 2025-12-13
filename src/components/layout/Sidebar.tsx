@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, PhoneIncoming, PhoneOutgoing, MessageSquare } from "lucide-react";
+import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, PhoneIncoming, PhoneOutgoing, MessageSquare, Info } from "lucide-react";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -9,6 +9,7 @@ const navigation = [
   { name: "Call Logs", href: "/calls", icon: Phone },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
   { name: "Call Widgets", href: "/widgets", icon: MessageSquare },
+  { name: "About", href: "/about", icon: Info },
   { name: "Settings", href: "/settings/user", icon: Settings },
 ];
 
