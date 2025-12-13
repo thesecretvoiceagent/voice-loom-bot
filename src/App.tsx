@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { MainLayout } from "@/components/layout/MainLayout";
 import Dashboard from "./pages/Dashboard";
 import Agents from "./pages/Agents";
@@ -12,6 +12,14 @@ import Campaigns from "./pages/Campaigns";
 import CallLogs from "./pages/CallLogs";
 import Analytics from "./pages/Analytics";
 import Settings from "./pages/Settings";
+import Widgets from "./pages/Widgets";
+import UserSettings from "./pages/settings/UserSettings";
+import OrganizationSettings from "./pages/settings/OrganizationSettings";
+import PlansSettings from "./pages/settings/PlansSettings";
+import ApiKeysSettings from "./pages/settings/ApiKeysSettings";
+import TwilioSettings from "./pages/settings/TwilioSettings";
+import ToolsSettings from "./pages/settings/ToolsSettings";
+import ApiDocsSettings from "./pages/settings/ApiDocsSettings";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -31,7 +39,17 @@ const App = () => (
             <Route path="/campaigns" element={<Campaigns />} />
             <Route path="/calls" element={<CallLogs />} />
             <Route path="/analytics" element={<Analytics />} />
-            <Route path="/settings" element={<Settings />} />
+            <Route path="/widgets" element={<Widgets />} />
+            <Route path="/settings" element={<Settings />}>
+              <Route index element={<Navigate to="/settings/user" replace />} />
+              <Route path="user" element={<UserSettings />} />
+              <Route path="organization" element={<OrganizationSettings />} />
+              <Route path="plans" element={<PlansSettings />} />
+              <Route path="api-keys" element={<ApiKeysSettings />} />
+              <Route path="twilio" element={<TwilioSettings />} />
+              <Route path="tools" element={<ToolsSettings />} />
+              <Route path="api-docs" element={<ApiDocsSettings />} />
+            </Route>
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>

@@ -4,11 +4,11 @@ import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, PhoneIncom
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
-  { name: "Voice Agents", href: "/agents", icon: Bot },
+  { name: "AI Voice Agents", href: "/agents", icon: Bot },
   { name: "Campaigns", href: "/campaigns", icon: Megaphone },
   { name: "Call Logs", href: "/calls", icon: Phone },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
-  { name: "Widgets", href: "/widgets", icon: MessageSquare },
+  { name: "Call Widgets", href: "/widgets", icon: MessageSquare },
   { name: "Settings", href: "/settings/user", icon: Settings },
 ];
 
