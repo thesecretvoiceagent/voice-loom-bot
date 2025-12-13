@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -85,10 +86,12 @@ export default function Campaigns() {
             Manage outbound calling campaigns
           </p>
         </div>
-        <Button className="gap-2">
-          <Plus className="h-4 w-4" />
-          New Campaign
-        </Button>
+        <Link to="/campaigns/create">
+          <Button className="gap-2">
+            <Plus className="h-4 w-4" />
+            New Campaign
+          </Button>
+        </Link>
       </div>
 
       {/* Search */}
