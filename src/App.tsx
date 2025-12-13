@@ -6,6 +6,8 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { MainLayout } from "@/components/layout/MainLayout";
 import Dashboard from "./pages/Dashboard";
 import Agents from "./pages/Agents";
+import CreateAgent from "./pages/CreateAgent";
+import AgentCalls from "./pages/AgentCalls";
 import Campaigns from "./pages/Campaigns";
 import CallLogs from "./pages/CallLogs";
 import Analytics from "./pages/Analytics";
@@ -24,6 +26,8 @@ const App = () => (
           <Route element={<MainLayout />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/agents" element={<Agents />} />
+            <Route path="/agents/create/:type" element={<CreateAgent />} />
+            <Route path="/agents/:id/calls" element={<AgentCalls />} />
             <Route path="/campaigns" element={<Campaigns />} />
             <Route path="/calls" element={<CallLogs />} />
             <Route path="/analytics" element={<Analytics />} />

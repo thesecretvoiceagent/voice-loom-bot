@@ -1,76 +1,81 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
-  Bot,
   Plus,
   Search,
   MoreVertical,
   Phone,
-  Clock,
-  TrendingUp,
-  Circle,
-  Settings2,
-  Play,
-  Pause,
+  Copy,
+  Trash2,
+  Upload,
+  Pencil,
+  FileText,
+  PhoneIncoming,
+  PhoneOutgoing,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const agents = [
   {
-    id: 1,
-    name: "Sales Assistant",
-    description: "Handles inbound sales inquiries and qualifies leads",
-    status: "active",
+    id: "1",
+    name: "Edvini AI",
+    type: "outbound",
+    phoneLabel: "Mobile EST",
+    isActive: true,
+    createdAt: "12/3/2025",
+    campaignId: "5006f92f-611f-45d7-9...",
+  },
+  {
+    id: "2",
+    name: "Carnosport",
     type: "inbound",
-    totalCalls: 1247,
-    avgDuration: "2:34",
-    successRate: 78,
-    lastActive: "2 min ago",
+    phoneLabel: "Mobile EST",
+    isActive: false,
+    createdAt: "11/19/2025",
+    deactivatedAt: "12/4/2025",
+    campaignId: "706ea363-17d5-4c70-8...",
   },
   {
-    id: 2,
-    name: "Support Agent",
-    description: "Customer support and issue resolution",
-    status: "active",
+    id: "3",
+    name: "Delfi Outbound",
+    type: "outbound",
+    phoneLabel: "Mobile EST",
+    isActive: true,
+    createdAt: "11/13/2025",
+    campaignId: "9432cfa7-28f5-40d9-a...",
+  },
+  {
+    id: "4",
+    name: "BTA Kindlustus (DEMO)",
+    type: "outbound",
+    phoneLabel: "Mobile EST",
+    isActive: false,
+    createdAt: "10/22/2025",
+    deactivatedAt: "10/27/2025",
+    campaignId: "534fba7c-68c8-4691-8...",
+  },
+  {
+    id: "5",
+    name: "BeyondCode AI Häälerobot",
     type: "inbound",
-    totalCalls: 892,
-    avgDuration: "4:12",
-    successRate: 92,
-    lastActive: "1 min ago",
+    phoneLabel: "Mobile EST",
+    isActive: false,
+    createdAt: "10/21/2025",
+    deactivatedAt: "11/11/2025",
+    campaignId: "87ee2a50-0d7c-4ae9-8...",
   },
   {
-    id: 3,
-    name: "Reminder Bot",
-    description: "Automated payment and appointment reminders",
-    status: "idle",
-    type: "outbound",
-    totalCalls: 2156,
-    avgDuration: "1:05",
-    successRate: 85,
-    lastActive: "15 min ago",
-  },
-  {
-    id: 4,
-    name: "Collection Agent",
-    description: "Debt collection and payment arrangements",
-    status: "active",
-    type: "outbound",
-    totalCalls: 743,
-    avgDuration: "3:45",
-    successRate: 67,
-    lastActive: "5 min ago",
-  },
-  {
-    id: 5,
-    name: "Survey Bot",
-    description: "Customer satisfaction surveys and feedback collection",
-    status: "paused",
-    type: "outbound",
-    totalCalls: 534,
-    avgDuration: "2:15",
-    successRate: 71,
-    lastActive: "2 hours ago",
+    id: "6",
+    name: "IIZI Kindlustu kahjujuhtum",
+    type: "inbound",
+    phoneLabel: "Mobile EST",
+    isActive: false,
+    createdAt: "10/16/2025",
+    deactivatedAt: "10/27/2025",
+    campaignId: "0d2ca9ca-1d34-4295-9...",
   },
 ];
 
@@ -81,6 +86,10 @@ export default function Agents() {
     agent.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+  };
+
   return (
     <div className="space-y-8 animate-fade-in">
       {/* Header */}
@@ -88,16 +97,26 @@ export default function Agents() {
         <div>
           <h1 className="text-3xl font-bold text-foreground">Voice Agents</h1>
           <p className="mt-1 text-muted-foreground">
-            Manage and configure your AI voice agents
+            Manage your AI voice agents for phone calls
           </p>
         </div>
-        <Button className="gap-2">
-          <Plus className="h-4 w-4" />
-          Create Agent
-        </Button>
+        <div className="flex items-center gap-3">
+          <Link to="/agents/create/inbound">
+            <Button variant="outline" className="gap-2">
+              <PhoneIncoming className="h-4 w-4" />
+              Create Inbound Agent
+            </Button>
+          </Link>
+          <Link to="/agents/create/outbound">
+            <Button className="gap-2">
+              <PhoneOutgoing className="h-4 w-4" />
+              Create Outbound Agent
+            </Button>
+          </Link>
+        </div>
       </div>
 
-      {/* Search and Filters */}
+      {/* Search */}
       <div className="flex items-center gap-4">
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -108,114 +127,120 @@ export default function Agents() {
             className="pl-9"
           />
         </div>
-        <Button variant="outline" size="sm">
-          All Types
-        </Button>
-        <Button variant="outline" size="sm">
-          All Status
-        </Button>
       </div>
 
       {/* Agents Grid */}
-      <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-        {filteredAgents.map((agent, index) => (
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {filteredAgents.map((agent) => (
           <div
             key={agent.id}
-            className="glass-card glow-border rounded-xl p-6 transition-all duration-300 hover:shadow-elevated"
-            style={{ animationDelay: `${index * 100}ms` }}
+            className="glass-card rounded-xl p-5 transition-all duration-300 hover:shadow-elevated"
           >
             {/* Header */}
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-primary">
-                    <Bot className="h-6 w-6 text-primary-foreground" />
+            <div className="flex items-start justify-between mb-4">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-3">
+                  <h3 className="font-semibold text-foreground truncate">
+                    {agent.name}
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "text-xs font-medium px-2 py-0.5 rounded-full",
+                        agent.isActive
+                          ? "bg-success/10 text-success"
+                          : "bg-muted text-muted-foreground"
+                      )}
+                    >
+                      {agent.isActive ? "ACTIVE" : "OFF"}
+                    </span>
+                    <Switch checked={agent.isActive} />
                   </div>
-                  <Circle
-                    className={cn(
-                      "absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 fill-current rounded-full border-2 border-card",
-                      agent.status === "active" && "text-success",
-                      agent.status === "idle" && "text-muted-foreground",
-                      agent.status === "paused" && "text-warning"
-                    )}
-                  />
                 </div>
-                <div>
-                  <h3 className="font-semibold text-foreground">{agent.name}</h3>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-sm text-muted-foreground">
+                    {agent.phoneLabel}
+                  </span>
                   <span
                     className={cn(
-                      "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-                      agent.type === "inbound"
-                        ? "bg-success/10 text-success"
-                        : "bg-primary/10 text-primary"
+                      "inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full",
+                      agent.type === "outbound"
+                        ? "bg-primary/10 text-primary"
+                        : "bg-success/10 text-success"
                     )}
                   >
-                    {agent.type}
+                    {agent.type === "outbound" ? (
+                      <>
+                        <PhoneOutgoing className="h-3 w-3" />
+                        Outbound
+                      </>
+                    ) : (
+                      <>
+                        <PhoneIncoming className="h-3 w-3" />
+                        Inbound
+                      </>
+                    )}
                   </span>
                 </div>
               </div>
-              <Button variant="ghost" size="icon" className="h-8 w-8">
-                <MoreVertical className="h-4 w-4" />
+              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                <Pencil className="h-4 w-4" />
               </Button>
             </div>
 
-            {/* Description */}
-            <p className="mt-3 text-sm text-muted-foreground line-clamp-2">
-              {agent.description}
-            </p>
+            {/* Dates */}
+            <div className="space-y-1 text-sm mb-4">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Created:</span>
+                <span className="text-foreground">{agent.createdAt}</span>
+              </div>
+              {agent.deactivatedAt && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Deactivated:</span>
+                  <span className="text-foreground">{agent.deactivatedAt}</span>
+                </div>
+              )}
+            </div>
 
-            {/* Stats */}
-            <div className="mt-5 grid grid-cols-3 gap-4">
-              <div className="space-y-1">
-                <div className="flex items-center gap-1 text-muted-foreground">
-                  <Phone className="h-3.5 w-3.5" />
-                  <span className="text-xs">Calls</span>
-                </div>
-                <p className="text-lg font-semibold text-foreground">
-                  {agent.totalCalls.toLocaleString()}
-                </p>
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-1 text-muted-foreground">
-                  <Clock className="h-3.5 w-3.5" />
-                  <span className="text-xs">Avg</span>
-                </div>
-                <p className="text-lg font-semibold font-mono text-foreground">
-                  {agent.avgDuration}
-                </p>
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-1 text-muted-foreground">
-                  <TrendingUp className="h-3.5 w-3.5" />
-                  <span className="text-xs">Rate</span>
-                </div>
-                <p className="text-lg font-semibold text-foreground">
-                  {agent.successRate}%
-                </p>
+            {/* Campaign ID */}
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-sm text-muted-foreground">Campaign ID:</span>
+              <div className="flex items-center gap-1 flex-1 min-w-0">
+                <code className="text-xs bg-secondary px-2 py-1 rounded font-mono truncate">
+                  {agent.campaignId}
+                </code>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0"
+                  onClick={() => copyToClipboard(agent.campaignId)}
+                >
+                  <Copy className="h-3 w-3" />
+                </Button>
               </div>
             </div>
 
-            {/* Footer */}
-            <div className="mt-5 flex items-center justify-between border-t border-border pt-4">
-              <span className="text-xs text-muted-foreground">
-                Last active: {agent.lastActive}
-              </span>
-              <div className="flex items-center gap-2">
-                <Button variant="ghost" size="icon" className="h-8 w-8">
-                  <Settings2 className="h-4 w-4" />
+            {/* Actions */}
+            <div className="flex items-center gap-2 pt-3 border-t border-border">
+              <Link to={`/agents/${agent.id}/calls`} className="flex-1">
+                <Button variant="outline" className="w-full gap-2">
+                  <FileText className="h-4 w-4" />
+                  Call Logs
                 </Button>
-                <Button
-                  variant={agent.status === "active" ? "outline" : "default"}
-                  size="icon"
-                  className="h-8 w-8"
-                >
-                  {agent.status === "active" ? (
-                    <Pause className="h-4 w-4" />
-                  ) : (
-                    <Play className="h-4 w-4" />
-                  )}
-                </Button>
-              </div>
+              </Link>
+              <Button variant="ghost" size="icon" className="h-9 w-9">
+                <Phone className="h-4 w-4" />
+              </Button>
+              <Button variant="ghost" size="icon" className="h-9 w-9">
+                <Upload className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9 text-destructive hover:text-destructive"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
             </div>
           </div>
         ))}
