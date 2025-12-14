@@ -17,12 +17,13 @@ import {
   Clock
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import { orchestratorClient } from "@/services/orchestratorClient";
 import { toast } from "sonner";
 import { format } from "date-fns";
 
 interface ServiceStatus {
   name: string;
-  status: "healthy" | "degraded" | "down" | "unknown";
+  status: "healthy" | "degraded" | "down" | "unknown" | "not_configured";
   lastCheck: string | null;
   details: string;
   icon: React.ComponentType<{ className?: string }>;
@@ -32,14 +33,14 @@ export default function SystemHealth() {
   const [services, setServices] = useState<ServiceStatus[]>([
     { name: "Database", status: "unknown", lastCheck: null, details: "Checking...", icon: Database },
     { name: "Authentication", status: "unknown", lastCheck: null, details: "Checking...", icon: Activity },
+    { name: "Orchestrator", status: "unknown", lastCheck: null, details: "Checking...", icon: Server },
     { name: "Twilio", status: "unknown", lastCheck: null, details: "Not configured", icon: Phone },
     { name: "OpenAI API", status: "unknown", lastCheck: null, details: "Not configured", icon: Bot },
-    { name: "Gemini API", status: "unknown", lastCheck: null, details: "Not configured", icon: Sparkles },
-    { name: "Vercel Runtime", status: "unknown", lastCheck: null, details: "Checking...", icon: Globe },
-    { name: "Railway Workers", status: "unknown", lastCheck: null, details: "Not configured", icon: Server },
+    { name: "Supabase", status: "unknown", lastCheck: null, details: "Checking...", icon: Database },
   ]);
   const [isChecking, setIsChecking] = useState(false);
   const [lastFullCheck, setLastFullCheck] = useState<Date | null>(null);
+  const [orchestratorUrl, setOrchestratorUrl] = useState<string>("");
 
   const checkHealth = async () => {
     setIsChecking(true);
@@ -58,30 +59,45 @@ export default function SystemHealth() {
       const { data: { session } } = await supabase.auth.getSession();
       updateService("Authentication", session ? "healthy" : "degraded", now, session ? "Authenticated" : "No active session");
 
-      // Check health-check edge function for external services
-      const { data: healthData, error: healthError } = await supabase.functions.invoke('health-check');
+      // Check Supabase
+      updateService("Supabase", "healthy", now, "Connected");
+
+      // Check EXTERNAL ORCHESTRATOR
+      const orchestratorConfig = orchestratorClient.getConfig();
+      setOrchestratorUrl(orchestratorConfig.baseUrl);
       
-      if (healthError) {
-        updateService("OpenAI API", "unknown", now, "Health check failed");
-        updateService("Gemini API", "unknown", now, "Health check failed");
-        updateService("Twilio", "unknown", now, "Health check failed");
-      } else if (healthData) {
-        if (healthData.openai) {
-          updateService("OpenAI API", healthData.openai.status, now, healthData.openai.message);
-        }
-        if (healthData.gemini) {
-          updateService("Gemini API", healthData.gemini.status, now, healthData.gemini.message);
-        }
-        if (healthData.twilio) {
-          updateService("Twilio", healthData.twilio.status, now, healthData.twilio.message);
+      if (!orchestratorConfig.isConfigured) {
+        updateService("Orchestrator", "not_configured", now, "VITE_API_BASE_URL not set");
+        updateService("Twilio", "not_configured", now, "Orchestrator not configured");
+        updateService("OpenAI API", "not_configured", now, "Orchestrator not configured");
+      } else {
+        // Call orchestrator health endpoint
+        const healthResponse = await orchestratorClient.health();
+        
+        if (healthResponse.ok) {
+          updateService("Orchestrator", "healthy", now, `${orchestratorConfig.baseUrl}`);
+          
+          // Get provider status from orchestrator
+          if (healthResponse.providers?.twilio) {
+            updateService("Twilio", 
+              healthResponse.providers.twilio.configured ? "healthy" : "not_configured", 
+              now, 
+              healthResponse.providers.twilio.status
+            );
+          }
+          if (healthResponse.providers?.openai) {
+            updateService("OpenAI API", 
+              healthResponse.providers.openai.configured ? "healthy" : "not_configured", 
+              now, 
+              healthResponse.providers.openai.status
+            );
+          }
+        } else {
+          updateService("Orchestrator", "down", now, `Cannot reach ${orchestratorConfig.baseUrl}`);
+          updateService("Twilio", "unknown", now, "Orchestrator unreachable");
+          updateService("OpenAI API", "unknown", now, "Orchestrator unreachable");
         }
       }
-
-      // Vercel runtime - if we're here, it's working
-      updateService("Vercel Runtime", "healthy", now, "App responding");
-      
-      // Railway workers - check via edge function
-      updateService("Railway Workers", "unknown", now, "Not configured");
 
       setLastFullCheck(new Date());
       toast.success("Health check completed");
@@ -108,6 +124,7 @@ export default function SystemHealth() {
       case "healthy": return <CheckCircle2 className="h-5 w-5 text-success" />;
       case "degraded": return <AlertTriangle className="h-5 w-5 text-warning" />;
       case "down": return <XCircle className="h-5 w-5 text-destructive" />;
+      case "not_configured": return <AlertTriangle className="h-5 w-5 text-muted-foreground" />;
       default: return <Clock className="h-5 w-5 text-muted-foreground" />;
     }
   };
@@ -117,6 +134,7 @@ export default function SystemHealth() {
       case "healthy": return <Badge className="bg-success/20 text-success border-success/30">Healthy</Badge>;
       case "degraded": return <Badge className="bg-warning/20 text-warning border-warning/30">Degraded</Badge>;
       case "down": return <Badge className="bg-destructive/20 text-destructive border-destructive/30">Down</Badge>;
+      case "not_configured": return <Badge variant="outline">Not Configured</Badge>;
       default: return <Badge variant="outline">Unknown</Badge>;
     }
   };
@@ -124,6 +142,7 @@ export default function SystemHealth() {
   const healthyCount = services.filter(s => s.status === "healthy").length;
   const degradedCount = services.filter(s => s.status === "degraded").length;
   const downCount = services.filter(s => s.status === "down").length;
+  const notConfiguredCount = services.filter(s => s.status === "not_configured").length;
 
   return (
     <div className="space-y-6">
@@ -147,6 +166,22 @@ export default function SystemHealth() {
           {isChecking ? 'Checking...' : 'Refresh'}
         </Button>
       </div>
+
+      {/* Orchestrator Config Warning */}
+      {!orchestratorUrl && (
+        <Card className="border-warning/50 bg-warning/5 p-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 text-warning mt-0.5" />
+            <div>
+              <h4 className="font-medium text-foreground">Orchestrator Not Configured</h4>
+              <p className="text-sm text-muted-foreground">
+                Set <code className="bg-muted px-1 rounded">VITE_API_BASE_URL</code> to your Railway orchestrator URL.
+                This is required for call placement and voice features.
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* Summary Cards */}
       <div className="grid gap-4 md:grid-cols-4">
@@ -185,14 +220,12 @@ export default function SystemHealth() {
         </Card>
         <Card className="glass-card p-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-              <Clock className="h-5 w-5 text-primary" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted/50">
+              <Clock className="h-5 w-5 text-muted-foreground" />
             </div>
             <div>
-              <p className="text-sm font-medium text-foreground">
-                {lastFullCheck ? format(lastFullCheck, "HH:mm:ss") : "--:--:--"}
-              </p>
-              <p className="text-sm text-muted-foreground">Last Check</p>
+              <p className="text-2xl font-bold text-foreground">{notConfiguredCount}</p>
+              <p className="text-sm text-muted-foreground">Not Configured</p>
             </div>
           </div>
         </Card>
@@ -209,7 +242,7 @@ export default function SystemHealth() {
                 </div>
                 <div>
                   <h3 className="font-semibold text-foreground">{service.name}</h3>
-                  <p className="text-sm text-muted-foreground">{service.details}</p>
+                  <p className="text-sm text-muted-foreground truncate max-w-[200px]">{service.details}</p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -226,19 +259,28 @@ export default function SystemHealth() {
         ))}
       </div>
 
-      {/* Info */}
+      {/* Architecture Info */}
       <Card className="glass-card p-4">
         <div className="flex items-start gap-3">
-          <AlertTriangle className="h-5 w-5 text-warning mt-0.5" />
+          <Server className="h-5 w-5 text-primary mt-0.5" />
           <div>
-            <h4 className="font-medium text-foreground">Service Configuration</h4>
+            <h4 className="font-medium text-foreground">Architecture</h4>
             <p className="text-sm text-muted-foreground">
-              Services marked as "Not configured" require API keys to be set in Settings → API Keys. 
-              Once configured, health checks will validate connectivity to external services.
+              <strong>UI</strong> (this app) → <strong>Orchestrator</strong> (Railway) → <strong>Twilio/OpenAI</strong>
+              <br />
+              UI reads call data from <strong>Supabase</strong> (source of truth). 
+              Orchestrator handles all Twilio and OpenAI Realtime operations.
             </p>
           </div>
         </div>
       </Card>
+
+      {/* Last Check */}
+      {lastFullCheck && (
+        <p className="text-center text-sm text-muted-foreground">
+          Last full check: {format(lastFullCheck, "PPpp")}
+        </p>
+      )}
     </div>
   );
 }
