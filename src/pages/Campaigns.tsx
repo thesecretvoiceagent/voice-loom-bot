@@ -98,7 +98,7 @@ export default function Campaigns() {
   };
 
   const handleViewAnalytics = (campaignId: number) => {
-    navigate(`/analytics?campaign=${campaignId}`);
+    navigate(`/campaigns/${campaignId}/analytics`);
   };
 
   const handleEditCampaign = (campaignId: number) => {

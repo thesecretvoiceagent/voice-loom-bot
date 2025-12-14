@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   BarChart,
   Bar,
@@ -14,9 +15,10 @@ import {
   Line,
 } from "recharts";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { Phone, TrendingUp, Clock, CheckCircle2, DollarSign, Users } from "lucide-react";
+import { Phone, TrendingUp, Clock, CheckCircle2, DollarSign, Users, Megaphone, BarChart3 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
 const weeklyData = [
   { day: "Mon", calls: 245, success: 198 },
@@ -51,6 +53,14 @@ const agentPerformance = [
   { agent: "Collection Agent", calls: 743, rate: 67 },
 ];
 
+// Campaign list for quick access
+const campaigns = [
+  { id: "1", name: "Q4 Sales Outreach", status: "active", calls: 876 },
+  { id: "2", name: "Payment Reminders", status: "active", calls: 1890 },
+  { id: "3", name: "Customer Satisfaction Survey", status: "paused", calls: 234 },
+  { id: "4", name: "Debt Collection Wave 3", status: "scheduled", calls: 0 },
+];
+
 // ROI Data (assuming 12€/hr for human employee)
 const HOURLY_RATE = 12;
 const roiData = {
@@ -64,6 +74,7 @@ const roiData = {
 
 export default function Analytics() {
   const [activeTab, setActiveTab] = useState("overview");
+  const navigate = useNavigate();
 
   const humanCost = roiData.humanHandledTime * roiData.humanCostPerHour;
   const aiCost = roiData.totalCallMinutes * roiData.aiCostPerMinute;
@@ -79,6 +90,43 @@ export default function Analytics() {
         <p className="mt-1 text-muted-foreground">
           Performance insights and call metrics
         </p>
+      </div>
+
+      {/* Campaign Quick Access */}
+      <div className="glass-card rounded-xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-foreground flex items-center gap-2">
+            <Megaphone className="h-4 w-4" />
+            Campaign Analytics
+          </h3>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {campaigns.map((campaign) => (
+            <Button
+              key={campaign.id}
+              variant="outline"
+              className="justify-between h-auto py-3 px-4"
+              onClick={() => navigate(`/campaigns/${campaign.id}/analytics`)}
+            >
+              <div className="text-left">
+                <p className="font-medium text-sm">{campaign.name}</p>
+                <p className="text-xs text-muted-foreground">{campaign.calls.toLocaleString()} calls</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    campaign.status === "active"
+                      ? "bg-success"
+                      : campaign.status === "paused"
+                      ? "bg-warning"
+                      : "bg-muted-foreground"
+                  }`}
+                />
+                <BarChart3 className="h-4 w-4 text-muted-foreground" />
+              </div>
+            </Button>
+          ))}
+        </div>
       </div>
 
       {/* Tabs */}
