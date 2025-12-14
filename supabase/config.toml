@@ -8,3 +8,21 @@ verify_jwt = true
 
 [functions.ai-completion]
 verify_jwt = true
+
+[functions.calls-start]
+verify_jwt = true
+
+[functions.twilio-voice]
+verify_jwt = false
+
+[functions.twilio-status]
+verify_jwt = false
+
+[functions.ops-health-run]
+verify_jwt = true
+
+[functions.openai-realtime-session]
+verify_jwt = true
+
+[functions.openai-realtime-status]
+verify_jwt = true
