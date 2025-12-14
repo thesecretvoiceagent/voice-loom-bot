@@ -50,6 +50,87 @@ export type Database = {
         }
         Relationships: []
       }
+      feature_flags: {
+        Row: {
+          enabled: boolean
+          key: string
+          notes: string | null
+          scope: Database["public"]["Enums"]["flag_scope"]
+          updated_at: string
+          updated_by_user_id: string | null
+          value: string | null
+        }
+        Insert: {
+          enabled?: boolean
+          key: string
+          notes?: string | null
+          scope?: Database["public"]["Enums"]["flag_scope"]
+          updated_at?: string
+          updated_by_user_id?: string | null
+          value?: string | null
+        }
+        Update: {
+          enabled?: boolean
+          key?: string
+          notes?: string | null
+          scope?: Database["public"]["Enums"]["flag_scope"]
+          updated_at?: string
+          updated_by_user_id?: string | null
+          value?: string | null
+        }
+        Relationships: []
+      }
+      idempotency_keys: {
+        Row: {
+          created_at: string
+          expires_at: string | null
+          key: string
+          namespace: string
+          payload_hash: string | null
+        }
+        Insert: {
+          created_at?: string
+          expires_at?: string | null
+          key: string
+          namespace: string
+          payload_hash?: string | null
+        }
+        Update: {
+          created_at?: string
+          expires_at?: string | null
+          key?: string
+          namespace?: string
+          payload_hash?: string | null
+        }
+        Relationships: []
+      }
+      incident_log: {
+        Row: {
+          created_at: string
+          id: string
+          message: string
+          meta: Json | null
+          severity: Database["public"]["Enums"]["incident_severity"]
+          source: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          message: string
+          meta?: Json | null
+          severity?: Database["public"]["Enums"]["incident_severity"]
+          source: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          message?: string
+          meta?: Json | null
+          severity?: Database["public"]["Enums"]["incident_severity"]
+          source?: string
+        }
+        Relationships: []
+      }
       item_audit_logs: {
         Row: {
           action: string
@@ -193,6 +274,51 @@ export type Database = {
         }
         Relationships: []
       }
+      provider_status: {
+        Row: {
+          circuit: Database["public"]["Enums"]["circuit_state"]
+          component: string
+          cooldown_until: string | null
+          failure_count: number
+          id: string
+          last_checked_at: string
+          last_error: string | null
+          last_success_at: string | null
+          provider: Database["public"]["Enums"]["provider_name"]
+          state: Database["public"]["Enums"]["provider_state"]
+          success_count: number
+          updated_at: string
+        }
+        Insert: {
+          circuit?: Database["public"]["Enums"]["circuit_state"]
+          component?: string
+          cooldown_until?: string | null
+          failure_count?: number
+          id?: string
+          last_checked_at?: string
+          last_error?: string | null
+          last_success_at?: string | null
+          provider: Database["public"]["Enums"]["provider_name"]
+          state?: Database["public"]["Enums"]["provider_state"]
+          success_count?: number
+          updated_at?: string
+        }
+        Update: {
+          circuit?: Database["public"]["Enums"]["circuit_state"]
+          component?: string
+          cooldown_until?: string | null
+          failure_count?: number
+          id?: string
+          last_checked_at?: string
+          last_error?: string | null
+          last_success_at?: string | null
+          provider?: Database["public"]["Enums"]["provider_name"]
+          state?: Database["public"]["Enums"]["provider_state"]
+          success_count?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           created_at: string
@@ -249,6 +375,17 @@ export type Database = {
         | "auditor"
         | "viewer"
         | "support"
+      circuit_state: "closed" | "open" | "half_open"
+      flag_scope: "global" | "env" | "tenant"
+      incident_severity: "info" | "warn" | "critical"
+      provider_name:
+        | "supabase"
+        | "twilio"
+        | "openai"
+        | "gemini"
+        | "vercel_runtime"
+        | "railway_workers"
+      provider_state: "healthy" | "degraded" | "down"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -385,6 +522,18 @@ export const Constants = {
         "viewer",
         "support",
       ],
+      circuit_state: ["closed", "open", "half_open"],
+      flag_scope: ["global", "env", "tenant"],
+      incident_severity: ["info", "warn", "critical"],
+      provider_name: [
+        "supabase",
+        "twilio",
+        "openai",
+        "gemini",
+        "vercel_runtime",
+        "railway_workers",
+      ],
+      provider_state: ["healthy", "degraded", "down"],
     },
   },
 } as const

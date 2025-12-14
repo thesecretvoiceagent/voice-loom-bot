@@ -5,3 +5,6 @@ verify_jwt = true
 
 [functions.health-check]
 verify_jwt = true
+
+[functions.ai-completion]
+verify_jwt = true
