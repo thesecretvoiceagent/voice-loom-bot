@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -15,8 +15,20 @@ import {
   CheckCircle2,
   Clock,
   Calendar,
+  BarChart3,
+  Upload,
+  Trash2,
+  Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { toast } from "sonner";
 
 const campaigns = [
   {
@@ -71,10 +83,35 @@ const campaigns = [
 
 export default function Campaigns() {
   const [searchQuery, setSearchQuery] = useState("");
+  const navigate = useNavigate();
 
   const filteredCampaigns = campaigns.filter((campaign) =>
     campaign.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const toggleCampaignStatus = (campaignId: number, currentStatus: string) => {
+    if (currentStatus === "active") {
+      toast.success("Campaign paused");
+    } else {
+      toast.success("Campaign started");
+    }
+  };
+
+  const handleViewAnalytics = (campaignId: number) => {
+    navigate(`/analytics?campaign=${campaignId}`);
+  };
+
+  const handleEditCampaign = (campaignId: number) => {
+    navigate(`/campaigns/create?edit=${campaignId}`);
+  };
+
+  const handleUploadContacts = (campaignId: number) => {
+    toast.info("Bulk upload dialog would open here");
+  };
+
+  const handleDeleteCampaign = (campaignId: number) => {
+    toast.success("Campaign deleted");
+  };
 
   return (
     <div className="space-y-8 animate-fade-in">
@@ -159,6 +196,7 @@ export default function Campaigns() {
                       variant={campaign.status === "active" ? "outline" : "default"}
                       size="sm"
                       className="gap-1.5"
+                      onClick={() => toggleCampaignStatus(campaign.id, campaign.status)}
                     >
                       {campaign.status === "active" ? (
                         <>
@@ -172,9 +210,40 @@ export default function Campaigns() {
                         </>
                       )}
                     </Button>
-                    <Button variant="ghost" size="icon" className="h-8 w-8">
-                      <MoreVertical className="h-4 w-4" />
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      className="gap-1.5"
+                      onClick={() => handleViewAnalytics(campaign.id)}
+                    >
+                      <BarChart3 className="h-3.5 w-3.5" />
+                      Analytics
                     </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8">
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => handleEditCampaign(campaign.id)}>
+                          <Pencil className="h-4 w-4 mr-2" />
+                          Edit Campaign
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleUploadContacts(campaign.id)}>
+                          <Upload className="h-4 w-4 mr-2" />
+                          Upload Contacts
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem 
+                          onClick={() => handleDeleteCampaign(campaign.id)}
+                          className="text-destructive focus:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete Campaign
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
 

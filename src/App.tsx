@@ -14,7 +14,6 @@ import CreateCampaign from "./pages/CreateCampaign";
 import CallLogs from "./pages/CallLogs";
 import Analytics from "./pages/Analytics";
 import Settings from "./pages/Settings";
-import Widgets from "./pages/Widgets";
 import About from "./pages/About";
 import Auth from "./pages/Auth";
 import UserSettings from "./pages/settings/UserSettings";
@@ -24,6 +23,7 @@ import ApiKeysSettings from "./pages/settings/ApiKeysSettings";
 import TwilioSettings from "./pages/settings/TwilioSettings";
 import ToolsSettings from "./pages/settings/ToolsSettings";
 import ApiDocsSettings from "./pages/settings/ApiDocsSettings";
+import WidgetsSettings from "./pages/settings/WidgetsSettings";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -49,7 +49,6 @@ const App = () => (
               <Route path="/campaigns/create" element={<CreateCampaign />} />
               <Route path="/calls" element={<CallLogs />} />
               <Route path="/analytics" element={<Analytics />} />
-              <Route path="/widgets" element={<Widgets />} />
               <Route path="/about" element={<About />} />
               <Route path="/settings" element={<Settings />}>
                 <Route index element={<Navigate to="/settings/user" replace />} />
@@ -59,6 +58,7 @@ const App = () => (
                 <Route path="api-keys" element={<ApiKeysSettings />} />
                 <Route path="twilio" element={<TwilioSettings />} />
                 <Route path="tools" element={<ToolsSettings />} />
+                <Route path="widgets" element={<WidgetsSettings />} />
                 <Route path="api-docs" element={<ApiDocsSettings />} />
               </Route>
             </Route>

@@ -7,25 +7,11 @@ import { toast } from "sonner";
 
 const members = [
   {
-    name: "Rando Tkatsenko",
-    email: "rando.tkatsenko@gmail.com",
-    role: "Admin",
-    joined: "3.9.2025",
-    lastLogin: "12.12.2025, 15:00:18",
-  },
-  {
     name: "Beyond Code",
     email: "admin@beyondcode.ee",
-    role: "Member",
+    role: "Admin",
     joined: "10.9.2025",
     lastLogin: "13.12.2025, 03:00:06",
-  },
-  {
-    name: "Georg-Marttin Toim",
-    email: "mattingeorg@gmail.com",
-    role: "Member",
-    joined: "29.9.2025",
-    lastLogin: "29.10.2025, 17:04:13",
   },
 ];
 

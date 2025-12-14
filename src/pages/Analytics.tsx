@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   BarChart,
   Bar,
@@ -13,7 +14,9 @@ import {
   Line,
 } from "recharts";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { Phone, TrendingUp, Clock, CheckCircle2 } from "lucide-react";
+import { Phone, TrendingUp, Clock, CheckCircle2, DollarSign, Users } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Card } from "@/components/ui/card";
 
 const weeklyData = [
   { day: "Mon", calls: 245, success: 198 },
@@ -48,7 +51,26 @@ const agentPerformance = [
   { agent: "Collection Agent", calls: 743, rate: 67 },
 ];
 
+// ROI Data (assuming 12€/hr for human employee)
+const HOURLY_RATE = 12;
+const roiData = {
+  totalCallMinutes: 4532,
+  avgCallDuration: 2.8, // minutes
+  totalCalls: 1741,
+  humanHandledTime: 4532 / 60, // hours
+  aiCostPerMinute: 0.20,
+  humanCostPerHour: HOURLY_RATE,
+};
+
 export default function Analytics() {
+  const [activeTab, setActiveTab] = useState("overview");
+
+  const humanCost = roiData.humanHandledTime * roiData.humanCostPerHour;
+  const aiCost = roiData.totalCallMinutes * roiData.aiCostPerMinute;
+  const savings = humanCost - aiCost;
+  const savingsPercentage = ((savings / humanCost) * 100).toFixed(1);
+  const hoursSaved = roiData.humanHandledTime;
+
   return (
     <div className="space-y-8 animate-fade-in">
       {/* Header */}
@@ -59,206 +81,345 @@ export default function Analytics() {
         </p>
       </div>
 
-      {/* Stats */}
-      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          title="Total Calls (Week)"
-          value="1,741"
-          change="+15% vs last week"
-          changeType="positive"
-          icon={Phone}
-        />
-        <StatCard
-          title="Success Rate"
-          value="82%"
-          change="+3%"
-          changeType="positive"
-          icon={CheckCircle2}
-          iconColor="text-success"
-        />
-        <StatCard
-          title="Avg. Duration"
-          value="2:48"
-          change="+12s"
-          changeType="neutral"
-          icon={Clock}
-          iconColor="text-warning"
-        />
-        <StatCard
-          title="Conversion Rate"
-          value="24%"
-          change="+5%"
-          changeType="positive"
-          icon={TrendingUp}
-        />
-      </div>
+      {/* Tabs */}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList className="bg-secondary/30 p-1 rounded-xl">
+          <TabsTrigger 
+            value="overview" 
+            className="rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+          >
+            Overview
+          </TabsTrigger>
+          <TabsTrigger 
+            value="roi" 
+            className="rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground gap-2"
+          >
+            <DollarSign className="h-4 w-4" />
+            ROI & Time Saved
+          </TabsTrigger>
+        </TabsList>
 
-      {/* Charts Grid */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Weekly Call Volume */}
-        <div className="glass-card rounded-xl p-6">
-          <h3 className="mb-6 font-semibold text-foreground">Weekly Call Volume</h3>
-          <div className="h-[280px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={weeklyData}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="hsl(222 30% 18%)"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="day"
-                  stroke="hsl(215 20% 55%)"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis
-                  stroke="hsl(215 20% 55%)"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "hsl(222 47% 10%)",
-                    border: "1px solid hsl(222 30% 18%)",
-                    borderRadius: "8px",
-                    fontSize: "12px",
-                  }}
-                />
-                <Bar
-                  dataKey="calls"
-                  fill="hsl(173 80% 50%)"
-                  radius={[4, 4, 0, 0]}
-                  name="Total Calls"
-                />
-                <Bar
-                  dataKey="success"
-                  fill="hsl(142 76% 45%)"
-                  radius={[4, 4, 0, 0]}
-                  name="Successful"
-                />
-              </BarChart>
-            </ResponsiveContainer>
+        <TabsContent value="overview" className="mt-6 space-y-6">
+          {/* Stats */}
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              title="Total Calls (Week)"
+              value="1,741"
+              change="+15% vs last week"
+              changeType="positive"
+              icon={Phone}
+            />
+            <StatCard
+              title="Success Rate"
+              value="82%"
+              change="+3%"
+              changeType="positive"
+              icon={CheckCircle2}
+              iconColor="text-success"
+            />
+            <StatCard
+              title="Avg. Duration"
+              value="2:48"
+              change="+12s"
+              changeType="neutral"
+              icon={Clock}
+              iconColor="text-warning"
+            />
+            <StatCard
+              title="Conversion Rate"
+              value="24%"
+              change="+5%"
+              changeType="positive"
+              icon={TrendingUp}
+            />
           </div>
-        </div>
 
-        {/* Call Outcomes */}
-        <div className="glass-card rounded-xl p-6">
-          <h3 className="mb-6 font-semibold text-foreground">Call Outcomes</h3>
-          <div className="flex items-center gap-8">
-            <div className="h-[200px] w-[200px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={outcomeData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={90}
-                    paddingAngle={2}
-                    dataKey="value"
-                  >
-                    {outcomeData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="flex-1 space-y-3">
-              {outcomeData.map((item) => (
-                <div key={item.name} className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="h-3 w-3 rounded-full"
-                      style={{ backgroundColor: item.color }}
+          {/* Charts Grid */}
+          <div className="grid gap-6 lg:grid-cols-2">
+            {/* Weekly Call Volume */}
+            <div className="glass-card rounded-xl p-6">
+              <h3 className="mb-6 font-semibold text-foreground">Weekly Call Volume</h3>
+              <div className="h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={weeklyData}>
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      stroke="hsl(222 30% 18%)"
+                      vertical={false}
                     />
-                    <span className="text-sm text-muted-foreground">
-                      {item.name}
-                    </span>
-                  </div>
-                  <span className="text-sm font-medium text-foreground">
-                    {item.value}%
-                  </span>
-                </div>
-              ))}
+                    <XAxis
+                      dataKey="day"
+                      stroke="hsl(215 20% 55%)"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis
+                      stroke="hsl(215 20% 55%)"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: "hsl(222 47% 10%)",
+                        border: "1px solid hsl(222 30% 18%)",
+                        borderRadius: "8px",
+                        fontSize: "12px",
+                      }}
+                    />
+                    <Bar
+                      dataKey="calls"
+                      fill="hsl(173 80% 50%)"
+                      radius={[4, 4, 0, 0]}
+                      name="Total Calls"
+                    />
+                    <Bar
+                      dataKey="success"
+                      fill="hsl(142 76% 45%)"
+                      radius={[4, 4, 0, 0]}
+                      name="Successful"
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
-          </div>
-        </div>
 
-        {/* Duration Trend */}
-        <div className="glass-card rounded-xl p-6">
-          <h3 className="mb-6 font-semibold text-foreground">
-            Avg. Call Duration Trend
-          </h3>
-          <div className="h-[200px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={durationTrend}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="hsl(222 30% 18%)"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="week"
-                  stroke="hsl(215 20% 55%)"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis
-                  stroke="hsl(215 20% 55%)"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
-                  domain={[2, 3]}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "hsl(222 47% 10%)",
-                    border: "1px solid hsl(222 30% 18%)",
-                    borderRadius: "8px",
-                    fontSize: "12px",
-                  }}
-                  formatter={(value: number) => [`${value} min`, "Duration"]}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="duration"
-                  stroke="hsl(173 80% 50%)"
-                  strokeWidth={2}
-                  dot={{ fill: "hsl(173 80% 50%)", strokeWidth: 0 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Agent Performance */}
-        <div className="glass-card rounded-xl p-6">
-          <h3 className="mb-6 font-semibold text-foreground">Agent Performance</h3>
-          <div className="space-y-4">
-            {agentPerformance.map((agent) => (
-              <div key={agent.agent} className="space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-foreground">{agent.agent}</span>
-                  <span className="text-muted-foreground">
-                    {agent.calls.toLocaleString()} calls • {agent.rate}% success
-                  </span>
+            {/* Call Outcomes */}
+            <div className="glass-card rounded-xl p-6">
+              <h3 className="mb-6 font-semibold text-foreground">Call Outcomes</h3>
+              <div className="flex items-center gap-8">
+                <div className="h-[200px] w-[200px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={outcomeData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={60}
+                        outerRadius={90}
+                        paddingAngle={2}
+                        dataKey="value"
+                      >
+                        {outcomeData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
                 </div>
-                <div className="h-2 rounded-full bg-secondary overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-gradient-primary transition-all duration-500"
-                    style={{ width: `${agent.rate}%` }}
-                  />
+                <div className="flex-1 space-y-3">
+                  {outcomeData.map((item) => (
+                    <div key={item.name} className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="h-3 w-3 rounded-full"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          {item.name}
+                        </span>
+                      </div>
+                      <span className="text-sm font-medium text-foreground">
+                        {item.value}%
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
+            </div>
+
+            {/* Duration Trend */}
+            <div className="glass-card rounded-xl p-6">
+              <h3 className="mb-6 font-semibold text-foreground">
+                Avg. Call Duration Trend
+              </h3>
+              <div className="h-[200px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={durationTrend}>
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      stroke="hsl(222 30% 18%)"
+                      vertical={false}
+                    />
+                    <XAxis
+                      dataKey="week"
+                      stroke="hsl(215 20% 55%)"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis
+                      stroke="hsl(215 20% 55%)"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                      domain={[2, 3]}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: "hsl(222 47% 10%)",
+                        border: "1px solid hsl(222 30% 18%)",
+                        borderRadius: "8px",
+                        fontSize: "12px",
+                      }}
+                      formatter={(value: number) => [`${value} min`, "Duration"]}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="duration"
+                      stroke="hsl(173 80% 50%)"
+                      strokeWidth={2}
+                      dot={{ fill: "hsl(173 80% 50%)", strokeWidth: 0 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Agent Performance */}
+            <div className="glass-card rounded-xl p-6">
+              <h3 className="mb-6 font-semibold text-foreground">Agent Performance</h3>
+              <div className="space-y-4">
+                {agentPerformance.map((agent) => (
+                  <div key={agent.agent} className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-foreground">{agent.agent}</span>
+                      <span className="text-muted-foreground">
+                        {agent.calls.toLocaleString()} calls • {agent.rate}% success
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-secondary overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-gradient-primary transition-all duration-500"
+                        style={{ width: `${agent.rate}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        </TabsContent>
+
+        <TabsContent value="roi" className="mt-6 space-y-6">
+          {/* ROI Stats */}
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              title="Hours Saved"
+              value={`${hoursSaved.toFixed(1)}h`}
+              change="This week"
+              changeType="positive"
+              icon={Clock}
+              iconColor="text-success"
+            />
+            <StatCard
+              title="Human Cost (€12/hr)"
+              value={`€${humanCost.toFixed(2)}`}
+              change="If handled manually"
+              changeType="neutral"
+              icon={Users}
+            />
+            <StatCard
+              title="AI Cost"
+              value={`€${aiCost.toFixed(2)}`}
+              change="€0.20/min"
+              changeType="positive"
+              icon={DollarSign}
+              iconColor="text-primary"
+            />
+            <StatCard
+              title="Total Savings"
+              value={`€${savings.toFixed(2)}`}
+              change={`${savingsPercentage}% less`}
+              changeType="positive"
+              icon={TrendingUp}
+              iconColor="text-success"
+            />
+          </div>
+
+          {/* ROI Breakdown */}
+          <div className="grid gap-6 lg:grid-cols-2">
+            <Card className="glass-card rounded-xl border-border/50 p-6">
+              <h3 className="font-semibold text-foreground mb-4">Cost Comparison</h3>
+              <div className="space-y-6">
+                <div>
+                  <div className="flex items-center justify-between text-sm mb-2">
+                    <span className="text-muted-foreground">Human Employee Cost</span>
+                    <span className="font-medium text-foreground">€{humanCost.toFixed(2)}</span>
+                  </div>
+                  <div className="h-4 rounded-full bg-destructive/20 overflow-hidden">
+                    <div className="h-full rounded-full bg-destructive" style={{ width: '100%' }} />
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {hoursSaved.toFixed(1)} hours × €{HOURLY_RATE}/hour
+                  </p>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between text-sm mb-2">
+                    <span className="text-muted-foreground">AI Voice Agent Cost</span>
+                    <span className="font-medium text-foreground">€{aiCost.toFixed(2)}</span>
+                  </div>
+                  <div className="h-4 rounded-full bg-success/20 overflow-hidden">
+                    <div 
+                      className="h-full rounded-full bg-success" 
+                      style={{ width: `${(aiCost / humanCost) * 100}%` }} 
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {roiData.totalCallMinutes} minutes × €0.20/minute
+                  </p>
+                </div>
+
+                <div className="pt-4 border-t border-border">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-foreground">Net Savings</span>
+                    <span className="text-xl font-bold text-success">€{savings.toFixed(2)}</span>
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    You saved {savingsPercentage}% compared to human employees
+                  </p>
+                </div>
+              </div>
+            </Card>
+
+            <Card className="glass-card rounded-xl border-border/50 p-6">
+              <h3 className="font-semibold text-foreground mb-4">Time Savings Summary</h3>
+              <div className="space-y-4">
+                <div className="flex items-center gap-4 p-4 rounded-xl bg-success/10 border border-success/20">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-success/20">
+                    <Clock className="h-6 w-6 text-success" />
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold text-foreground">{hoursSaved.toFixed(1)} hours</p>
+                    <p className="text-sm text-muted-foreground">Saved from human workload</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="p-4 rounded-xl bg-secondary/30 border border-border/50">
+                    <p className="text-2xl font-bold text-foreground">{roiData.totalCalls}</p>
+                    <p className="text-sm text-muted-foreground">Total Calls Handled</p>
+                  </div>
+                  <div className="p-4 rounded-xl bg-secondary/30 border border-border/50">
+                    <p className="text-2xl font-bold text-foreground">{roiData.avgCallDuration}m</p>
+                    <p className="text-sm text-muted-foreground">Avg. Call Duration</p>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-primary/10 border border-primary/20">
+                  <p className="text-sm text-muted-foreground mb-1">Equivalent FTE Savings</p>
+                  <p className="text-lg font-semibold text-foreground">
+                    {(hoursSaved / 40).toFixed(2)} work weeks
+                  </p>
+                  <p className="text-xs text-muted-foreground">Based on 40-hour work week</p>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

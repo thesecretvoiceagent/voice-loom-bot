@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Phone, Plus, Settings, Code, Copy, Check, Trash2, Pencil } from "lucide-react";
+import { Phone, Plus, Settings, Code, Copy, Check, Trash2, Pencil, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
 
 interface Widget {
@@ -25,7 +25,7 @@ const existingWidgets: Widget[] = [
   },
 ];
 
-export default function Widgets() {
+export default function WidgetsSettings() {
   const [activeTab, setActiveTab] = useState<"create" | "manage">("manage");
   const [selectedWidget, setSelectedWidget] = useState<Widget | null>(existingWidgets[0]);
   const [copied, setCopied] = useState(false);
@@ -58,16 +58,17 @@ autoOpen: false, delay: 3000, theme: 'custom' }; </script>`;
   };
 
   return (
-    <div className="space-y-8 animate-fade-in">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold text-foreground">Call Widgets</h1>
-        <p className="mt-1 text-muted-foreground">
-          Create and manage call widgets for website integration
-        </p>
+    <div className="space-y-6">
+      <div className="flex items-center gap-4">
+        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+          <MessageSquare className="h-6 w-6 text-primary" />
+        </div>
+        <div>
+          <h2 className="text-2xl font-semibold text-foreground">Call Widgets</h2>
+          <p className="text-muted-foreground">Create and manage call widgets for website integration</p>
+        </div>
       </div>
 
-      {/* Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "create" | "manage")}>
         <TabsList className="bg-secondary/30 p-1 rounded-xl">
           <TabsTrigger 
@@ -87,17 +88,16 @@ autoOpen: false, delay: 3000, theme: 'custom' }; </script>`;
         </TabsList>
 
         <TabsContent value="create" className="mt-6">
-          <div className="grid gap-8 lg:grid-cols-2">
-            {/* Configuration Form */}
+          <div className="grid gap-6 lg:grid-cols-2">
             <Card className="glass-card rounded-xl border-border/50 p-6">
-              <h2 className="text-xl font-semibold text-foreground mb-2">
-                Create New Call Widget for Website Integration
-              </h2>
+              <h3 className="text-lg font-semibold text-foreground mb-2">
+                Create New Call Widget
+              </h3>
               <p className="text-sm text-muted-foreground mb-6">
-                Configure your website call widget so clients can easily connect with you
+                Configure your website call widget
               </p>
 
-              <div className="space-y-6">
+              <div className="space-y-4">
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-2">
                     <Label htmlFor="widget-name">Widget Name</Label>
@@ -162,44 +162,6 @@ autoOpen: false, delay: 3000, theme: 'custom' }; </script>`;
                   />
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="button-text">Button Text</Label>
-                    <Input
-                      id="button-text"
-                      value={widgetConfig.buttonText}
-                      onChange={(e) => setWidgetConfig({ ...widgetConfig, buttonText: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="feature1">Feature 1</Label>
-                    <Input
-                      id="feature1"
-                      value={widgetConfig.feature1}
-                      onChange={(e) => setWidgetConfig({ ...widgetConfig, feature1: e.target.value })}
-                    />
-                  </div>
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="feature2">Feature 2</Label>
-                    <Input
-                      id="feature2"
-                      value={widgetConfig.feature2}
-                      onChange={(e) => setWidgetConfig({ ...widgetConfig, feature2: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="feature3">Feature 3</Label>
-                    <Input
-                      id="feature3"
-                      value={widgetConfig.feature3}
-                      onChange={(e) => setWidgetConfig({ ...widgetConfig, feature3: e.target.value })}
-                    />
-                  </div>
-                </div>
-
                 <Button className="w-full gap-2">
                   <Plus className="h-4 w-4" />
                   Create Widget
@@ -207,12 +169,10 @@ autoOpen: false, delay: 3000, theme: 'custom' }; </script>`;
               </div>
             </Card>
 
-            {/* Widget Preview */}
             <Card className="glass-card rounded-xl border-border/50 p-6">
               <h3 className="text-lg font-semibold text-foreground mb-6">Widget Preview</h3>
               
-              <div className="relative h-[400px] rounded-xl border border-border/50 bg-secondary/20 flex items-end justify-end p-4">
-                {/* Widget Preview */}
+              <div className="relative h-[300px] rounded-xl border border-border/50 bg-secondary/20 flex items-end justify-end p-4">
                 <div 
                   className="rounded-2xl shadow-xl p-4 min-w-[200px]"
                   style={{ backgroundColor: widgetConfig.brandColor }}
@@ -233,14 +193,13 @@ autoOpen: false, delay: 3000, theme: 'custom' }; </script>`;
         </TabsContent>
 
         <TabsContent value="manage" className="mt-6">
-          <div className="grid gap-8 lg:grid-cols-2">
-            {/* Widgets List */}
+          <div className="grid gap-6 lg:grid-cols-2">
             <Card className="glass-card rounded-xl border-border/50 p-6">
-              <h2 className="text-xl font-semibold text-foreground mb-2">
+              <h3 className="text-lg font-semibold text-foreground mb-2">
                 Your Widgets ({existingWidgets.length})
-              </h2>
-              <p className="text-sm text-muted-foreground mb-6">
-                Manage existing widgets and their settings
+              </h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                Manage existing widgets
               </p>
 
               <div className="space-y-4">
@@ -258,19 +217,12 @@ autoOpen: false, delay: 3000, theme: 'custom' }; </script>`;
                       <div className="absolute top-4 right-4 h-3 w-3 rounded-full bg-success" />
                     )}
                     <p className="font-mono text-sm text-foreground">{widget.phoneNumber}</p>
-                    
-                    <div className="mt-4 h-32 rounded-lg border border-border/30 bg-secondary/20 flex items-end justify-end p-3">
-                      <div className="flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-primary-foreground">
-                        <Phone className="h-4 w-4" />
-                        <span className="font-mono text-sm">{widget.phoneNumber}</span>
-                        <span className="text-xs opacity-80">{widget.agentName}</span>
-                      </div>
-                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">{widget.agentName}</p>
 
                     <div className="flex items-center gap-2 mt-4">
                       <Badge variant={selectedWidget?.id === widget.id ? "default" : "secondary"}>
                         <Check className="h-3 w-3 mr-1" />
-                        Widget Selected
+                        Selected
                       </Badge>
                       <Button variant="outline" size="sm">
                         Edit
@@ -284,36 +236,23 @@ autoOpen: false, delay: 3000, theme: 'custom' }; </script>`;
               </div>
             </Card>
 
-            {/* Integration Guide */}
             <Card className="glass-card rounded-xl border-border/50 p-6">
-              <div className="flex items-center gap-3 mb-6">
+              <div className="flex items-center gap-3 mb-4">
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
                   <Code className="h-5 w-5 text-primary" />
                 </div>
                 <div>
                   <h3 className="font-semibold text-foreground">Integration Guide</h3>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-sm text-muted-foreground">Selected widget:</span>
-                    <Badge variant="outline" className="text-primary border-primary/30">
-                      {selectedWidget?.agentName || "None"}
-                    </Badge>
-                  </div>
+                  <Badge variant="outline" className="text-primary border-primary/30 mt-1">
+                    {selectedWidget?.agentName || "None"}
+                  </Badge>
                 </div>
               </div>
 
-              <div className="space-y-6">
-                {/* Step 1 */}
+              <div className="space-y-4">
                 <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
-                      1
-                    </div>
-                    <h4 className="font-medium text-foreground">Add widget to your website</h4>
-                  </div>
-                  <p className="text-sm text-muted-foreground mb-3">
-                    Copy and paste the following code into your website's {"<head>"} section:
-                  </p>
-                  <div className="relative rounded-lg bg-secondary/50 border border-border/50 p-4">
+                  <h4 className="font-medium text-foreground text-sm mb-2">1. Add to your website</h4>
+                  <div className="relative rounded-lg bg-secondary/50 border border-border/50 p-3">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -322,24 +261,15 @@ autoOpen: false, delay: 3000, theme: 'custom' }; </script>`;
                     >
                       {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                     </Button>
-                    <pre className="text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+                    <pre className="text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap pr-8">
                       {embedCode}
                     </pre>
                   </div>
                 </div>
 
-                {/* Step 2 */}
                 <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
-                      2
-                    </div>
-                    <h4 className="font-medium text-foreground">Customize settings (optional)</h4>
-                  </div>
-                  <p className="text-sm text-muted-foreground mb-3">
-                    You can customize the widget behavior with additional attributes:
-                  </p>
-                  <div className="relative rounded-lg bg-secondary/50 border border-border/50 p-4">
+                  <h4 className="font-medium text-foreground text-sm mb-2">2. Customize (optional)</h4>
+                  <div className="relative rounded-lg bg-secondary/50 border border-border/50 p-3">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -348,23 +278,10 @@ autoOpen: false, delay: 3000, theme: 'custom' }; </script>`;
                     >
                       <Copy className="h-4 w-4" />
                     </Button>
-                    <pre className="text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+                    <pre className="text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap pr-8">
                       {customizationCode}
                     </pre>
                   </div>
-                </div>
-
-                {/* Step 3 */}
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
-                      3
-                    </div>
-                    <h4 className="font-medium text-foreground">Test integration</h4>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    Visit your website and verify that the widget appears correctly and all functions work as expected.
-                  </p>
                 </div>
               </div>
             </Card>

@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { User, Building2, CreditCard, Key, Phone, Wrench, Code } from "lucide-react";
+import { User, Building2, CreditCard, Key, Phone, Wrench, Code, MessageSquare } from "lucide-react";
 
 const settingsNav = [
   { name: "User Settings", href: "/settings/user", icon: User },
@@ -9,6 +9,7 @@ const settingsNav = [
   { name: "API Keys", href: "/settings/api-keys", icon: Key },
   { name: "Phone Numbers", href: "/settings/twilio", icon: Phone },
   { name: "Tools", href: "/settings/tools", icon: Wrench },
+  { name: "Call Widgets", href: "/settings/widgets", icon: MessageSquare },
   { name: "API Docs", href: "/settings/api-docs", icon: Code },
 ];
 
