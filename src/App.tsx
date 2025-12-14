@@ -19,6 +19,7 @@ import Items from "./pages/Items";
 import Settings from "./pages/Settings";
 import About from "./pages/About";
 import Auth from "./pages/Auth";
+import SystemHealth from "./pages/SystemHealth";
 import UserSettings from "./pages/settings/UserSettings";
 import OrganizationSettings from "./pages/settings/OrganizationSettings";
 import PlansSettings from "./pages/settings/PlansSettings";
@@ -54,6 +55,7 @@ const App = () => (
                 <Route path="/campaigns/create" element={<CreateCampaign />} />
                 <Route path="/calls" element={<CallLogs />} />
                 <Route path="/analytics" element={<Analytics />} />
+                <Route path="/system-health" element={<SystemHealth />} />
                 <Route path="/items" element={<Items />} />
                 <Route path="/about" element={<About />} />
                 <Route path="/settings" element={<Settings />}>
