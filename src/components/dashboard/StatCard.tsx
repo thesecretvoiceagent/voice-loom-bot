@@ -19,18 +19,18 @@ export function StatCard({
   iconColor = "text-primary",
 }: StatCardProps) {
   return (
-    <div className="stat-card glass-card rounded-xl p-6 transition-all duration-300 hover:shadow-elevated">
+    <div className="stat-card glass-card rounded-xl p-6 transition-all duration-300 hover:shadow-elevated hover:border-primary/30 group">
       <div className="flex items-start justify-between">
         <div className="space-y-3">
           <p className="text-sm font-medium text-muted-foreground">{title}</p>
-          <p className="text-3xl font-bold text-foreground">{value}</p>
+          <p className="text-3xl font-bold text-foreground tracking-tight">{value}</p>
           {change && (
             <p
               className={cn(
-                "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
-                changeType === "positive" && "bg-success/10 text-success",
-                changeType === "negative" && "bg-destructive/10 text-destructive",
-                changeType === "neutral" && "bg-muted text-muted-foreground"
+                "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium",
+                changeType === "positive" && "bg-primary/10 text-primary border border-primary/20",
+                changeType === "negative" && "bg-destructive/10 text-destructive border border-destructive/20",
+                changeType === "neutral" && "bg-muted text-muted-foreground border border-border/50"
               )}
             >
               {change}
@@ -39,7 +39,7 @@ export function StatCard({
         </div>
         <div
           className={cn(
-            "flex h-12 w-12 items-center justify-center rounded-xl bg-secondary",
+            "flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-subtle border border-border/30 transition-all duration-300 group-hover:shadow-neon",
             iconColor
           )}
         >

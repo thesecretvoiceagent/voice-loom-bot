@@ -15,7 +15,7 @@ export default function Dashboard() {
     <div className="space-y-8 animate-fade-in">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-bold text-foreground">Dashboard</h1>
+        <h1 className="text-3xl font-bold gradient-text">Dashboard</h1>
         <p className="mt-1 text-muted-foreground">
           Overview of your AI voice platform performance
         </p>
