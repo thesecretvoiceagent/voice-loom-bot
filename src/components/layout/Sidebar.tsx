@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, PhoneIncoming, PhoneOutgoing, Info, Shield, Package, Activity } from "lucide-react";
+import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, PhoneIncoming, PhoneOutgoing, Info, Shield, Package, Activity, Settings2, AlertCircle } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { UserMenu } from "./UserMenu";
 
@@ -12,6 +12,8 @@ const navigation = [
   { name: "Call Logs", href: "/calls", icon: Phone },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
   { name: "System Health", href: "/system-health", icon: Activity },
+  { name: "Feature Flags", href: "/feature-flags", icon: Settings2 },
+  { name: "Incidents", href: "/incidents", icon: AlertCircle },
   { name: "Items", href: "/items", icon: Package },
   { name: "Settings", href: "/settings/user", icon: Settings },
 ];
