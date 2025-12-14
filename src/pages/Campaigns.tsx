@@ -118,7 +118,7 @@ export default function Campaigns() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-foreground">Campaigns</h1>
+          <h1 className="text-3xl font-bold gradient-text">Campaigns</h1>
           <p className="mt-1 text-muted-foreground">
             Manage outbound calling campaigns
           </p>

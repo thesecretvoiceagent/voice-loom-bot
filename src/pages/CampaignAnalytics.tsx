@@ -208,7 +208,7 @@ export default function CampaignAnalytics() {
           </Button>
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-3xl font-bold text-foreground">{campaign.name}</h1>
+              <h1 className="text-3xl font-bold gradient-text">{campaign.name}</h1>
               <span
                 className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${
                   campaign.status === "active"
