@@ -50,6 +50,42 @@ export type Database = {
         }
         Relationships: []
       }
+      organization_settings: {
+        Row: {
+          api_key: string | null
+          api_key_created_at: string | null
+          created_at: string
+          id: string
+          updated_at: string
+          user_id: string
+          webhook_secret: string | null
+          webhook_secret_created_at: string | null
+          webhook_url: string | null
+        }
+        Insert: {
+          api_key?: string | null
+          api_key_created_at?: string | null
+          created_at?: string
+          id?: string
+          updated_at?: string
+          user_id: string
+          webhook_secret?: string | null
+          webhook_secret_created_at?: string | null
+          webhook_url?: string | null
+        }
+        Update: {
+          api_key?: string | null
+          api_key_created_at?: string | null
+          created_at?: string
+          id?: string
+          updated_at?: string
+          user_id?: string
+          webhook_secret?: string | null
+          webhook_secret_created_at?: string | null
+          webhook_url?: string | null
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           avatar_url: string | null
@@ -116,6 +152,15 @@ export type Database = {
           _user_id: string
         }
         Returns: boolean
+      }
+      log_audit_event: {
+        Args: {
+          _action: string
+          _details?: Json
+          _resource_id?: string
+          _resource_type: string
+        }
+        Returns: undefined
       }
     }
     Enums: {
