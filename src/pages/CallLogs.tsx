@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -9,6 +10,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Search,
   Download,
@@ -20,8 +28,12 @@ import {
   Clock,
   Play,
   FileText,
+  Trash2,
+  Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { TranscriptDialog } from "@/components/call-logs/TranscriptDialog";
+import { Card } from "@/components/ui/card";
 
 const callLogs = [
   {
@@ -124,12 +136,20 @@ const callLogs = [
 
 export default function CallLogs() {
   const [searchQuery, setSearchQuery] = useState("");
+  const [transcriptDialogOpen, setTranscriptDialogOpen] = useState(false);
+  const [selectedCall, setSelectedCall] = useState<typeof callLogs[0] | null>(null);
+  const [retentionDays, setRetentionDays] = useState("90");
 
   const filteredLogs = callLogs.filter(
     (log) =>
       log.phone.includes(searchQuery) ||
       log.agent.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const openTranscript = (call: typeof callLogs[0]) => {
+    setSelectedCall(call);
+    setTranscriptDialogOpen(true);
+  };
 
   return (
     <div className="space-y-8 animate-fade-in">
@@ -146,6 +166,44 @@ export default function CallLogs() {
           Export
         </Button>
       </div>
+
+      {/* Data Retention Settings */}
+      <Card className="glass-card rounded-xl border-border/50 p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-warning/10">
+              <Trash2 className="h-5 w-5 text-warning" />
+            </div>
+            <div>
+              <h3 className="font-medium text-foreground">Data Retention Policy</h3>
+              <p className="text-sm text-muted-foreground">
+                Automatically delete call logs and recordings after specified days
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <Label htmlFor="retention" className="text-sm text-muted-foreground whitespace-nowrap">
+              Delete after:
+            </Label>
+            <Select value={retentionDays} onValueChange={setRetentionDays}>
+              <SelectTrigger className="w-[140px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="30">30 days</SelectItem>
+                <SelectItem value="60">60 days</SelectItem>
+                <SelectItem value="90">90 days</SelectItem>
+                <SelectItem value="180">180 days</SelectItem>
+                <SelectItem value="365">1 year</SelectItem>
+                <SelectItem value="never">Never</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button variant="outline" size="sm">
+              <Settings className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </Card>
 
       {/* Search and Filters */}
       <div className="flex items-center gap-4">
@@ -245,7 +303,12 @@ export default function CallLogs() {
                       </Button>
                     )}
                     {log.hasTranscript && (
-                      <Button variant="ghost" size="icon" className="h-8 w-8">
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-8 w-8"
+                        onClick={() => openTranscript(log)}
+                      >
                         <FileText className="h-4 w-4" />
                       </Button>
                     )}
@@ -256,6 +319,20 @@ export default function CallLogs() {
           </TableBody>
         </Table>
       </div>
+
+      {/* Transcript Dialog */}
+      {selectedCall && (
+        <TranscriptDialog
+          open={transcriptDialogOpen}
+          onOpenChange={setTranscriptDialogOpen}
+          callData={{
+            phone: selectedCall.phone,
+            agent: selectedCall.agent,
+            timestamp: selectedCall.timestamp,
+            duration: selectedCall.duration,
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -17,6 +17,9 @@ import {
   PhoneOutgoing,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { TestCallDialog } from "@/components/agents/TestCallDialog";
+import { BulkUploadDialog } from "@/components/agents/BulkUploadDialog";
+import { toast } from "sonner";
 
 const agents = [
   {
@@ -81,6 +84,9 @@ const agents = [
 
 export default function Agents() {
   const [searchQuery, setSearchQuery] = useState("");
+  const [testCallDialogOpen, setTestCallDialogOpen] = useState(false);
+  const [bulkUploadDialogOpen, setBulkUploadDialogOpen] = useState(false);
+  const [selectedAgent, setSelectedAgent] = useState<typeof agents[0] | null>(null);
 
   const filteredAgents = agents.filter((agent) =>
     agent.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -88,6 +94,17 @@ export default function Agents() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
+    toast.success("Copied to clipboard");
+  };
+
+  const handleTestCall = (agent: typeof agents[0]) => {
+    setSelectedAgent(agent);
+    setTestCallDialogOpen(true);
+  };
+
+  const handleBulkUpload = (agent: typeof agents[0]) => {
+    setSelectedAgent(agent);
+    setBulkUploadDialogOpen(true);
   };
 
   return (
@@ -183,9 +200,11 @@ export default function Agents() {
                   </span>
                 </div>
               </div>
-              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                <Pencil className="h-4 w-4" />
-              </Button>
+              <Link to={`/agents/create/${agent.type}?edit=${agent.id}`}>
+                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                  <Pencil className="h-4 w-4" />
+                </Button>
+              </Link>
             </div>
 
             {/* Dates */}
@@ -228,10 +247,20 @@ export default function Agents() {
                   Call Logs
                 </Button>
               </Link>
-              <Button variant="ghost" size="icon" className="h-9 w-9">
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                className="h-9 w-9"
+                onClick={() => handleTestCall(agent)}
+              >
                 <Phone className="h-4 w-4" />
               </Button>
-              <Button variant="ghost" size="icon" className="h-9 w-9">
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                className="h-9 w-9"
+                onClick={() => handleBulkUpload(agent)}
+              >
                 <Upload className="h-4 w-4" />
               </Button>
               <Button
@@ -245,6 +274,23 @@ export default function Agents() {
           </div>
         ))}
       </div>
+
+      {/* Dialogs */}
+      {selectedAgent && (
+        <>
+          <TestCallDialog
+            open={testCallDialogOpen}
+            onOpenChange={setTestCallDialogOpen}
+            agentName={selectedAgent.name}
+            agentType={selectedAgent.type}
+          />
+          <BulkUploadDialog
+            open={bulkUploadDialogOpen}
+            onOpenChange={setBulkUploadDialogOpen}
+            agentName={selectedAgent.name}
+          />
+        </>
+      )}
     </div>
   );
 }

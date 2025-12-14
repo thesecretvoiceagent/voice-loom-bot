@@ -1,17 +1,16 @@
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, PhoneIncoming, PhoneOutgoing, MessageSquare, Info, Shield } from "lucide-react";
+import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, PhoneIncoming, PhoneOutgoing, Info, Shield } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { UserMenu } from "./UserMenu";
 
 const navigation = [
+  { name: "About", href: "/about", icon: Info },
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "AI Voice Agents", href: "/agents", icon: Bot },
   { name: "Campaigns", href: "/campaigns", icon: Megaphone },
   { name: "Call Logs", href: "/calls", icon: Phone },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
-  { name: "Call Widgets", href: "/widgets", icon: MessageSquare },
-  { name: "About", href: "/about", icon: Info },
   { name: "Settings", href: "/settings/user", icon: Settings },
 ];
 
