@@ -88,9 +88,50 @@ serve(async (req) => {
       expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
     });
 
-    // TODO: Update call record in database when calls table exists
-    // For now, just log the event
-    console.log(`[${correlationId}] Processed status update for ${payload.CallSid}: ${payload.CallStatus}`);
+    // Update call record in database
+    const statusMap: Record<string, string> = {
+      'initiated': 'initiated',
+      'ringing': 'ringing',
+      'in-progress': 'in-progress',
+      'completed': 'completed',
+      'busy': 'failed',
+      'failed': 'failed',
+      'no-answer': 'no-answer',
+      'canceled': 'canceled',
+    };
+
+    const mappedStatus = statusMap[payload.CallStatus] || payload.CallStatus;
+
+    // Find the call by Twilio SID
+    const { data: callRecord } = await supabase
+      .from('calls')
+      .select('id')
+      .eq('twilio_call_sid', payload.CallSid)
+      .maybeSingle();
+
+    if (callRecord) {
+      const updates: Record<string, unknown> = { status: mappedStatus };
+      if (payload.CallStatus === 'in-progress') {
+        updates.answered_at = new Date().toISOString();
+      }
+      if (['completed', 'busy', 'failed', 'no-answer', 'canceled'].includes(payload.CallStatus)) {
+        updates.ended_at = new Date().toISOString();
+        if (payload.CallDuration) {
+          updates.duration_seconds = parseInt(payload.CallDuration, 10);
+        }
+      }
+
+      await supabase.from('calls').update(updates).eq('id', callRecord.id);
+      await supabase.from('call_events').insert({
+        call_id: callRecord.id,
+        type: mappedStatus,
+        payload: { twilio_status: payload.CallStatus, call_sid: payload.CallSid, duration: payload.CallDuration, correlation_id: correlationId },
+      });
+
+      console.log(`[${correlationId}] Updated call ${callRecord.id}: ${mappedStatus}`);
+    } else {
+      console.log(`[${correlationId}] No call record found for SID ${payload.CallSid}`);
+    }
 
     return new Response(
       JSON.stringify({ 
