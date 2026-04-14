@@ -70,65 +70,46 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     openaiWs.on("open", () => {
       console.log(`[MediaStream] Connected to OpenAI Realtime (callId=${callId}, voice=${voice})`);
 
-      // Step 1: Configure session WITHOUT turn detection to prevent auto-responses
+      // Bake the greeting into the instructions so the AI knows what to say first
+      const fullInstructions = greeting
+        ? `${instructions}\n\nIMPORTANT: You are starting a phone call RIGHT NOW. Your FIRST message must be your greeting. Say exactly: "${greeting}" — in the same language, naturally. Do NOT say anything in English unless the greeting is in English. Do NOT wait for the caller to speak first. Speak immediately.`
+        : instructions;
+
+      // Configure session WITHOUT turn detection — we trigger the first response manually
       const sessionUpdate = {
         type: "session.update",
         session: {
           modalities: ["text", "audio"],
-          instructions,
+          instructions: fullInstructions,
           voice,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
             model: "whisper-1",
           },
-          turn_detection: null, // Disable initially — we control when AI speaks first
+          turn_detection: null,
         },
       };
 
       openaiWs!.send(JSON.stringify(sessionUpdate));
 
-      // Step 2: Send the greeting and then enable VAD
-      if (greeting) {
-        console.log(`[MediaStream] Sending greeting (callId=${callId}): "${greeting.substring(0, 60)}..."`);
+      // Force the AI to speak first by triggering a response immediately
+      setTimeout(() => {
+        console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || '(none)'}"`);
 
-        setTimeout(() => {
-          // Create a greeting message and trigger response
-          const greetingEvent = {
-            type: "conversation.item.create",
-            item: {
-              type: "message",
-              role: "user",
-              content: [
-                {
-                  type: "input_text",
-                  text: `[SYSTEM: The call has just connected. Say your greeting to the caller. Your greeting is: "${greeting}". Say it naturally, exactly as written, do not add anything extra.]`,
-                },
-              ],
-            },
+        // Use response.create with explicit instructions to force immediate speech
+        const responseCreate: any = { type: "response.create" };
+
+        if (greeting) {
+          // Override instructions for this specific response to guarantee the greeting
+          responseCreate.response = {
+            instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`,
           };
-          openaiWs!.send(JSON.stringify(greetingEvent));
-          openaiWs!.send(JSON.stringify({ type: "response.create" }));
+        }
 
-          // Step 3: After a short delay, enable VAD for normal conversation
-          setTimeout(() => {
-            const enableVAD = {
-              type: "session.update",
-              session: {
-                turn_detection: {
-                  type: "server_vad",
-                  threshold: 0.5,
-                  prefix_padding_ms: 300,
-                  silence_duration_ms: 500,
-                },
-              },
-            };
-            openaiWs!.send(JSON.stringify(enableVAD));
-            console.log(`[MediaStream] VAD enabled after greeting (callId=${callId})`);
-          }, 500);
-        }, 300);
-      } else {
-        // No greeting — enable VAD immediately so user can speak first
+        openaiWs!.send(JSON.stringify(responseCreate));
+
+        // Enable VAD after a delay so the AI can finish its greeting
         setTimeout(() => {
           const enableVAD = {
             type: "session.update",
@@ -142,8 +123,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             },
           };
           openaiWs!.send(JSON.stringify(enableVAD));
-        }, 300);
-      }
+          console.log(`[MediaStream] VAD enabled after greeting (callId=${callId})`);
+        }, 1000);
+      }, 400);
     });
 
     openaiWs.on("message", (data) => {
