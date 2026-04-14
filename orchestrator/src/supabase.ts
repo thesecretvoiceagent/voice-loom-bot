@@ -18,16 +18,51 @@ interface AgentConfig {
   schedule: Record<string, unknown> | null;
 }
 
-export async function fetchAgentConfig(agentId: string): Promise<AgentConfig | null> {
-  if (!config.supabase.isConfigured) {
-    console.warn("[Supabase] Not configured, cannot fetch agent");
+const AGENT_SELECT_FIELDS = [
+  "id",
+  "name",
+  "greeting",
+  "system_prompt",
+  "analysis_prompt",
+  "voice",
+  "tools",
+  "settings",
+  "schedule",
+].join(",");
+
+function getSupabaseRestBaseUrl() {
+  const rawUrl = config.supabase.url.trim();
+
+  if (!rawUrl) {
+    return null;
+  }
+
+  const normalizedUrl = rawUrl
+    .replace(/\/+$/u, "")
+    .replace(/\/rest\/v1$/iu, "");
+
+  return `${normalizedUrl}/rest/v1`;
+}
+
+async function fetchRows<T>(
+  resource: string,
+  query: Record<string, string>,
+): Promise<T[] | null> {
+  const restBaseUrl = getSupabaseRestBaseUrl();
+
+  if (!config.supabase.isConfigured || !restBaseUrl) {
+    console.warn(`[Supabase] Not configured, cannot query ${resource}`);
     return null;
   }
 
   try {
-    const url = `${config.supabase.url}/rest/v1/agents?id=eq.${agentId}&select=id,name,greeting,system_prompt,analysis_prompt,voice,tools,settings,schedule`;
+    const url = new URL(`${restBaseUrl}/${resource}`);
 
-    const res = await fetch(url, {
+    Object.entries(query).forEach(([key, value]) => {
+      url.searchParams.set(key, value);
+    });
+
+    const res = await fetch(url.toString(), {
       headers: {
         apikey: config.supabase.serviceRoleKey,
         Authorization: `Bearer ${config.supabase.serviceRoleKey}`,
@@ -36,16 +71,28 @@ export async function fetchAgentConfig(agentId: string): Promise<AgentConfig | n
     });
 
     if (!res.ok) {
-      console.error(`[Supabase] Failed to fetch agent ${agentId}: HTTP ${res.status}`);
+      const body = await res.text();
+      console.error(
+        `[Supabase] ${resource} query failed: HTTP ${res.status} url=${url.toString()} body=${body}`,
+      );
       return null;
     }
 
-    const rows: AgentConfig[] = await res.json();
-    return rows.length > 0 ? rows[0] : null;
+    return (await res.json()) as T[];
   } catch (err) {
-    console.error(`[Supabase] Error fetching agent ${agentId}:`, err);
+    console.error(`[Supabase] Error querying ${resource}:`, err);
     return null;
   }
+}
+
+export async function fetchAgentConfig(agentId: string): Promise<AgentConfig | null> {
+  const rows = await fetchRows<AgentConfig>("agents", {
+    id: `eq.${agentId}`,
+    select: AGENT_SELECT_FIELDS,
+    limit: "1",
+  });
+
+  return rows?.[0] ?? null;
 }
 
 /**
@@ -53,56 +100,26 @@ export async function fetchAgentConfig(agentId: string): Promise<AgentConfig | n
  * Used for inbound calls where no agentId is specified.
  */
 export async function fetchAgentByPhoneNumber(phoneNumber: string): Promise<AgentConfig | null> {
-  if (!config.supabase.isConfigured) {
-    console.warn("[Supabase] Not configured, cannot fetch agent by phone");
-    return null;
-  }
+  const rows = await fetchRows<AgentConfig>("agents", {
+    phone_number: `eq.${phoneNumber}`,
+    is_active: "eq.true",
+    select: AGENT_SELECT_FIELDS,
+    limit: "1",
+  });
 
-  try {
-    const url = `${config.supabase.url}/rest/v1/agents?phone_number=eq.${encodeURIComponent(phoneNumber)}&is_active=eq.true&select=id,name,greeting,system_prompt,analysis_prompt,voice,tools,settings,schedule&limit=1`;
-
-    const res = await fetch(url, {
-      headers: {
-        apikey: config.supabase.serviceRoleKey,
-        Authorization: `Bearer ${config.supabase.serviceRoleKey}`,
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!res.ok) {
-      console.error(`[Supabase] Failed to fetch agent by phone ${phoneNumber}: HTTP ${res.status}`);
-      return null;
-    }
-
-    const rows: AgentConfig[] = await res.json();
-    return rows.length > 0 ? rows[0] : null;
-  } catch (err) {
-    console.error(`[Supabase] Error fetching agent by phone ${phoneNumber}:`, err);
-    return null;
-  }
+  return rows?.[0] ?? null;
 }
 
 /**
  * Fetch the first active agent (fallback when no agentId or phone match).
  */
 export async function fetchFirstActiveAgent(): Promise<AgentConfig | null> {
-  if (!config.supabase.isConfigured) return null;
+  const rows = await fetchRows<AgentConfig>("agents", {
+    is_active: "eq.true",
+    select: AGENT_SELECT_FIELDS,
+    order: "created_at.asc",
+    limit: "1",
+  });
 
-  try {
-    const url = `${config.supabase.url}/rest/v1/agents?is_active=eq.true&select=id,name,greeting,system_prompt,analysis_prompt,voice,tools,settings,schedule&order=created_at.asc&limit=1`;
-
-    const res = await fetch(url, {
-      headers: {
-        apikey: config.supabase.serviceRoleKey,
-        Authorization: `Bearer ${config.supabase.serviceRoleKey}`,
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!res.ok) return null;
-    const rows: AgentConfig[] = await res.json();
-    return rows.length > 0 ? rows[0] : null;
-  } catch {
-    return null;
-  }
+  return rows?.[0] ?? null;
 }
