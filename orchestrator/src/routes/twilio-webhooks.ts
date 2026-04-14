@@ -11,8 +11,9 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
   const correlationId = crypto.randomUUID();
   const callId = (req.query.callId as string) || crypto.randomUUID();
   const agentId = (req.query.agentId as string) || "default";
+  const campaignId = (req.query.campaignId as string) || "";
 
-  console.log(`[${correlationId}] POST /twilio/voice callId=${callId} agentId=${agentId}`);
+  console.log(`[${correlationId}] POST /twilio/voice callId=${callId} agentId=${agentId} campaignId=${campaignId}`);
   console.log(`[${correlationId}] CallSid=${req.body?.CallSid} From=${req.body?.From} To=${req.body?.To}`);
 
   if (!config.openai.isConfigured) {
@@ -28,13 +29,14 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
   const wsBase = config.publicWsBaseUrl || config.publicBaseUrl.replace("https://", "wss://");
   const streamUrl = `${wsBase}/twilio/stream`;
 
+  // No <Say> before <Connect> — the AI agent will speak its own greeting
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="alice">Connected. How can I help you today?</Say>
   <Connect>
     <Stream url="${streamUrl}">
       <Parameter name="callId" value="${callId}"/>
       <Parameter name="agentId" value="${agentId}"/>
+      <Parameter name="campaignId" value="${campaignId}"/>
       <Parameter name="callSid" value="${req.body?.CallSid || ""}"/>
     </Stream>
   </Connect>
