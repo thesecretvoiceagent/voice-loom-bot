@@ -32,7 +32,7 @@ async function runPostCallAnalysis(callId: string, transcript: string, analysisP
     if (res.ok) {
       const data = await res.json();
       const summary = data?.choices?.[0]?.message?.content || data?.content || null;
-      if (summary) {
+      if (summary && typeof summary === "string") {
         await updateCall(callId, { summary });
         console.log(`[MediaStream] Post-call analysis saved (callId=${callId})`);
       }
