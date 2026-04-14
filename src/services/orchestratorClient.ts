@@ -13,11 +13,13 @@
 
 let runtimeBaseUrl: string | null = null;
 
+const DEFAULT_ORCHESTRATOR_URL = 'https://voice-loom-bot-production.up.railway.app';
+
 const getApiBaseUrl = (): string => {
   if (runtimeBaseUrl) return runtimeBaseUrl;
   const baseUrl = import.meta.env.VITE_API_BASE_URL;
   if (!baseUrl) {
-    return '';
+    return DEFAULT_ORCHESTRATOR_URL;
   }
   return baseUrl.replace(/\/$/, '');
 };
