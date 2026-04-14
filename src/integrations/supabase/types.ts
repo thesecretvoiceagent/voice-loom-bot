@@ -50,6 +50,101 @@ export type Database = {
         }
         Relationships: []
       }
+      call_events: {
+        Row: {
+          call_id: string
+          created_at: string
+          id: string
+          payload: Json | null
+          type: string
+        }
+        Insert: {
+          call_id: string
+          created_at?: string
+          id?: string
+          payload?: Json | null
+          type: string
+        }
+        Update: {
+          call_id?: string
+          created_at?: string
+          id?: string
+          payload?: Json | null
+          type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "call_events_call_id_fkey"
+            columns: ["call_id"]
+            isOneToOne: false
+            referencedRelation: "calls"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      calls: {
+        Row: {
+          agent_id: string | null
+          answered_at: string | null
+          campaign_id: string | null
+          created_at: string
+          direction: string
+          duration_seconds: number | null
+          ended_at: string | null
+          from_number: string | null
+          id: string
+          metadata: Json | null
+          recording_url: string | null
+          started_at: string | null
+          status: string
+          summary: string | null
+          to_number: string
+          transcript: string | null
+          twilio_call_sid: string | null
+          updated_at: string
+        }
+        Insert: {
+          agent_id?: string | null
+          answered_at?: string | null
+          campaign_id?: string | null
+          created_at?: string
+          direction?: string
+          duration_seconds?: number | null
+          ended_at?: string | null
+          from_number?: string | null
+          id?: string
+          metadata?: Json | null
+          recording_url?: string | null
+          started_at?: string | null
+          status?: string
+          summary?: string | null
+          to_number: string
+          transcript?: string | null
+          twilio_call_sid?: string | null
+          updated_at?: string
+        }
+        Update: {
+          agent_id?: string | null
+          answered_at?: string | null
+          campaign_id?: string | null
+          created_at?: string
+          direction?: string
+          duration_seconds?: number | null
+          ended_at?: string | null
+          from_number?: string | null
+          id?: string
+          metadata?: Json | null
+          recording_url?: string | null
+          started_at?: string | null
+          status?: string
+          summary?: string | null
+          to_number?: string
+          transcript?: string | null
+          twilio_call_sid?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       feature_flags: {
         Row: {
           enabled: boolean
