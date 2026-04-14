@@ -6,7 +6,6 @@ import { Switch } from "@/components/ui/switch";
 import {
   Plus,
   Search,
-  MoreVertical,
   Phone,
   Copy,
   Trash2,
@@ -15,78 +14,22 @@ import {
   FileText,
   PhoneIncoming,
   PhoneOutgoing,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TestCallDialog } from "@/components/agents/TestCallDialog";
 import { BulkUploadDialog } from "@/components/agents/BulkUploadDialog";
 import { toast } from "sonner";
-
-const agents = [
-  {
-    id: "1",
-    name: "Edvini AI",
-    type: "outbound",
-    phoneLabel: "Mobile EST",
-    isActive: true,
-    createdAt: "12/3/2025",
-    campaignId: "5006f92f-611f-45d7-9...",
-  },
-  {
-    id: "2",
-    name: "Carnosport",
-    type: "inbound",
-    phoneLabel: "Mobile EST",
-    isActive: false,
-    createdAt: "11/19/2025",
-    deactivatedAt: "12/4/2025",
-    campaignId: "706ea363-17d5-4c70-8...",
-  },
-  {
-    id: "3",
-    name: "Delfi Outbound",
-    type: "outbound",
-    phoneLabel: "Mobile EST",
-    isActive: true,
-    createdAt: "11/13/2025",
-    campaignId: "9432cfa7-28f5-40d9-a...",
-  },
-  {
-    id: "4",
-    name: "BTA Kindlustus (DEMO)",
-    type: "outbound",
-    phoneLabel: "Mobile EST",
-    isActive: false,
-    createdAt: "10/22/2025",
-    deactivatedAt: "10/27/2025",
-    campaignId: "534fba7c-68c8-4691-8...",
-  },
-  {
-    id: "5",
-    name: "BeyondCode AI Häälerobot",
-    type: "inbound",
-    phoneLabel: "Mobile EST",
-    isActive: false,
-    createdAt: "10/21/2025",
-    deactivatedAt: "11/11/2025",
-    campaignId: "87ee2a50-0d7c-4ae9-8...",
-  },
-  {
-    id: "6",
-    name: "IIZI Kindlustu kahjujuhtum",
-    type: "inbound",
-    phoneLabel: "Mobile EST",
-    isActive: false,
-    createdAt: "10/16/2025",
-    deactivatedAt: "10/27/2025",
-    campaignId: "0d2ca9ca-1d34-4295-9...",
-  },
-];
+import { useAgents, type AgentRow } from "@/hooks/useAgents";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export default function Agents() {
+  const { agents, loading, toggleAgent, deleteAgent } = useAgents();
   const [searchQuery, setSearchQuery] = useState("");
   const [testCallDialogOpen, setTestCallDialogOpen] = useState(false);
   const [bulkUploadDialogOpen, setBulkUploadDialogOpen] = useState(false);
-  const [selectedAgent, setSelectedAgent] = useState<typeof agents[0] | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<AgentRow | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const filteredAgents = agents.filter((agent) =>
     agent.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -97,14 +40,36 @@ export default function Agents() {
     toast.success("Copied to clipboard");
   };
 
-  const handleTestCall = (agent: typeof agents[0]) => {
+  const handleTestCall = (agent: AgentRow) => {
     setSelectedAgent(agent);
     setTestCallDialogOpen(true);
   };
 
-  const handleBulkUpload = (agent: typeof agents[0]) => {
+  const handleBulkUpload = (agent: AgentRow) => {
     setSelectedAgent(agent);
     setBulkUploadDialogOpen(true);
+  };
+
+  const handleDelete = async (agent: AgentRow) => {
+    if (!confirm(`Delete "${agent.name}"? This cannot be undone.`)) return;
+    setDeletingId(agent.id);
+    try {
+      await deleteAgent(agent.id);
+      toast.success(`"${agent.name}" deleted`);
+    } catch (err) {
+      toast.error("Failed to delete agent");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleToggle = async (agent: AgentRow) => {
+    try {
+      await toggleAgent(agent.id, !agent.is_active);
+      toast.success(`${agent.name} ${agent.is_active ? "deactivated" : "activated"}`);
+    } catch {
+      toast.error("Failed to update agent");
+    }
   };
 
   return (
@@ -147,133 +112,159 @@ export default function Agents() {
       </div>
 
       {/* Agents Grid */}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {filteredAgents.map((agent) => (
-          <div
-            key={agent.id}
-            className="glass-card rounded-xl p-5 transition-all duration-300 hover:shadow-elevated"
-          >
-            {/* Header */}
-            <div className="flex items-start justify-between mb-4">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-3">
-                  <h3 className="font-semibold text-foreground truncate">
-                    {agent.name}
-                  </h3>
-                  <div className="flex items-center gap-2">
+      {loading ? (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="glass-card rounded-xl p-5 space-y-4">
+              <Skeleton className="h-6 w-48" />
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ))}
+        </div>
+      ) : filteredAgents.length === 0 ? (
+        <div className="glass-card rounded-xl p-12 text-center">
+          <p className="text-muted-foreground">
+            {agents.length === 0
+              ? "No agents yet. Create your first voice agent to get started."
+              : "No agents match your search."}
+          </p>
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {filteredAgents.map((agent) => (
+            <div
+              key={agent.id}
+              className="glass-card rounded-xl p-5 transition-all duration-300 hover:shadow-elevated"
+            >
+              {/* Header */}
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-3">
+                    <h3 className="font-semibold text-foreground truncate">
+                      {agent.name}
+                    </h3>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={cn(
+                          "text-xs font-medium px-2 py-0.5 rounded-full",
+                          agent.is_active
+                            ? "bg-success/10 text-success"
+                            : "bg-muted text-muted-foreground"
+                        )}
+                      >
+                        {agent.is_active ? "ACTIVE" : "OFF"}
+                      </span>
+                      <Switch
+                        checked={agent.is_active}
+                        onCheckedChange={() => handleToggle(agent)}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-sm text-muted-foreground">
+                      {agent.phone_number || "No phone"}
+                    </span>
                     <span
                       className={cn(
-                        "text-xs font-medium px-2 py-0.5 rounded-full",
-                        agent.isActive
-                          ? "bg-success/10 text-success"
-                          : "bg-muted text-muted-foreground"
+                        "inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full",
+                        agent.type === "outbound"
+                          ? "bg-primary/10 text-primary"
+                          : "bg-success/10 text-success"
                       )}
                     >
-                      {agent.isActive ? "ACTIVE" : "OFF"}
+                      {agent.type === "outbound" ? (
+                        <>
+                          <PhoneOutgoing className="h-3 w-3" />
+                          Outbound
+                        </>
+                      ) : (
+                        <>
+                          <PhoneIncoming className="h-3 w-3" />
+                          Inbound
+                        </>
+                      )}
                     </span>
-                    <Switch checked={agent.isActive} />
                   </div>
                 </div>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-sm text-muted-foreground">
-                    {agent.phoneLabel}
-                  </span>
-                  <span
-                    className={cn(
-                      "inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full",
-                      agent.type === "outbound"
-                        ? "bg-primary/10 text-primary"
-                        : "bg-success/10 text-success"
-                    )}
-                  >
-                    {agent.type === "outbound" ? (
-                      <>
-                        <PhoneOutgoing className="h-3 w-3" />
-                        Outbound
-                      </>
-                    ) : (
-                      <>
-                        <PhoneIncoming className="h-3 w-3" />
-                        Inbound
-                      </>
-                    )}
-                  </span>
-                </div>
+                <Link to={`/agents/create/${agent.type}?edit=${agent.id}`}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                </Link>
               </div>
-              <Link to={`/agents/create/${agent.type}?edit=${agent.id}`}>
-                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                  <Pencil className="h-4 w-4" />
-                </Button>
-              </Link>
-            </div>
 
-            {/* Dates */}
-            <div className="space-y-1 text-sm mb-4">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Created:</span>
-                <span className="text-foreground">{agent.createdAt}</span>
-              </div>
-              {agent.deactivatedAt && (
+              {/* Dates */}
+              <div className="space-y-1 text-sm mb-4">
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Deactivated:</span>
-                  <span className="text-foreground">{agent.deactivatedAt}</span>
+                  <span className="text-muted-foreground">Created:</span>
+                  <span className="text-foreground">
+                    {new Date(agent.created_at).toLocaleDateString()}
+                  </span>
                 </div>
-              )}
-            </div>
+              </div>
 
-            {/* Campaign ID */}
-            <div className="flex items-center gap-2 mb-4">
-              <span className="text-sm text-muted-foreground">Campaign ID:</span>
-              <div className="flex items-center gap-1 flex-1 min-w-0">
-                <code className="text-xs bg-secondary px-2 py-1 rounded font-mono truncate">
-                  {agent.campaignId}
-                </code>
+              {/* Agent ID */}
+              <div className="flex items-center gap-2 mb-4">
+                <span className="text-sm text-muted-foreground">Agent ID:</span>
+                <div className="flex items-center gap-1 flex-1 min-w-0">
+                  <code className="text-xs bg-secondary px-2 py-1 rounded font-mono truncate">
+                    {agent.id.substring(0, 24)}...
+                  </code>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 shrink-0"
+                    onClick={() => copyToClipboard(agent.id)}
+                  >
+                    <Copy className="h-3 w-3" />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center gap-2 pt-3 border-t border-border">
+                <Link to={`/agents/${agent.id}/calls`} className="flex-1">
+                  <Button variant="outline" className="w-full gap-2">
+                    <FileText className="h-4 w-4" />
+                    Call Logs
+                  </Button>
+                </Link>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-6 w-6 shrink-0"
-                  onClick={() => copyToClipboard(agent.campaignId)}
+                  className="h-9 w-9"
+                  onClick={() => handleTestCall(agent)}
                 >
-                  <Copy className="h-3 w-3" />
+                  <Phone className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9"
+                  onClick={() => handleBulkUpload(agent)}
+                >
+                  <Upload className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9 text-destructive hover:text-destructive"
+                  onClick={() => handleDelete(agent)}
+                  disabled={deletingId === agent.id}
+                >
+                  {deletingId === agent.id ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" />
+                  )}
                 </Button>
               </div>
             </div>
-
-            {/* Actions */}
-            <div className="flex items-center gap-2 pt-3 border-t border-border">
-              <Link to={`/agents/${agent.id}/calls`} className="flex-1">
-                <Button variant="outline" className="w-full gap-2">
-                  <FileText className="h-4 w-4" />
-                  Call Logs
-                </Button>
-              </Link>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="h-9 w-9"
-                onClick={() => handleTestCall(agent)}
-              >
-                <Phone className="h-4 w-4" />
-              </Button>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="h-9 w-9"
-                onClick={() => handleBulkUpload(agent)}
-              >
-                <Upload className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-9 w-9 text-destructive hover:text-destructive"
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       {/* Dialogs */}
       {selectedAgent && (
@@ -282,6 +273,7 @@ export default function Agents() {
             open={testCallDialogOpen}
             onOpenChange={setTestCallDialogOpen}
             agentName={selectedAgent.name}
+            agentId={selectedAgent.id}
             agentType={selectedAgent.type}
           />
           <BulkUploadDialog

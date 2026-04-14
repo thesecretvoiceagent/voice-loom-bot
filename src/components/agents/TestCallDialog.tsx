@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
@@ -10,13 +9,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Phone, Loader2, User, Building, FileText, Plus, X } from "lucide-react";
+import { Phone, Loader2, User, Building, Plus, X } from "lucide-react";
+import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 
 interface TestCallDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   agentName: string;
+  agentId: string;
   agentType: string;
 }
 
@@ -25,7 +27,7 @@ interface Variable {
   value: string;
 }
 
-export function TestCallDialog({ open, onOpenChange, agentName, agentType }: TestCallDialogProps) {
+export function TestCallDialog({ open, onOpenChange, agentName, agentId, agentType }: TestCallDialogProps) {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -54,13 +56,37 @@ export function TestCallDialog({ open, onOpenChange, agentName, agentType }: Tes
     }
 
     setIsLoading(true);
-    
-    // Simulate API call - in production this would call Twilio + OpenAI
-    setTimeout(() => {
+
+    try {
+      const variables: Record<string, string> = {};
+      if (firstName) variables.first_name = firstName;
+      if (lastName) variables.last_name = lastName;
+      if (company) variables.company = company;
+      customVariables.forEach((v) => {
+        if (v.key && v.value) variables[v.key] = v.value;
+      });
+
+      const { data, error } = await supabase.functions.invoke("calls-start", {
+        body: {
+          to_number: phoneNumber,
+          agent_id: agentId,
+          variables,
+        },
+      });
+
+      if (error) throw error;
+
+      if (data?.success) {
+        toast.success(`Call initiated to ${phoneNumber}`);
+        onOpenChange(false);
+      } else {
+        toast.error(data?.error || "Failed to start call");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to start call");
+    } finally {
       setIsLoading(false);
-      toast.success(`Test call initiated to ${phoneNumber}`);
-      onOpenChange(false);
-    }, 2000);
+    }
   };
 
   return (
@@ -72,12 +98,11 @@ export function TestCallDialog({ open, onOpenChange, agentName, agentType }: Tes
             Test Call - {agentName}
           </DialogTitle>
           <DialogDescription>
-            Make a test call using this {agentType} agent. Enter the recipient's phone number and any variables needed.
+            Make a real test call using this {agentType} agent. The call will go through Twilio.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
-          {/* Phone Number */}
           <div className="space-y-2">
             <Label htmlFor="phone">Phone Number *</Label>
             <div className="relative">
@@ -94,48 +119,28 @@ export function TestCallDialog({ open, onOpenChange, agentName, agentType }: Tes
 
           <div className="border-t border-border pt-4">
             <h4 className="text-sm font-medium text-foreground mb-3">Call Variables</h4>
-            
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="firstName">First Name</Label>
                 <div className="relative">
                   <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    id="firstName"
-                    placeholder="John"
-                    value={firstName}
-                    onChange={(e) => setFirstName(e.target.value)}
-                    className="pl-10"
-                  />
+                  <Input id="firstName" placeholder="John" value={firstName} onChange={(e) => setFirstName(e.target.value)} className="pl-10" />
                 </div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="lastName">Last Name</Label>
-                <Input
-                  id="lastName"
-                  placeholder="Doe"
-                  value={lastName}
-                  onChange={(e) => setLastName(e.target.value)}
-                />
+                <Input id="lastName" placeholder="Doe" value={lastName} onChange={(e) => setLastName(e.target.value)} />
               </div>
             </div>
-
             <div className="mt-4 space-y-2">
               <Label htmlFor="company">Company</Label>
               <div className="relative">
                 <Building className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  id="company"
-                  placeholder="Acme Corp"
-                  value={company}
-                  onChange={(e) => setCompany(e.target.value)}
-                  className="pl-10"
-                />
+                <Input id="company" placeholder="Acme Corp" value={company} onChange={(e) => setCompany(e.target.value)} className="pl-10" />
               </div>
             </div>
           </div>
 
-          {/* Custom Variables */}
           <div className="border-t border-border pt-4">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-sm font-medium text-foreground">Custom Variables</h4>
@@ -144,31 +149,15 @@ export function TestCallDialog({ open, onOpenChange, agentName, agentType }: Tes
                 Add
               </Button>
             </div>
-
             {customVariables.length === 0 ? (
               <p className="text-sm text-muted-foreground">No custom variables added</p>
             ) : (
               <div className="space-y-2">
                 {customVariables.map((variable, index) => (
                   <div key={index} className="flex items-center gap-2">
-                    <Input
-                      placeholder="Variable name"
-                      value={variable.key}
-                      onChange={(e) => updateCustomVariable(index, "key", e.target.value)}
-                      className="flex-1"
-                    />
-                    <Input
-                      placeholder="Value"
-                      value={variable.value}
-                      onChange={(e) => updateCustomVariable(index, "value", e.target.value)}
-                      className="flex-1"
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => removeCustomVariable(index)}
-                      className="shrink-0 text-destructive hover:text-destructive"
-                    >
+                    <Input placeholder="Variable name" value={variable.key} onChange={(e) => updateCustomVariable(index, "key", e.target.value)} className="flex-1" />
+                    <Input placeholder="Value" value={variable.value} onChange={(e) => updateCustomVariable(index, "value", e.target.value)} className="flex-1" />
+                    <Button variant="ghost" size="icon" onClick={() => removeCustomVariable(index)} className="shrink-0 text-destructive hover:text-destructive">
                       <X className="h-4 w-4" />
                     </Button>
                   </div>
@@ -179,14 +168,12 @@ export function TestCallDialog({ open, onOpenChange, agentName, agentType }: Tes
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button onClick={handleMakeCall} disabled={isLoading} className="gap-2">
             {isLoading ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Initiating...
+                Calling...
               </>
             ) : (
               <>

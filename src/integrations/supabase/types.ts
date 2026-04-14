@@ -14,6 +14,63 @@ export type Database = {
   }
   public: {
     Tables: {
+      agents: {
+        Row: {
+          analysis_prompt: string | null
+          created_at: string
+          greeting: string | null
+          id: string
+          is_active: boolean
+          knowledge_base: Json | null
+          name: string
+          phone_number: string | null
+          schedule: Json | null
+          settings: Json | null
+          system_prompt: string | null
+          tools: string[] | null
+          type: string
+          updated_at: string
+          user_id: string
+          voice: string | null
+        }
+        Insert: {
+          analysis_prompt?: string | null
+          created_at?: string
+          greeting?: string | null
+          id?: string
+          is_active?: boolean
+          knowledge_base?: Json | null
+          name: string
+          phone_number?: string | null
+          schedule?: Json | null
+          settings?: Json | null
+          system_prompt?: string | null
+          tools?: string[] | null
+          type?: string
+          updated_at?: string
+          user_id: string
+          voice?: string | null
+        }
+        Update: {
+          analysis_prompt?: string | null
+          created_at?: string
+          greeting?: string | null
+          id?: string
+          is_active?: boolean
+          knowledge_base?: Json | null
+          name?: string
+          phone_number?: string | null
+          schedule?: Json | null
+          settings?: Json | null
+          system_prompt?: string | null
+          tools?: string[] | null
+          type?: string
+          updated_at?: string
+          user_id?: string
+          voice?: string | null
+        }
+        Relationships: []
+      }
       audit_logs: {
         Row: {
           action: string
