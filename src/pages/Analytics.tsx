@@ -2,49 +2,62 @@ import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line,
+  ResponsiveContainer, PieChart, Pie, Cell,
 } from "recharts";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { Phone, TrendingUp, Clock, CheckCircle2, DollarSign, Users, Megaphone, BarChart3, Loader2 } from "lucide-react";
+import { Phone, TrendingUp, Clock, CheckCircle2, DollarSign, Users, Megaphone, BarChart3, Loader2, Calendar as CalendarIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCalls } from "@/hooks/useCalls";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { useAgents } from "@/hooks/useAgents";
-import { format, subDays, eachDayOfInterval, startOfWeek, endOfWeek } from "date-fns";
+import { format, subDays, eachDayOfInterval } from "date-fns";
 
 const HOURLY_RATE = 12;
 
 export default function Analytics() {
   const [activeTab, setActiveTab] = useState("overview");
+  const [dateRange, setDateRange] = useState("30d");
   const navigate = useNavigate();
-  const { calls, loading } = useCalls({ limit: 1000 });
+  const { calls: allCalls, loading } = useCalls({ limit: 1000 });
   const { campaigns } = useCampaigns();
   const { agents } = useAgents();
 
-  // Weekly data (last 7 days)
-  const weeklyData = useMemo(() => {
-    const days = eachDayOfInterval({ start: subDays(new Date(), 6), end: new Date() });
+  // Filter calls by date range
+  const calls = useMemo(() => {
+    if (dateRange === "all") return allCalls;
+    const daysBack = dateRange === "7d" ? 7 : dateRange === "14d" ? 14 : dateRange === "30d" ? 30 : 90;
+    const cutoff = subDays(new Date(), daysBack);
+    return allCalls.filter((c) => new Date(c.created_at) >= cutoff);
+  }, [allCalls, dateRange]);
+
+  // Daily data for selected range
+  const dailyData = useMemo(() => {
+    const daysBack = dateRange === "7d" ? 7 : dateRange === "14d" ? 14 : dateRange === "30d" ? 30 : dateRange === "90d" ? 90 : 30;
+    const days = eachDayOfInterval({ start: subDays(new Date(), daysBack - 1), end: new Date() });
     return days.map((day) => {
       const dayStr = format(day, "yyyy-MM-dd");
       const dayCalls = calls.filter((c) => c.created_at.startsWith(dayStr));
       const success = dayCalls.filter((c) => c.status === "completed").length;
-      return { day: format(day, "EEE"), calls: dayCalls.length, success };
+      return { day: format(day, dateRange === "7d" ? "EEE" : "MMM dd"), calls: dayCalls.length, success };
     });
-  }, [calls]);
+  }, [calls, dateRange]);
 
   const outcomeData = useMemo(() => {
     const total = calls.length || 1;
     const completed = calls.filter((c) => c.status === "completed").length;
     const noAnswer = calls.filter((c) => ["no-answer", "busy"].includes(c.status)).length;
     const failed = calls.filter((c) => c.status === "failed").length;
-    const other = calls.length - completed - noAnswer - failed;
+    const inProgress = calls.filter((c) => ["in-progress", "ringing", "queued", "pending"].includes(c.status)).length;
+    const other = calls.length - completed - noAnswer - failed - inProgress;
     return [
-      { name: "Completed", value: Math.round((completed / total) * 100), color: "hsl(142 76% 45%)" },
-      { name: "No Answer", value: Math.round((noAnswer / total) * 100), color: "hsl(38 92% 50%)" },
-      { name: "Failed", value: Math.round((failed / total) * 100), color: "hsl(0 72% 51%)" },
-      { name: "Other", value: Math.round((other / total) * 100), color: "hsl(215 20% 55%)" },
+      { name: "Completed", value: Math.round((completed / total) * 100), count: completed, color: "hsl(142 76% 45%)" },
+      { name: "No Answer", value: Math.round((noAnswer / total) * 100), count: noAnswer, color: "hsl(38 92% 50%)" },
+      { name: "Failed", value: Math.round((failed / total) * 100), count: failed, color: "hsl(0 72% 51%)" },
+      { name: "In Progress", value: Math.round((inProgress / total) * 100), count: inProgress, color: "hsl(215 80% 55%)" },
+      { name: "Other", value: Math.round((other / total) * 100), count: other, color: "hsl(215 20% 55%)" },
     ].filter((o) => o.value > 0);
   }, [calls]);
 
@@ -53,8 +66,9 @@ export default function Analytics() {
     return agents.map((agent) => {
       const agentCalls = calls.filter((c) => c.agent_id === agent.id);
       const completed = agentCalls.filter((c) => c.status === "completed").length;
+      const totalDur = agentCalls.reduce((s, c) => s + (c.duration_seconds || 0), 0);
       const rate = agentCalls.length > 0 ? Math.round((completed / agentCalls.length) * 100) : 0;
-      return { agent: agent.name, calls: agentCalls.length, rate };
+      return { agent: agent.name, calls: agentCalls.length, rate, minutes: Math.round(totalDur / 60) };
     }).filter((a) => a.calls > 0).sort((a, b) => b.calls - a.calls);
   }, [calls, agents]);
 
@@ -85,9 +99,23 @@ export default function Analytics() {
 
   return (
     <div className="space-y-8 animate-fade-in">
-      <div>
-        <h1 className="text-3xl font-bold gradient-text">Analytics</h1>
-        <p className="mt-1 text-muted-foreground">Performance insights and call metrics</p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-3xl font-bold gradient-text">Analytics</h1>
+          <p className="mt-1 text-muted-foreground">Global performance insights — all data from live calls</p>
+        </div>
+        <Select value={dateRange} onValueChange={setDateRange}>
+          <SelectTrigger className="w-[150px]">
+            <CalendarIcon className="h-4 w-4 mr-2" /><SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="7d">Last 7 days</SelectItem>
+            <SelectItem value="14d">Last 14 days</SelectItem>
+            <SelectItem value="30d">Last 30 days</SelectItem>
+            <SelectItem value="90d">Last 90 days</SelectItem>
+            <SelectItem value="all">All time</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       {/* Campaign Quick Access */}
@@ -128,21 +156,21 @@ export default function Analytics() {
 
         <TabsContent value="overview" className="mt-6 space-y-6">
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard title="Total Calls" value={totalCalls.toLocaleString()} change="All time" changeType="neutral" icon={Phone} />
-            <StatCard title="Success Rate" value={`${successRate}%`} change={successRate > 70 ? "Above target" : "Below target"} changeType={successRate > 70 ? "positive" : "negative"} icon={CheckCircle2} iconColor="text-success" />
+            <StatCard title="Total Calls" value={totalCalls.toLocaleString()} change={dateRange === "all" ? "All time" : `Last ${dateRange}`} changeType="neutral" icon={Phone} />
+            <StatCard title="Success Rate" value={`${successRate}%`} change={`${completedCalls.length} completed`} changeType={successRate > 70 ? "positive" : successRate > 0 ? "negative" : "neutral"} icon={CheckCircle2} iconColor="text-success" />
             <StatCard title="Avg. Duration" value={`${avgMin}:${avgSec.toString().padStart(2, "0")}`} change="Per completed call" changeType="neutral" icon={Clock} iconColor="text-warning" />
             <StatCard title="Total Minutes" value={totalMinutes.toLocaleString()} change="Talk time" changeType="neutral" icon={TrendingUp} />
           </div>
 
           <div className="grid gap-6 lg:grid-cols-2">
             <div className="glass-card rounded-xl p-6">
-              <h3 className="mb-6 font-semibold text-foreground">Weekly Call Volume</h3>
+              <h3 className="mb-6 font-semibold text-foreground">Call Volume</h3>
               <div className="h-[280px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={weeklyData}>
+                  <BarChart data={dailyData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                     <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
-                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
                     <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px", fontSize: "12px" }} />
                     <Bar dataKey="calls" fill="hsl(173 80% 50%)" radius={[4, 4, 0, 0]} name="Total" />
                     <Bar dataKey="success" fill="hsl(142 76% 45%)" radius={[4, 4, 0, 0]} name="Successful" />
@@ -171,7 +199,7 @@ export default function Analytics() {
                           <div className="h-3 w-3 rounded-full" style={{ backgroundColor: item.color }} />
                           <span className="text-sm text-muted-foreground">{item.name}</span>
                         </div>
-                        <span className="text-sm font-medium text-foreground">{item.value}%</span>
+                        <span className="text-sm font-medium text-foreground">{item.value}% ({item.count})</span>
                       </div>
                     ))}
                   </div>
@@ -189,8 +217,8 @@ export default function Analytics() {
                   {agentPerformance.map((agent) => (
                     <div key={agent.agent} className="space-y-2">
                       <div className="flex items-center justify-between text-sm">
-                        <span className="text-foreground">{agent.agent}</span>
-                        <span className="text-muted-foreground">{agent.calls} calls • {agent.rate}% success</span>
+                        <span className="text-foreground font-medium">{agent.agent}</span>
+                        <span className="text-muted-foreground">{agent.calls} calls • {agent.rate}% success • {agent.minutes} min</span>
                       </div>
                       <div className="h-2 rounded-full bg-secondary overflow-hidden">
                         <div className="h-full rounded-full bg-gradient-primary transition-all duration-500" style={{ width: `${agent.rate}%` }} />
@@ -208,12 +236,12 @@ export default function Analytics() {
         <TabsContent value="roi" className="mt-6 space-y-6">
           {totalCalls === 0 ? (
             <div className="glass-card rounded-xl p-12 text-center">
-              <p className="text-muted-foreground">No ROI data available yet - make some calls first</p>
+              <p className="text-muted-foreground">No ROI data available yet — make some calls first</p>
             </div>
           ) : (
             <>
               <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-                <StatCard title="Hours Saved" value={`${humanHours.toFixed(1)}h`} change="All time" changeType="positive" icon={Clock} iconColor="text-success" />
+                <StatCard title="Hours Saved" value={`${humanHours.toFixed(1)}h`} change={dateRange === "all" ? "All time" : `Last ${dateRange}`} changeType="positive" icon={Clock} iconColor="text-success" />
                 <StatCard title="Human Cost (€12/hr)" value={`€${humanCost.toFixed(2)}`} change="If handled manually" changeType="neutral" icon={Users} />
                 <StatCard title="AI Cost" value={`€${aiCost.toFixed(2)}`} change="€0.20/min" changeType="positive" icon={DollarSign} iconColor="text-primary" />
                 <StatCard title="Total Savings" value={`€${savings.toFixed(2)}`} change={`${savingsPercentage}% less`} changeType="positive" icon={TrendingUp} iconColor="text-success" />
