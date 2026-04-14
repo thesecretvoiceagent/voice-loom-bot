@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,6 +44,7 @@ import { useAgents } from "@/hooks/useAgents";
 import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { getProxiedRecordingUrl } from "@/lib/recording";
 
 function formatDuration(seconds: number | null): string {
   if (!seconds) return "0:00";
@@ -318,7 +319,7 @@ export default function AgentCalls() {
                 Recording — {call.to_number}
               </p>
               <audio
-                src={call.recording_url}
+                src={getProxiedRecordingUrl(call.recording_url)}
                 controls
                 autoPlay
                 className="w-full h-8"
