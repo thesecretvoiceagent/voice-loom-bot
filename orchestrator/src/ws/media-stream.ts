@@ -70,7 +70,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     openaiWs.on("open", () => {
       console.log(`[MediaStream] Connected to OpenAI Realtime (callId=${callId}, voice=${voice})`);
 
-      // Configure the session with agent-specific settings
+      // Step 1: Configure session WITHOUT turn detection to prevent auto-responses
       const sessionUpdate = {
         type: "session.update",
         session: {
@@ -82,39 +82,67 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           input_audio_transcription: {
             model: "whisper-1",
           },
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500,
-          },
+          turn_detection: null, // Disable initially — we control when AI speaks first
         },
       };
 
       openaiWs!.send(JSON.stringify(sessionUpdate));
 
-      // If agent has a greeting, make OpenAI speak it immediately
+      // Step 2: Send the greeting and then enable VAD
       if (greeting) {
         console.log(`[MediaStream] Sending greeting (callId=${callId}): "${greeting.substring(0, 60)}..."`);
-        // Add a conversation item with the greeting text, then trigger a response
-        const greetingEvent = {
-          type: "conversation.item.create",
-          item: {
-            type: "message",
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `[SYSTEM: The call has just connected. Say your greeting to the caller. Your greeting is: "${greeting}". Say it naturally, do not add anything extra.]`,
-              },
-            ],
-          },
-        };
-        // Small delay to let session config apply
+
         setTimeout(() => {
+          // Create a greeting message and trigger response
+          const greetingEvent = {
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: `[SYSTEM: The call has just connected. Say your greeting to the caller. Your greeting is: "${greeting}". Say it naturally, exactly as written, do not add anything extra.]`,
+                },
+              ],
+            },
+          };
           openaiWs!.send(JSON.stringify(greetingEvent));
           openaiWs!.send(JSON.stringify({ type: "response.create" }));
-        }, 200);
+
+          // Step 3: After a short delay, enable VAD for normal conversation
+          setTimeout(() => {
+            const enableVAD = {
+              type: "session.update",
+              session: {
+                turn_detection: {
+                  type: "server_vad",
+                  threshold: 0.5,
+                  prefix_padding_ms: 300,
+                  silence_duration_ms: 500,
+                },
+              },
+            };
+            openaiWs!.send(JSON.stringify(enableVAD));
+            console.log(`[MediaStream] VAD enabled after greeting (callId=${callId})`);
+          }, 500);
+        }, 300);
+      } else {
+        // No greeting — enable VAD immediately so user can speak first
+        setTimeout(() => {
+          const enableVAD = {
+            type: "session.update",
+            session: {
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.5,
+                prefix_padding_ms: 300,
+                silence_duration_ms: 500,
+              },
+            },
+          };
+          openaiWs!.send(JSON.stringify(enableVAD));
+        }, 300);
       }
     });
 
