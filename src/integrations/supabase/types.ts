@@ -422,6 +422,7 @@ export type Database = {
           api_key_created_at: string | null
           created_at: string
           id: string
+          orchestrator_url: string | null
           updated_at: string
           user_id: string
           webhook_secret: string | null
@@ -433,6 +434,7 @@ export type Database = {
           api_key_created_at?: string | null
           created_at?: string
           id?: string
+          orchestrator_url?: string | null
           updated_at?: string
           user_id: string
           webhook_secret?: string | null
@@ -444,6 +446,7 @@ export type Database = {
           api_key_created_at?: string | null
           created_at?: string
           id?: string
+          orchestrator_url?: string | null
           updated_at?: string
           user_id?: string
           webhook_secret?: string | null
