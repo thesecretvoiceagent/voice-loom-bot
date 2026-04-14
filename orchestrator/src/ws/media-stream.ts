@@ -27,26 +27,35 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
 
     // Fetch agent configuration from database
+    // Priority: agentId param → phone number lookup → first active agent
     let instructions = DEFAULT_INSTRUCTIONS;
     let greeting = "";
     let voice = "alloy";
+    let agentConfig = null;
 
     if (agentId && agentId !== "default") {
-      const agentConfig = await fetchAgentConfig(agentId);
-      if (agentConfig) {
-        console.log(`[MediaStream] Loaded agent config: "${agentConfig.name}" (callId=${callId})`);
-        if (agentConfig.system_prompt) {
-          instructions = agentConfig.system_prompt;
-        }
-        if (agentConfig.greeting) {
-          greeting = agentConfig.greeting;
-        }
-        if (agentConfig.voice) {
-          voice = agentConfig.voice;
-        }
-      } else {
-        console.warn(`[MediaStream] Agent ${agentId} not found, using defaults (callId=${callId})`);
-      }
+      agentConfig = await fetchAgentConfig(agentId);
+    }
+
+    // If no agent found by ID, try by phone number (inbound calls)
+    if (!agentConfig && calledNumber) {
+      console.log(`[MediaStream] No agent by ID, trying phone lookup: ${calledNumber} (callId=${callId})`);
+      agentConfig = await fetchAgentByPhoneNumber(calledNumber);
+    }
+
+    // Last resort: use first active agent
+    if (!agentConfig) {
+      console.log(`[MediaStream] No agent found, falling back to first active agent (callId=${callId})`);
+      agentConfig = await fetchFirstActiveAgent();
+    }
+
+    if (agentConfig) {
+      console.log(`[MediaStream] Loaded agent config: "${agentConfig.name}" (callId=${callId})`);
+      if (agentConfig.system_prompt) instructions = agentConfig.system_prompt;
+      if (agentConfig.greeting) greeting = agentConfig.greeting;
+      if (agentConfig.voice) voice = agentConfig.voice;
+    } else {
+      console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
 
     const url = `${OPENAI_REALTIME_URL}?model=${config.openai.realtimeModel}`;
