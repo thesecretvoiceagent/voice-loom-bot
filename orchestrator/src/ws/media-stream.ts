@@ -1,6 +1,12 @@
 import WebSocket from "ws";
 import { config } from "../config.js";
-import { fetchAgentConfig, fetchAgentByPhoneNumber, fetchFirstActiveAgent } from "../supabase.js";
+import {
+  fetchAgentConfig,
+  fetchAgentByPhoneNumber,
+  fetchFirstActiveAgent,
+  upsertCall,
+  updateCall,
+} from "../supabase.js";
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
@@ -17,6 +23,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callId: string = "";
   let agentId: string = "";
   let calledNumber: string = "";
+  let callSid: string = "";
+  let campaignId: string = "";
+
+  // Collect transcript turns
+  const transcriptLines: string[] = [];
+  let callStartTime: Date | null = null;
 
   // Connect to OpenAI Realtime API with agent-specific config
   const connectToOpenAI = async () => {
@@ -26,24 +38,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       return;
     }
 
-    // Fetch agent configuration from database
-    // Priority: agentId param → phone number lookup → first active agent
+    // Fetch agent configuration
     let instructions = DEFAULT_INSTRUCTIONS;
     let greeting = "";
     let voice = "alloy";
     let agentConfig = null;
+    let agentTools: string[] = [];
 
     if (agentId && agentId !== "default") {
       agentConfig = await fetchAgentConfig(agentId);
     }
-
-    // If no agent found by ID, try by phone number (inbound calls)
     if (!agentConfig && calledNumber) {
       console.log(`[MediaStream] No agent by ID, trying phone lookup: ${calledNumber} (callId=${callId})`);
       agentConfig = await fetchAgentByPhoneNumber(calledNumber);
     }
-
-    // Last resort: use first active agent
     if (!agentConfig) {
       console.log(`[MediaStream] No agent found, falling back to first active agent (callId=${callId})`);
       agentConfig = await fetchFirstActiveAgent();
@@ -54,9 +62,23 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (agentConfig.system_prompt) instructions = agentConfig.system_prompt;
       if (agentConfig.greeting) greeting = agentConfig.greeting;
       if (agentConfig.voice) voice = agentConfig.voice;
+      if (agentConfig.tools) agentTools = agentConfig.tools;
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
+
+    // Write initial call record to DB
+    callStartTime = new Date();
+    upsertCall(callId, {
+      twilio_call_sid: callSid || null,
+      agent_id: agentId !== "default" ? agentId : null,
+      campaign_id: campaignId || null,
+      to_number: calledNumber || "unknown",
+      from_number: config.twilio.fromNumber || null,
+      status: "in-progress",
+      direction: "outbound",
+      started_at: callStartTime.toISOString(),
+    });
 
     const url = `${OPENAI_REALTIME_URL}?model=${config.openai.realtimeModel}`;
 
@@ -70,13 +92,34 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     openaiWs.on("open", () => {
       console.log(`[MediaStream] Connected to OpenAI Realtime (callId=${callId}, voice=${voice})`);
 
-      // Bake the greeting into the instructions so the AI knows what to say first
+      // Bake greeting into instructions
       const fullInstructions = greeting
         ? `${instructions}\n\nIMPORTANT: You are starting a phone call RIGHT NOW. Your FIRST message must be your greeting. Say exactly: "${greeting}" — in the same language, naturally. Do NOT say anything in English unless the greeting is in English. Do NOT wait for the caller to speak first. Speak immediately.`
         : instructions;
 
-      // Configure session WITHOUT turn detection — we trigger the first response manually
-      const sessionUpdate = {
+      // Build tools array based on agent config
+      const tools: any[] = [];
+
+      if (agentTools.includes("end_call")) {
+        tools.push({
+          type: "function",
+          name: "end_call",
+          description: "End the current phone call. Use when the conversation is naturally finished, the user says goodbye, or the user asks to hang up.",
+          parameters: {
+            type: "object",
+            properties: {
+              reason: {
+                type: "string",
+                description: "Brief reason for ending the call",
+              },
+            },
+            required: ["reason"],
+          },
+        });
+      }
+
+      // Configure session
+      const sessionUpdate: any = {
         type: "session.update",
         session: {
           modalities: ["text", "audio"],
@@ -91,27 +134,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         },
       };
 
+      if (tools.length > 0) {
+        sessionUpdate.session.tools = tools;
+      }
+
       openaiWs!.send(JSON.stringify(sessionUpdate));
 
-      // Force the AI to speak first by triggering a response immediately
+      // Trigger greeting
       setTimeout(() => {
         console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || '(none)'}"`);
 
-        // Use response.create with explicit instructions to force immediate speech
         const responseCreate: any = { type: "response.create" };
-
         if (greeting) {
-          // Override instructions for this specific response to guarantee the greeting
           responseCreate.response = {
             instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`,
           };
         }
-
         openaiWs!.send(JSON.stringify(responseCreate));
 
-        // Enable VAD after a delay so the AI can finish its greeting
+        // Enable VAD after greeting
         setTimeout(() => {
-          const enableVAD = {
+          openaiWs!.send(JSON.stringify({
             type: "session.update",
             session: {
               turn_detection: {
@@ -121,8 +164,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 silence_duration_ms: 500,
               },
             },
-          };
-          openaiWs!.send(JSON.stringify(enableVAD));
+          }));
           console.log(`[MediaStream] VAD enabled after greeting (callId=${callId})`);
         }, 1000);
       }, 400);
@@ -142,35 +184,65 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "response.audio.delta":
-            // Forward audio from OpenAI → Twilio
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-              const mediaMsg = {
+              twilioWs.send(JSON.stringify({
                 event: "media",
                 streamSid,
-                media: {
-                  payload: event.delta, // base64-encoded g711_ulaw
-                },
-              };
-              twilioWs.send(JSON.stringify(mediaMsg));
+                media: { payload: event.delta },
+              }));
             }
             break;
 
           case "response.audio_transcript.done":
             console.log(`[MediaStream] AI said (callId=${callId}): ${event.transcript}`);
+            transcriptLines.push(`[Agent]: ${event.transcript}`);
             break;
 
           case "conversation.item.input_audio_transcription.completed":
             console.log(`[MediaStream] User said (callId=${callId}): ${event.transcript}`);
+            transcriptLines.push(`[User]: ${event.transcript}`);
             break;
 
+          case "response.function_call_arguments.done": {
+            const fnName = event.name;
+            console.log(`[MediaStream] Tool called: ${fnName} (callId=${callId})`, event.arguments);
+
+            if (fnName === "end_call") {
+              let reason = "Call ended by AI";
+              try {
+                const args = JSON.parse(event.arguments);
+                reason = args.reason || reason;
+              } catch {}
+
+              console.log(`[MediaStream] END CALL requested: ${reason} (callId=${callId})`);
+              transcriptLines.push(`[System]: Call ended — ${reason}`);
+
+              // Send tool result back to OpenAI so it can say goodbye
+              const toolResult = {
+                type: "conversation.item.create",
+                item: {
+                  type: "function_call_output",
+                  call_id: event.call_id,
+                  output: JSON.stringify({ success: true, message: "Call will end after your goodbye message." }),
+                },
+              };
+              openaiWs!.send(JSON.stringify(toolResult));
+              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+
+              // Hang up after a delay for goodbye
+              setTimeout(() => {
+                console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
+                hangUpCall();
+              }, 5000);
+            }
+            break;
+          }
+
           case "input_audio_buffer.speech_started":
-            // User started speaking — interrupt any ongoing AI response
             console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId})`);
-            // Send clear event to Twilio to stop playing current audio
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
             }
-            // Cancel any in-progress OpenAI response
             openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
             break;
 
@@ -179,7 +251,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           default:
-            // Suppress noisy events
             break;
         }
       } catch (err) {
@@ -190,10 +261,51 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     openaiWs.on("close", (code, reason) => {
       console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
       openaiWs = null;
+      finalizeCall();
     });
 
     openaiWs.on("error", (err) => {
       console.error(`[MediaStream] OpenAI WS error (callId=${callId}):`, err.message);
+    });
+  };
+
+  // Hang up the Twilio call
+  const hangUpCall = () => {
+    if (!callSid || !config.twilio.isConfigured) return;
+
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${config.twilio.accountSid}/Calls/${callSid}.json`;
+    const authHeader = Buffer.from(`${config.twilio.accountSid}:${config.twilio.authToken}`).toString("base64");
+
+    fetch(twilioUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${authHeader}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ Status: "completed" }).toString(),
+    })
+      .then(() => console.log(`[MediaStream] Twilio call ended (callSid=${callSid})`))
+      .catch((err) => console.error(`[MediaStream] Failed to hang up:`, err));
+  };
+
+  // Save final call data to DB
+  const finalizeCall = () => {
+    if (!callId) return;
+
+    const endTime = new Date();
+    const durationSeconds = callStartTime
+      ? Math.round((endTime.getTime() - callStartTime.getTime()) / 1000)
+      : null;
+
+    const transcript = transcriptLines.length > 0 ? transcriptLines.join("\n") : null;
+
+    console.log(`[MediaStream] Finalizing call (callId=${callId}), duration=${durationSeconds}s, transcript lines=${transcriptLines.length}`);
+
+    updateCall(callId, {
+      status: "completed",
+      ended_at: endTime.toISOString(),
+      duration_seconds: durationSeconds,
+      transcript,
     });
   };
 
@@ -212,20 +324,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           callId = msg.start.customParameters?.callId || "";
           agentId = msg.start.customParameters?.agentId || "";
           calledNumber = msg.start.customParameters?.calledNumber || "";
-          console.log(`[MediaStream] Stream started: streamSid=${streamSid} callId=${callId} agentId=${agentId} calledNumber=${calledNumber}`);
+          callSid = msg.start.customParameters?.callSid || "";
+          campaignId = msg.start.customParameters?.campaignId || "";
+          console.log(`[MediaStream] Stream started: streamSid=${streamSid} callId=${callId} agentId=${agentId} callSid=${callSid}`);
 
-          // Now connect to OpenAI (async — fetches agent config first)
           connectToOpenAI();
           break;
 
         case "media":
-          // Forward audio from Twilio → OpenAI
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-            const audioAppend = {
+            openaiWs.send(JSON.stringify({
               type: "input_audio_buffer.append",
-              audio: msg.media.payload, // base64-encoded g711_ulaw
-            };
-            openaiWs.send(JSON.stringify(audioAppend));
+              audio: msg.media.payload,
+            }));
           }
           break;
 
@@ -248,6 +359,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(`[MediaStream] Twilio WS closed (callId=${callId})`);
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
       openaiWs.close();
+    } else {
+      finalizeCall();
     }
   });
 

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { config } from "../config.js";
+import { updateCallBySid } from "../supabase.js";
 
 export const twilioWebhookRouter = Router();
 
@@ -25,11 +26,8 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
     return res.type("text/xml").send(twiml);
   }
 
-  // Build WebSocket URL for Media Stream
   const wsBase = config.publicWsBaseUrl || config.publicBaseUrl.replace("https://", "wss://");
   const streamUrl = `${wsBase}/twilio/stream`;
-
-  // No <Say> before <Connect> — the AI agent will speak its own greeting
   const calledNumber = req.body?.To || "";
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -52,16 +50,68 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
 /**
  * POST /twilio/status — Twilio status callback
  */
-twilioWebhookRouter.post("/status", (req: Request, res: Response) => {
+twilioWebhookRouter.post("/status", async (req: Request, res: Response) => {
   const correlationId = crypto.randomUUID();
+  const { CallSid, CallStatus, CallDuration } = req.body || {};
 
-  console.log(`[${correlationId}] POST /twilio/status`, {
-    CallSid: req.body?.CallSid,
-    CallStatus: req.body?.CallStatus,
-    CallDuration: req.body?.CallDuration,
+  console.log(`[${correlationId}] POST /twilio/status`, { CallSid, CallStatus, CallDuration });
+
+  if (CallSid && CallStatus) {
+    const statusMap: Record<string, string> = {
+      initiated: "initiated",
+      ringing: "ringing",
+      "in-progress": "in-progress",
+      completed: "completed",
+      busy: "busy",
+      "no-answer": "no-answer",
+      canceled: "canceled",
+      failed: "failed",
+    };
+
+    const data: Record<string, unknown> = {
+      status: statusMap[CallStatus] || CallStatus,
+    };
+
+    if (CallStatus === "answered" || CallStatus === "in-progress") {
+      data.answered_at = new Date().toISOString();
+    }
+
+    if (CallStatus === "completed") {
+      data.ended_at = new Date().toISOString();
+      if (CallDuration) {
+        data.duration_seconds = parseInt(CallDuration, 10);
+      }
+    }
+
+    await updateCallBySid(CallSid, data);
+  }
+
+  return res.json({ ok: true, correlation_id: correlationId });
+});
+
+/**
+ * POST /twilio/recording-status — Twilio recording status callback
+ * Saves recording URL to the call record
+ */
+twilioWebhookRouter.post("/recording-status", async (req: Request, res: Response) => {
+  const correlationId = crypto.randomUUID();
+  const { CallSid, RecordingUrl, RecordingStatus, RecordingDuration } = req.body || {};
+
+  console.log(`[${correlationId}] POST /twilio/recording-status`, {
+    CallSid,
+    RecordingStatus,
+    RecordingDuration,
+    RecordingUrl,
   });
 
-  // TODO: Write call status to Supabase when calls table exists
+  if (CallSid && RecordingUrl && RecordingStatus === "completed") {
+    // Twilio recording URL needs .mp3 or .wav extension for playback
+    const recordingUrlMp3 = `${RecordingUrl}.mp3`;
+    await updateCallBySid(CallSid, {
+      recording_url: recordingUrlMp3,
+    });
+    console.log(`[${correlationId}] Recording saved for CallSid=${CallSid}: ${recordingUrlMp3}`);
+  }
 
   return res.json({ ok: true, correlation_id: correlationId });
 });

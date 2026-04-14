@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { config } from "../config.js";
+import { upsertCall } from "../supabase.js";
 
 export const callsRouter = Router();
 
@@ -19,7 +20,7 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
     return res.json({
       success: false,
       status: "not_configured",
-      error: "Twilio is not configured on the orchestrator. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER.",
+      error: "Twilio is not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER.",
       correlation_id: correlationId,
     });
   }
@@ -28,12 +29,12 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
     return res.json({
       success: false,
       status: "not_configured",
-      error: "OpenAI is not configured on the orchestrator. Set OPENAI_API_KEY.",
+      error: "OpenAI is not configured. Set OPENAI_API_KEY.",
       correlation_id: correlationId,
     });
   }
 
-  const { to_number, agent_id, campaign_id, variables } = req.body;
+  const { to_number, agent_id, campaign_id } = req.body;
 
   if (!to_number || !agent_id) {
     return res.status(400).json({
@@ -46,11 +47,9 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
 
   try {
     const callId = crypto.randomUUID();
-    const wsBaseUrl = config.publicWsBaseUrl || config.publicBaseUrl.replace("https://", "wss://");
     const voiceUrl = `${config.publicBaseUrl}/twilio/voice?callId=${callId}&agentId=${agent_id}${campaign_id ? `&campaignId=${campaign_id}` : ""}`;
     const statusUrl = `${config.publicBaseUrl}/twilio/status`;
 
-    // Call Twilio REST API to initiate outbound call
     const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${config.twilio.accountSid}/Calls.json`;
     const authHeader = Buffer.from(`${config.twilio.accountSid}:${config.twilio.authToken}`).toString("base64");
 
@@ -61,6 +60,9 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
       StatusCallback: statusUrl,
       StatusCallbackEvent: "initiated ringing answered completed",
       StatusCallbackMethod: "POST",
+      Record: "true",
+      RecordingStatusCallback: `${config.publicBaseUrl}/twilio/recording-status`,
+      RecordingStatusCallbackMethod: "POST",
     });
 
     console.log(`[${correlationId}] Calling Twilio: ${to_number} from ${config.twilio.fromNumber}`);
@@ -87,8 +89,6 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
     }
 
     console.log(`[${correlationId}] Call started: SID=${twilioData.sid}, callId=${callId}`);
-
-    // TODO: Write call record to Supabase when calls table exists
 
     return res.json({
       success: true,
