@@ -3,14 +3,16 @@ import {
   PhoneIncoming,
   PhoneOutgoing,
   Clock,
-  TrendingUp,
 } from "lucide-react";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { RecentCalls } from "@/components/dashboard/RecentCalls";
 import { AgentStatus } from "@/components/dashboard/AgentStatus";
 import { CallChart } from "@/components/dashboard/CallChart";
+import { useCalls } from "@/hooks/useCalls";
 
 export default function Dashboard() {
+  const { calls, loading, stats, chartData } = useCalls({ limit: 500 });
+
   return (
     <div className="space-y-8 animate-fade-in">
       {/* Header */}
@@ -25,43 +27,35 @@ export default function Dashboard() {
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           title="Total Calls Today"
-          value="213"
-          change="+12% from yesterday"
-          changeType="positive"
+          value={loading ? "—" : stats.totalToday.toString()}
           icon={Phone}
         />
         <StatCard
           title="Inbound Calls"
-          value="124"
-          change="+8%"
-          changeType="positive"
+          value={loading ? "—" : stats.inboundToday.toString()}
           icon={PhoneIncoming}
           iconColor="text-success"
         />
         <StatCard
           title="Outbound Calls"
-          value="89"
-          change="+18%"
-          changeType="positive"
+          value={loading ? "—" : stats.outboundToday.toString()}
           icon={PhoneOutgoing}
         />
         <StatCard
           title="Avg. Duration"
-          value="2:45"
-          change="-5s"
-          changeType="neutral"
+          value={loading ? "—" : stats.avgDuration}
           icon={Clock}
           iconColor="text-warning"
         />
       </div>
 
       {/* Chart */}
-      <CallChart />
+      <CallChart data={chartData} loading={loading} />
 
       {/* Two Column Grid */}
       <div className="grid gap-6 lg:grid-cols-2">
-        <RecentCalls />
-        <AgentStatus />
+        <RecentCalls calls={calls.slice(0, 8)} loading={loading} />
+        <AgentStatus calls={calls} loading={loading} />
       </div>
     </div>
   );
