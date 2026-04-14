@@ -47,6 +47,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { getProxiedRecordingUrl } from "@/lib/recording";
+import { parseTranscript } from "@/lib/transcript-parser";
 
 function formatDuration(seconds: number | null): string {
   if (!seconds) return "0:00";
@@ -353,16 +354,7 @@ export default function AgentCalls() {
             </DialogDescription>
           </DialogHeader>
           {transcriptModal?.transcript && (() => {
-            const lines = transcriptModal.transcript.split("\n").filter((l: string) => l.trim());
-            const turns = lines.map((line: string) => {
-              const agentMatch = line.match(/^\[?(AI|Agent|Bot|Assistant)\]?:\s*(.+)/i);
-              if (agentMatch) return { speaker: "agent" as const, text: agentMatch[2] };
-              const userMatch = line.match(/^\[?(User|Customer|Caller|Human)\]?:\s*(.+)/i);
-              if (userMatch) return { speaker: "user" as const, text: userMatch[2] };
-              const systemMatch = line.match(/^\[?System\]?:\s*(.+)/i);
-              if (systemMatch) return { speaker: "system" as const, text: systemMatch[1] };
-              return { speaker: "user" as const, text: line };
-            });
+            const turns = parseTranscript(transcriptModal.transcript);
             return (
               <div className="flex-1 overflow-auto space-y-3 py-2">
                 {turns.map((turn: { speaker: string; text: string }, i: number) => (
