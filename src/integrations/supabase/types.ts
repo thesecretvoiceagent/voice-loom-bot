@@ -202,6 +202,62 @@ export type Database = {
         }
         Relationships: []
       }
+      campaigns: {
+        Row: {
+          agent_id: string | null
+          completed: number
+          contacts: number
+          created_at: string
+          description: string | null
+          end_date: string | null
+          id: string
+          name: string
+          start_date: string | null
+          status: string
+          success_rate: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          agent_id?: string | null
+          completed?: number
+          contacts?: number
+          created_at?: string
+          description?: string | null
+          end_date?: string | null
+          id?: string
+          name: string
+          start_date?: string | null
+          status?: string
+          success_rate?: number
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          agent_id?: string | null
+          completed?: number
+          contacts?: number
+          created_at?: string
+          description?: string | null
+          end_date?: string | null
+          id?: string
+          name?: string
+          start_date?: string | null
+          status?: string
+          success_rate?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaigns_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       feature_flags: {
         Row: {
           enabled: boolean
