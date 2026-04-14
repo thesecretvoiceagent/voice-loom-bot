@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import { config } from "../config.js";
-import { fetchAgentConfig } from "../supabase.js";
+import { fetchAgentConfig, fetchAgentByPhoneNumber, fetchFirstActiveAgent } from "../supabase.js";
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
