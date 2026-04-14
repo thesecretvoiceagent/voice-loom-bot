@@ -1,7 +1,11 @@
 import WebSocket from "ws";
 import { config } from "../config.js";
+import { fetchAgentConfig } from "../supabase.js";
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
+
+const DEFAULT_INSTRUCTIONS =
+  "You are a helpful AI voice assistant. Be concise and conversational. Respond naturally as if on a phone call.";
 
 /**
  * Handles a single Twilio Media Stream WebSocket connection.
@@ -13,12 +17,35 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callId: string = "";
   let agentId: string = "";
 
-  // Connect to OpenAI Realtime API
-  const connectToOpenAI = () => {
+  // Connect to OpenAI Realtime API with agent-specific config
+  const connectToOpenAI = async () => {
     if (!config.openai.isConfigured) {
       console.error("[MediaStream] OpenAI not configured, cannot bridge");
       twilioWs.close();
       return;
+    }
+
+    // Fetch agent configuration from database
+    let instructions = DEFAULT_INSTRUCTIONS;
+    let greeting = "";
+    let voice = "alloy";
+
+    if (agentId && agentId !== "default") {
+      const agentConfig = await fetchAgentConfig(agentId);
+      if (agentConfig) {
+        console.log(`[MediaStream] Loaded agent config: "${agentConfig.name}" (callId=${callId})`);
+        if (agentConfig.system_prompt) {
+          instructions = agentConfig.system_prompt;
+        }
+        if (agentConfig.greeting) {
+          greeting = agentConfig.greeting;
+        }
+        if (agentConfig.voice) {
+          voice = agentConfig.voice;
+        }
+      } else {
+        console.warn(`[MediaStream] Agent ${agentId} not found, using defaults (callId=${callId})`);
+      }
     }
 
     const url = `${OPENAI_REALTIME_URL}?model=${config.openai.realtimeModel}`;
@@ -31,16 +58,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     });
 
     openaiWs.on("open", () => {
-      console.log(`[MediaStream] Connected to OpenAI Realtime (callId=${callId})`);
+      console.log(`[MediaStream] Connected to OpenAI Realtime (callId=${callId}, voice=${voice})`);
 
-      // Configure the session
+      // Configure the session with agent-specific settings
       const sessionUpdate = {
         type: "session.update",
         session: {
           modalities: ["text", "audio"],
-          instructions:
-            "You are a helpful AI voice assistant. Be concise and conversational. Respond naturally as if on a phone call.",
-          voice: "alloy",
+          instructions,
+          voice,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
@@ -56,6 +82,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       };
 
       openaiWs!.send(JSON.stringify(sessionUpdate));
+
+      // If agent has a greeting, make OpenAI speak it immediately
+      if (greeting) {
+        console.log(`[MediaStream] Sending greeting (callId=${callId}): "${greeting.substring(0, 60)}..."`);
+        // Add a conversation item with the greeting text, then trigger a response
+        const greetingEvent = {
+          type: "conversation.item.create",
+          item: {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `[SYSTEM: The call has just connected. Say your greeting to the caller. Your greeting is: "${greeting}". Say it naturally, do not add anything extra.]`,
+              },
+            ],
+          },
+        };
+        // Small delay to let session config apply
+        setTimeout(() => {
+          openaiWs!.send(JSON.stringify(greetingEvent));
+          openaiWs!.send(JSON.stringify({ type: "response.create" }));
+        }, 200);
+      }
     });
 
     openaiWs.on("message", (data) => {
@@ -109,10 +159,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           default:
-            // Log interesting events at debug level
-            if (event.type.startsWith("response.") || event.type.startsWith("conversation.")) {
-              // Suppress noisy events
-            }
+            // Suppress noisy events
             break;
         }
       } catch (err) {
@@ -146,7 +193,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           agentId = msg.start.customParameters?.agentId || "";
           console.log(`[MediaStream] Stream started: streamSid=${streamSid} callId=${callId} agentId=${agentId}`);
 
-          // Now connect to OpenAI
+          // Now connect to OpenAI (async — fetches agent config first)
           connectToOpenAI();
           break;
 
