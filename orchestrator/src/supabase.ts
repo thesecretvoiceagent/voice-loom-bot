@@ -2,8 +2,7 @@ import { config } from "./config.js";
 
 /**
  * Fetches agent configuration via the Lovable Cloud edge function.
- * This avoids needing the service_role key on Railway —
- * the edge function has it built in.
+ * Writes call data via edge function (no service role key needed on Railway).
  */
 
 interface AgentConfig {
@@ -18,48 +17,77 @@ interface AgentConfig {
   schedule: Record<string, unknown> | null;
 }
 
-async function callAgentConfigFunction(body: Record<string, unknown>): Promise<AgentConfig | null> {
-  if (!config.supabase.url) {
-    console.warn("[Supabase] SUPABASE_URL not set, cannot fetch agent config");
+function getBaseUrl(): string {
+  return config.supabase.url.replace(/\/+$/, "");
+}
+
+function getHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${config.supabase.anonKey}`,
+    apikey: config.supabase.anonKey,
+  };
+}
+
+async function callEdgeFunction(funcName: string, body: Record<string, unknown>): Promise<any> {
+  if (!config.supabase.url || !config.supabase.anonKey) {
+    console.warn(`[Supabase] Not configured, cannot call ${funcName}`);
     return null;
   }
 
-  const functionUrl = `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/agent-config`;
+  const url = `${getBaseUrl()}/functions/v1/${funcName}`;
 
   try {
-    console.log(`[Supabase] Calling agent-config function: ${JSON.stringify(body)}`);
-
-    const res = await fetch(functionUrl, {
+    const res = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.supabase.anonKey}`,
-      },
+      headers: getHeaders(),
       body: JSON.stringify(body),
     });
 
     if (!res.ok) {
       const text = await res.text();
-      console.error(`[Supabase] agent-config function error: HTTP ${res.status} ${text}`);
+      console.error(`[Supabase] ${funcName} error: HTTP ${res.status} ${text}`);
       return null;
     }
 
-    const data = await res.json();
-    return data.agent || null;
+    return await res.json();
   } catch (err) {
-    console.error("[Supabase] Error calling agent-config function:", err);
+    console.error(`[Supabase] Error calling ${funcName}:`, err);
     return null;
   }
 }
 
+// ─── Agent Config ───
+
 export async function fetchAgentConfig(agentId: string): Promise<AgentConfig | null> {
-  return callAgentConfigFunction({ agent_id: agentId });
+  const data = await callEdgeFunction("agent-config", { agent_id: agentId });
+  return data?.agent || null;
 }
 
 export async function fetchAgentByPhoneNumber(phoneNumber: string): Promise<AgentConfig | null> {
-  return callAgentConfigFunction({ phone_number: phoneNumber });
+  const data = await callEdgeFunction("agent-config", { phone_number: phoneNumber });
+  return data?.agent || null;
 }
 
 export async function fetchFirstActiveAgent(): Promise<AgentConfig | null> {
-  return callAgentConfigFunction({ fallback_first: true });
+  const data = await callEdgeFunction("agent-config", { fallback_first: true });
+  return data?.agent || null;
+}
+
+// ─── Call Data Writes ───
+
+export async function upsertCall(callId: string, data: Record<string, unknown>): Promise<void> {
+  await callEdgeFunction("call-write", { action: "upsert_call", call_id: callId, data });
+}
+
+export async function updateCall(callId: string, data: Record<string, unknown>): Promise<void> {
+  await callEdgeFunction("call-write", { action: "update_call", call_id: callId, data });
+}
+
+export async function updateCallBySid(twilioCallSid: string, data: Record<string, unknown>): Promise<void> {
+  await callEdgeFunction("call-write", { action: "update_call_by_sid", twilio_call_sid: twilioCallSid, data });
+}
+
+export async function insertCallEvent(callId: string, type: string, payload: Record<string, unknown>): Promise<void> {
+  await callEdgeFunction("call-write", { action: "insert_event", call_id: callId, type, payload });
 }
