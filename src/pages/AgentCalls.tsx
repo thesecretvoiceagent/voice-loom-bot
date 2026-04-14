@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { Bot, User as UserIcon } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -12,6 +13,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -44,6 +46,7 @@ import { useAgents } from "@/hooks/useAgents";
 import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { getProxiedRecordingUrl } from "@/lib/recording";
 
 function formatDuration(seconds: number | null): string {
   if (!seconds) return "0:00";
@@ -318,7 +321,7 @@ export default function AgentCalls() {
                 Recording — {call.to_number}
               </p>
               <audio
-                src={call.recording_url}
+                src={getProxiedRecordingUrl(call.recording_url)}
                 controls
                 autoPlay
                 className="w-full h-8"
@@ -345,36 +348,49 @@ export default function AgentCalls() {
               <FileText className="h-5 w-5" />
               Call Transcript
             </DialogTitle>
+            <DialogDescription>
+              {transcriptModal?.to_number} • {formatDuration(transcriptModal?.duration_seconds ?? null)} • {formatTime(transcriptModal?.started_at || transcriptModal?.created_at || null)}
+            </DialogDescription>
           </DialogHeader>
-          {transcriptModal && (
-            <div className="flex-1 overflow-auto space-y-4">
-              <div className="grid grid-cols-2 gap-4 p-4 rounded-lg bg-secondary/50">
-                <div className="flex items-center gap-2 text-sm">
-                  <Phone className="h-4 w-4 text-muted-foreground" />
-                  <span className="font-mono">{transcriptModal.to_number}</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <Clock className="h-4 w-4 text-muted-foreground" />
-                  {formatDuration(transcriptModal.duration_seconds)}
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <Calendar className="h-4 w-4 text-muted-foreground" />
-                  {formatTime(transcriptModal.started_at || transcriptModal.created_at)}
-                </div>
-                <div>
-                  <span className={cn(
-                    "text-xs font-medium capitalize px-2 py-0.5 rounded-full",
-                    transcriptModal.status === "completed" ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"
-                  )}>
-                    {transcriptModal.status}
-                  </span>
-                </div>
+          {transcriptModal?.transcript && (() => {
+            const lines = transcriptModal.transcript.split("\n").filter((l: string) => l.trim());
+            const turns = lines.map((line: string) => {
+              const agentMatch = line.match(/^\[?(AI|Agent|Bot|Assistant)\]?:\s*(.+)/i);
+              if (agentMatch) return { speaker: "agent" as const, text: agentMatch[2] };
+              const userMatch = line.match(/^\[?(User|Customer|Caller|Human)\]?:\s*(.+)/i);
+              if (userMatch) return { speaker: "user" as const, text: userMatch[2] };
+              const systemMatch = line.match(/^\[?System\]?:\s*(.+)/i);
+              if (systemMatch) return { speaker: "system" as const, text: systemMatch[1] };
+              return { speaker: "user" as const, text: line };
+            });
+            return (
+              <div className="flex-1 overflow-auto space-y-3 py-2">
+                {turns.map((turn: { speaker: string; text: string }, i: number) => (
+                  <div key={i} className={`flex gap-3 ${turn.speaker === "user" ? "flex-row-reverse" : ""}`}>
+                    <div className={cn(
+                      "flex h-7 w-7 shrink-0 items-center justify-center rounded-full",
+                      turn.speaker === "agent" ? "bg-primary/10" : turn.speaker === "system" ? "bg-muted" : "bg-secondary"
+                    )}>
+                      {turn.speaker === "agent" ? <Bot className="h-3.5 w-3.5 text-primary" /> :
+                       turn.speaker === "system" ? <Clock className="h-3.5 w-3.5 text-muted-foreground" /> :
+                       <UserIcon className="h-3.5 w-3.5 text-muted-foreground" />}
+                    </div>
+                    <div className={cn(
+                      "flex-1 rounded-xl p-3",
+                      turn.speaker === "agent" ? "bg-primary/5 border border-primary/20" :
+                      turn.speaker === "system" ? "bg-muted/50 border border-border/50 italic" :
+                      "bg-secondary/50 border border-border/50"
+                    )}>
+                      <p className="text-xs font-medium text-muted-foreground mb-0.5">
+                        {turn.speaker === "agent" ? "AI Agent" : turn.speaker === "system" ? "System" : "Customer"}
+                      </p>
+                      <p className="text-sm text-foreground">{turn.text}</p>
+                    </div>
+                  </div>
+                ))}
               </div>
-              <div className="p-4 rounded-lg bg-muted/30 max-h-[350px] overflow-auto whitespace-pre-wrap text-sm text-foreground">
-                {transcriptModal.transcript}
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </DialogContent>
       </Dialog>
 
@@ -386,6 +402,7 @@ export default function AgentCalls() {
               <MessageSquare className="h-5 w-5" />
               AI Call Summary
             </DialogTitle>
+            <DialogDescription>Post-call analysis</DialogDescription>
           </DialogHeader>
           {summaryModal && (
             <p className="text-sm text-foreground leading-relaxed">

@@ -37,13 +37,17 @@ function parseTranscript(raw?: string): TranscriptTurn[] {
     // Not JSON, try line-based parsing
   }
 
-  // Parse line-based format: "Agent: ..." or "User: ..."
+  // Parse line-based format: "[Agent]: ...", "Agent: ...", etc.
   const lines = raw.split("\n").filter((l) => l.trim());
   return lines.map((line) => {
-    const agentMatch = line.match(/^(AI|Agent|Bot|Assistant):\s*(.+)/i);
+    // Match [Agent]: ..., [AI]: ..., Agent: ..., AI: ..., etc.
+    const agentMatch = line.match(/^\[?(AI|Agent|Bot|Assistant)\]?:\s*(.+)/i);
     if (agentMatch) return { speaker: "agent" as const, text: agentMatch[2] };
-    const userMatch = line.match(/^(User|Customer|Caller|Human):\s*(.+)/i);
+    const userMatch = line.match(/^\[?(User|Customer|Caller|Human)\]?:\s*(.+)/i);
     if (userMatch) return { speaker: "user" as const, text: userMatch[2] };
+    // System messages
+    const systemMatch = line.match(/^\[?System\]?:\s*(.+)/i);
+    if (systemMatch) return { speaker: "agent" as const, text: `⚙️ ${systemMatch[1]}` };
     return { speaker: "user" as const, text: line };
   });
 }
