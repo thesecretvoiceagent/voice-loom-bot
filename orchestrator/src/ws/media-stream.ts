@@ -8,6 +8,42 @@ import {
   updateCall,
 } from "../supabase.js";
 
+// Post-call analysis via edge function
+async function runPostCallAnalysis(callId: string, transcript: string, analysisPrompt: string) {
+  if (!config.supabase.url || !config.supabase.anonKey) return;
+  try {
+    const url = `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/ai-completion`;
+    const systemMsg = analysisPrompt || "Analyze this call transcript. Provide a brief summary of the conversation, the outcome, and any action items.";
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.supabase.anonKey}`,
+        apikey: config.supabase.anonKey,
+      },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: systemMsg },
+          { role: "user", content: transcript },
+        ],
+        model: "google/gemini-2.5-flash",
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const summary = data?.choices?.[0]?.message?.content || data?.content || null;
+      if (summary) {
+        await updateCall(callId, { summary });
+        console.log(`[MediaStream] Post-call analysis saved (callId=${callId})`);
+      }
+    } else {
+      console.error(`[MediaStream] Analysis failed: ${res.status} ${await res.text()}`);
+    }
+  } catch (err) {
+    console.error(`[MediaStream] Analysis error:`, err);
+  }
+}
+
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
 const DEFAULT_INSTRUCTIONS =
@@ -29,6 +65,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   // Collect transcript turns
   const transcriptLines: string[] = [];
   let callStartTime: Date | null = null;
+  let agentAnalysisPrompt: string = "";
+  let agentKnowledgeBase: any[] = [];
+  let maxCallDurationMinutes: number = 0;
+  let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Connect to OpenAI Realtime API with agent-specific config
   const connectToOpenAI = async () => {
@@ -63,6 +103,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (agentConfig.greeting) greeting = agentConfig.greeting;
       if (agentConfig.voice) voice = agentConfig.voice;
       if (agentConfig.tools) agentTools = agentConfig.tools;
+      if (agentConfig.analysis_prompt) agentAnalysisPrompt = agentConfig.analysis_prompt;
+      if (agentConfig.knowledge_base) agentKnowledgeBase = agentConfig.knowledge_base as any[];
+      if (agentConfig.settings) {
+        const settings = agentConfig.settings as Record<string, unknown>;
+        maxCallDurationMinutes = (settings.max_call_duration as number) || 0;
+      }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
@@ -96,6 +142,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       const fullInstructions = greeting
         ? `${instructions}\n\nIMPORTANT: You are starting a phone call RIGHT NOW. Your FIRST message must be your greeting. Say exactly: "${greeting}" — in the same language, naturally. Do NOT say anything in English unless the greeting is in English. Do NOT wait for the caller to speak first. Speak immediately.`
         : instructions;
+
+      // Inject knowledge base into instructions
+      if (agentKnowledgeBase && agentKnowledgeBase.length > 0) {
+        const kbText = agentKnowledgeBase
+          .filter((item: any) => item.content && item.content.trim())
+          .map((item: any) => `## ${item.name}\n${item.content}`)
+          .join("\n\n");
+        if (kbText) {
+          fullInstructions += `\n\nKNOWLEDGE BASE — Use this information to answer questions accurately:\n\n${kbText}`;
+        }
+      }
 
       // Build tools array based on agent config
       const tools: any[] = [];
@@ -151,6 +208,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           };
         }
         openaiWs!.send(JSON.stringify(responseCreate));
+
+        // Set max call duration timer
+        if (maxCallDurationMinutes > 0) {
+          const maxMs = maxCallDurationMinutes * 60 * 1000;
+          console.log(`[MediaStream] Max call duration: ${maxCallDurationMinutes}m (callId=${callId})`);
+          callDurationTimer = setTimeout(() => {
+            console.log(`[MediaStream] Max call duration reached, hanging up (callId=${callId})`);
+            transcriptLines.push(`[System]: Call ended — max duration (${maxCallDurationMinutes}m) reached`);
+            hangUpCall();
+          }, maxMs);
+        }
 
         // Enable VAD after greeting
         setTimeout(() => {
@@ -291,6 +359,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   // Save final call data to DB
   const finalizeCall = () => {
     if (!callId) return;
+    if (callDurationTimer) clearTimeout(callDurationTimer);
 
     const endTime = new Date();
     const durationSeconds = callStartTime
@@ -307,6 +376,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       duration_seconds: durationSeconds,
       transcript,
     });
+
+    // Run post-call analysis if we have a transcript and analysis prompt
+    if (transcript && agentAnalysisPrompt) {
+      runPostCallAnalysis(callId, transcript, agentAnalysisPrompt);
+    }
   };
 
   // Handle messages from Twilio
