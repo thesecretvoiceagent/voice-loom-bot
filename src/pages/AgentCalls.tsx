@@ -402,6 +402,7 @@ export default function AgentCalls() {
               <MessageSquare className="h-5 w-5" />
               AI Call Summary
             </DialogTitle>
+            <DialogDescription>Post-call analysis</DialogDescription>
           </DialogHeader>
           {summaryModal && (
             <p className="text-sm text-foreground leading-relaxed">
