@@ -31,12 +31,15 @@ import {
   Trash2,
   Settings,
   Loader2,
+  Volume2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TranscriptDialog } from "@/components/call-logs/TranscriptDialog";
 import { Card } from "@/components/ui/card";
 import { useCalls, type CallRow } from "@/hooks/useCalls";
 import { Skeleton } from "@/components/ui/skeleton";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 
 function formatDuration(seconds: number | null): string {
   if (!seconds) return "0:00";
@@ -54,11 +57,13 @@ function formatTime(dateStr: string): string {
 }
 
 export default function CallLogs() {
-  const { calls, loading } = useCalls({ limit: 200 });
+  const { calls, loading, refetch } = useCalls({ limit: 200 });
   const [searchQuery, setSearchQuery] = useState("");
   const [transcriptDialogOpen, setTranscriptDialogOpen] = useState(false);
   const [selectedCall, setSelectedCall] = useState<CallRow | null>(null);
   const [retentionDays, setRetentionDays] = useState("90");
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  const [playingId, setPlayingId] = useState<string | null>(null);
 
   const filteredLogs = calls.filter(
     (log) =>
@@ -72,6 +77,38 @@ export default function CallLogs() {
     setTranscriptDialogOpen(true);
   };
 
+  const handleDelete = async (callId: string) => {
+    if (!confirm("Delete this call log? This cannot be undone.")) return;
+    setDeletingIds((prev) => new Set(prev).add(callId));
+    try {
+      const { error } = await supabase.from("calls").delete().eq("id", callId);
+      if (error) throw error;
+      toast.success("Call log deleted");
+      refetch();
+    } catch (err) {
+      toast.error("Failed to delete call log");
+    } finally {
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(callId);
+        return next;
+      });
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!confirm(`Delete all ${filteredLogs.length} visible call logs? This cannot be undone.`)) return;
+    try {
+      const ids = filteredLogs.map((c) => c.id);
+      const { error } = await supabase.from("calls").delete().in("id", ids);
+      if (error) throw error;
+      toast.success(`${ids.length} call logs deleted`);
+      refetch();
+    } catch (err) {
+      toast.error("Failed to delete call logs");
+    }
+  };
+
   return (
     <div className="space-y-8 animate-fade-in">
       {/* Header */}
@@ -82,10 +119,18 @@ export default function CallLogs() {
             View and analyze all call activity
           </p>
         </div>
-        <Button variant="outline" className="gap-2">
-          <Download className="h-4 w-4" />
-          Export
-        </Button>
+        <div className="flex items-center gap-2">
+          {filteredLogs.length > 0 && (
+            <Button variant="outline" size="sm" className="gap-2 text-destructive hover:text-destructive" onClick={handleBulkDelete}>
+              <Trash2 className="h-4 w-4" />
+              Delete All
+            </Button>
+          )}
+          <Button variant="outline" className="gap-2">
+            <Download className="h-4 w-4" />
+            Export
+          </Button>
+        </div>
       </div>
 
       {/* Data Retention Settings */}
@@ -137,10 +182,9 @@ export default function CallLogs() {
             className="pl-9"
           />
         </div>
-        <Button variant="outline" size="sm" className="gap-2">
-          <Filter className="h-4 w-4" />
-          Filters
-        </Button>
+        <span className="text-sm text-muted-foreground">
+          {filteredLogs.length} call{filteredLogs.length !== 1 ? "s" : ""}
+        </span>
       </div>
 
       {/* Table */}
@@ -150,7 +194,6 @@ export default function CallLogs() {
             <TableRow className="border-border hover:bg-transparent">
               <TableHead className="text-muted-foreground">Type</TableHead>
               <TableHead className="text-muted-foreground">Phone</TableHead>
-              <TableHead className="text-muted-foreground">Agent</TableHead>
               <TableHead className="text-muted-foreground">Duration</TableHead>
               <TableHead className="text-muted-foreground">Status</TableHead>
               <TableHead className="text-muted-foreground">Summary</TableHead>
@@ -164,7 +207,7 @@ export default function CallLogs() {
             {loading ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <TableRow key={i} className="border-border">
-                  {Array.from({ length: 8 }).map((_, j) => (
+                  {Array.from({ length: 7 }).map((_, j) => (
                     <TableCell key={j}>
                       <Skeleton className="h-4 w-full" />
                     </TableCell>
@@ -173,7 +216,7 @@ export default function CallLogs() {
               ))
             ) : filteredLogs.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
+                <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
                   {calls.length === 0 ? "No calls recorded yet" : "No matching calls"}
                 </TableCell>
               </TableRow>
@@ -198,7 +241,6 @@ export default function CallLogs() {
                     </div>
                   </TableCell>
                   <TableCell className="font-mono text-sm">{log.to_number}</TableCell>
-                  <TableCell className="text-sm">{log.agent_id || "—"}</TableCell>
                   <TableCell className="font-mono text-sm">
                     {formatDuration(log.duration_seconds)}
                   </TableCell>
@@ -210,7 +252,7 @@ export default function CallLogs() {
                       {["failed", "busy", "no-answer", "canceled"].includes(log.status) && (
                         <XCircle className="h-4 w-4 text-destructive" />
                       )}
-                      {["initiated", "ringing", "in-progress", "queued"].includes(log.status) && (
+                      {["initiated", "ringing", "in-progress", "queued", "pending"].includes(log.status) && (
                         <Clock className="h-4 w-4 text-primary animate-pulse" />
                       )}
                       <span
@@ -218,7 +260,7 @@ export default function CallLogs() {
                           "text-xs font-medium capitalize",
                           log.status === "completed" && "text-success",
                           ["failed", "busy", "no-answer", "canceled"].includes(log.status) && "text-destructive",
-                          ["initiated", "ringing", "in-progress", "queued"].includes(log.status) && "text-primary"
+                          ["initiated", "ringing", "in-progress", "queued", "pending"].includes(log.status) && "text-primary"
                         )}
                       >
                         {log.status.replace(/-/g, " ")}
@@ -234,10 +276,14 @@ export default function CallLogs() {
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
                       {log.recording_url && (
-                        <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
-                          <a href={log.recording_url} target="_blank" rel="noopener noreferrer">
-                            <Play className="h-4 w-4" />
-                          </a>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => setPlayingId(playingId === log.id ? null : log.id)}
+                          title="Play recording"
+                        >
+                          <Volume2 className={cn("h-4 w-4", playingId === log.id && "text-primary")} />
                         </Button>
                       )}
                       {log.transcript && (
@@ -246,10 +292,25 @@ export default function CallLogs() {
                           size="icon"
                           className="h-8 w-8"
                           onClick={() => openTranscript(log)}
+                          title="View transcript"
                         >
                           <FileText className="h-4 w-4" />
                         </Button>
                       )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive hover:text-destructive"
+                        onClick={() => handleDelete(log.id)}
+                        disabled={deletingIds.has(log.id)}
+                        title="Delete"
+                      >
+                        {deletingIds.has(log.id) ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                      </Button>
                     </div>
                   </TableCell>
                 </TableRow>
@@ -258,6 +319,37 @@ export default function CallLogs() {
           </TableBody>
         </Table>
       </div>
+
+      {/* Inline Audio Player */}
+      {playingId && (() => {
+        const call = calls.find((c) => c.id === playingId);
+        if (!call?.recording_url) return null;
+        return (
+          <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 glass-card rounded-xl p-4 shadow-elevated flex items-center gap-4 min-w-[400px]">
+            <Volume2 className="h-5 w-5 text-primary shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-foreground mb-2">
+                Recording — {call.to_number}
+              </p>
+              <audio
+                src={call.recording_url}
+                controls
+                autoPlay
+                className="w-full h-8"
+                onEnded={() => setPlayingId(null)}
+              />
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              onClick={() => setPlayingId(null)}
+            >
+              <XCircle className="h-4 w-4" />
+            </Button>
+          </div>
+        );
+      })()}
 
       {/* Transcript Dialog */}
       {selectedCall && (
