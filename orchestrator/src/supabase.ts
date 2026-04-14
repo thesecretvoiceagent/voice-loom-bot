@@ -1,9 +1,9 @@
 import { config } from "./config.js";
 
 /**
- * Lightweight Supabase REST client for the orchestrator.
- * We don't pull in @supabase/supabase-js to keep the image small —
- * just use fetch against the PostgREST API.
+ * Fetches agent configuration via the Lovable Cloud edge function.
+ * This avoids needing the service_role key on Railway —
+ * the edge function has it built in.
  */
 
 interface AgentConfig {
@@ -18,108 +18,48 @@ interface AgentConfig {
   schedule: Record<string, unknown> | null;
 }
 
-const AGENT_SELECT_FIELDS = [
-  "id",
-  "name",
-  "greeting",
-  "system_prompt",
-  "analysis_prompt",
-  "voice",
-  "tools",
-  "settings",
-  "schedule",
-].join(",");
-
-function getSupabaseRestBaseUrl() {
-  const rawUrl = config.supabase.url.trim();
-
-  if (!rawUrl) {
+async function callAgentConfigFunction(body: Record<string, unknown>): Promise<AgentConfig | null> {
+  if (!config.supabase.url) {
+    console.warn("[Supabase] SUPABASE_URL not set, cannot fetch agent config");
     return null;
   }
 
-  const normalizedUrl = rawUrl
-    .replace(/\/+$/u, "")
-    .replace(/\/rest\/v1$/iu, "");
-
-  return `${normalizedUrl}/rest/v1`;
-}
-
-async function fetchRows<T>(
-  resource: string,
-  query: Record<string, string>,
-): Promise<T[] | null> {
-  const restBaseUrl = getSupabaseRestBaseUrl();
-
-  if (!config.supabase.isConfigured || !restBaseUrl) {
-    console.warn(`[Supabase] Not configured, cannot query ${resource}`);
-    return null;
-  }
+  const functionUrl = `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/agent-config`;
 
   try {
-    const url = new URL(`${restBaseUrl}/${resource}`);
+    console.log(`[Supabase] Calling agent-config function: ${JSON.stringify(body)}`);
 
-    Object.entries(query).forEach(([key, value]) => {
-      url.searchParams.set(key, value);
-    });
-
-    const res = await fetch(url.toString(), {
+    const res = await fetch(functionUrl, {
+      method: "POST",
       headers: {
-        apikey: config.supabase.serviceRoleKey,
-        Authorization: `Bearer ${config.supabase.serviceRoleKey}`,
         "Content-Type": "application/json",
+        Authorization: `Bearer ${config.supabase.anonKey}`,
       },
+      body: JSON.stringify(body),
     });
 
     if (!res.ok) {
-      const body = await res.text();
-      console.error(
-        `[Supabase] ${resource} query failed: HTTP ${res.status} url=${url.toString()} body=${body}`,
-      );
+      const text = await res.text();
+      console.error(`[Supabase] agent-config function error: HTTP ${res.status} ${text}`);
       return null;
     }
 
-    return (await res.json()) as T[];
+    const data = await res.json();
+    return data.agent || null;
   } catch (err) {
-    console.error(`[Supabase] Error querying ${resource}:`, err);
+    console.error("[Supabase] Error calling agent-config function:", err);
     return null;
   }
 }
 
 export async function fetchAgentConfig(agentId: string): Promise<AgentConfig | null> {
-  const rows = await fetchRows<AgentConfig>("agents", {
-    id: `eq.${agentId}`,
-    select: AGENT_SELECT_FIELDS,
-    limit: "1",
-  });
-
-  return rows?.[0] ?? null;
+  return callAgentConfigFunction({ agent_id: agentId });
 }
 
-/**
- * Look up an agent by the Twilio phone number being called.
- * Used for inbound calls where no agentId is specified.
- */
 export async function fetchAgentByPhoneNumber(phoneNumber: string): Promise<AgentConfig | null> {
-  const rows = await fetchRows<AgentConfig>("agents", {
-    phone_number: `eq.${phoneNumber}`,
-    is_active: "eq.true",
-    select: AGENT_SELECT_FIELDS,
-    limit: "1",
-  });
-
-  return rows?.[0] ?? null;
+  return callAgentConfigFunction({ phone_number: phoneNumber });
 }
 
-/**
- * Fetch the first active agent (fallback when no agentId or phone match).
- */
 export async function fetchFirstActiveAgent(): Promise<AgentConfig | null> {
-  const rows = await fetchRows<AgentConfig>("agents", {
-    is_active: "eq.true",
-    select: AGENT_SELECT_FIELDS,
-    order: "created_at.asc",
-    limit: "1",
-  });
-
-  return rows?.[0] ?? null;
+  return callAgentConfigFunction({ fallback_first: true });
 }
