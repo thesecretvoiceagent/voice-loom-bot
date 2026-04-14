@@ -5,15 +5,21 @@
  * the external orchestrator service (deployed on Railway).
  * 
  * UI NEVER calls Twilio or OpenAI directly.
+ * 
+ * The orchestrator URL can come from:
+ * 1. VITE_API_BASE_URL env var (build-time)
+ * 2. organization_settings.orchestrator_url in DB (runtime, set from System Health page)
  */
 
+let runtimeBaseUrl: string | null = null;
+
 const getApiBaseUrl = (): string => {
+  if (runtimeBaseUrl) return runtimeBaseUrl;
   const baseUrl = import.meta.env.VITE_API_BASE_URL;
   if (!baseUrl) {
-    console.warn('VITE_API_BASE_URL not configured - orchestrator calls will fail');
     return '';
   }
-  return baseUrl.replace(/\/$/, ''); // Remove trailing slash
+  return baseUrl.replace(/\/$/, '');
 };
 
 export interface OrchestratorConfig {
@@ -50,34 +56,25 @@ export interface OrchestratorHealthResponse {
 }
 
 class OrchestratorClient {
-  private baseUrl: string = '';
-
-  constructor() {
-    this.baseUrl = getApiBaseUrl();
-  }
-
-  /**
-   * Check if orchestrator is configured
-   */
   getConfig(): OrchestratorConfig {
+    const baseUrl = getApiBaseUrl();
     return {
-      isConfigured: !!this.baseUrl,
-      baseUrl: this.baseUrl
+      isConfigured: !!baseUrl,
+      baseUrl
     };
   }
 
-  /**
-   * Refresh base URL (useful after env changes)
-   */
-  refresh(): void {
-    this.baseUrl = getApiBaseUrl();
+  setRuntimeUrl(url: string): void {
+    runtimeBaseUrl = url ? url.replace(/\/$/, '') : null;
   }
 
-  /**
-   * Health check - GET /health
-   */
+  refresh(): void {
+    // Re-evaluate on next getConfig call
+  }
+
   async health(): Promise<OrchestratorHealthResponse> {
-    if (!this.baseUrl) {
+    const baseUrl = getApiBaseUrl();
+    if (!baseUrl) {
       return {
         ok: false,
         service: 'orchestrator',
@@ -90,7 +87,7 @@ class OrchestratorClient {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/health`, {
+      const response = await fetch(`${baseUrl}/health`, {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -109,20 +106,18 @@ class OrchestratorClient {
     }
   }
 
-  /**
-   * Start a call - POST /api/calls/start
-   */
   async startCall(request: StartCallRequest): Promise<StartCallResponse> {
-    if (!this.baseUrl) {
+    const baseUrl = getApiBaseUrl();
+    if (!baseUrl) {
       return {
         success: false,
         status: 'not_configured',
-        error: 'VITE_API_BASE_URL not configured. Set this to your Railway orchestrator URL.'
+        error: 'Orchestrator URL not configured. Set it in System Health → Configuration.'
       };
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/api/calls/start`, {
+      const response = await fetch(`${baseUrl}/api/calls/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request)
@@ -150,9 +145,6 @@ class OrchestratorClient {
     }
   }
 
-  /**
-   * Run health checks - POST /ops/health/run
-   */
   async runHealthChecks(): Promise<{
     success: boolean;
     results?: Array<{
@@ -165,15 +157,16 @@ class OrchestratorClient {
     error?: string;
     correlation_id?: string;
   }> {
-    if (!this.baseUrl) {
+    const baseUrl = getApiBaseUrl();
+    if (!baseUrl) {
       return {
         success: false,
-        error: 'VITE_API_BASE_URL not configured'
+        error: 'Orchestrator URL not configured'
       };
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/ops/health/run`, {
+      const response = await fetch(`${baseUrl}/ops/health/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
