@@ -201,7 +201,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           streamSid = msg.start.streamSid;
           callId = msg.start.customParameters?.callId || "";
           agentId = msg.start.customParameters?.agentId || "";
-          console.log(`[MediaStream] Stream started: streamSid=${streamSid} callId=${callId} agentId=${agentId}`);
+          calledNumber = msg.start.customParameters?.calledNumber || "";
+          console.log(`[MediaStream] Stream started: streamSid=${streamSid} callId=${callId} agentId=${agentId} calledNumber=${calledNumber}`);
 
           // Now connect to OpenAI (async — fetches agent config first)
           connectToOpenAI();
