@@ -29,6 +29,8 @@ import {
   Globe,
   Loader2,
   Save,
+  Trash2,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -86,6 +88,43 @@ const quickInserts = [
   { id: "datetime", label: "Date & Time" },
 ];
 
+const timezones = [
+  { value: "Europe/Tallinn", label: "Europe/Tallinn (EET/EEST)" },
+  { value: "Europe/Helsinki", label: "Europe/Helsinki (EET/EEST)" },
+  { value: "Europe/London", label: "Europe/London (GMT/BST)" },
+  { value: "Europe/Berlin", label: "Europe/Berlin (CET/CEST)" },
+  { value: "Europe/Paris", label: "Europe/Paris (CET/CEST)" },
+  { value: "Europe/Madrid", label: "Europe/Madrid (CET/CEST)" },
+  { value: "Europe/Rome", label: "Europe/Rome (CET/CEST)" },
+  { value: "Europe/Amsterdam", label: "Europe/Amsterdam (CET/CEST)" },
+  { value: "Europe/Stockholm", label: "Europe/Stockholm (CET/CEST)" },
+  { value: "Europe/Riga", label: "Europe/Riga (EET/EEST)" },
+  { value: "Europe/Vilnius", label: "Europe/Vilnius (EET/EEST)" },
+  { value: "Europe/Warsaw", label: "Europe/Warsaw (CET/CEST)" },
+  { value: "Europe/Moscow", label: "Europe/Moscow (MSK)" },
+  { value: "Europe/Kiev", label: "Europe/Kyiv (EET/EEST)" },
+  { value: "Europe/Istanbul", label: "Europe/Istanbul (TRT)" },
+  { value: "US/Eastern", label: "US/Eastern (EST/EDT)" },
+  { value: "US/Central", label: "US/Central (CST/CDT)" },
+  { value: "US/Mountain", label: "US/Mountain (MST/MDT)" },
+  { value: "US/Pacific", label: "US/Pacific (PST/PDT)" },
+  { value: "America/New_York", label: "America/New York (EST/EDT)" },
+  { value: "America/Chicago", label: "America/Chicago (CST/CDT)" },
+  { value: "America/Denver", label: "America/Denver (MST/MDT)" },
+  { value: "America/Los_Angeles", label: "America/Los Angeles (PST/PDT)" },
+  { value: "America/Toronto", label: "America/Toronto (EST/EDT)" },
+  { value: "America/Sao_Paulo", label: "America/São Paulo (BRT)" },
+  { value: "Asia/Tokyo", label: "Asia/Tokyo (JST)" },
+  { value: "Asia/Shanghai", label: "Asia/Shanghai (CST)" },
+  { value: "Asia/Kolkata", label: "Asia/Kolkata (IST)" },
+  { value: "Asia/Dubai", label: "Asia/Dubai (GST)" },
+  { value: "Asia/Singapore", label: "Asia/Singapore (SGT)" },
+  { value: "Australia/Sydney", label: "Australia/Sydney (AEST/AEDT)" },
+  { value: "Pacific/Auckland", label: "Pacific/Auckland (NZST/NZDT)" },
+  { value: "Africa/Johannesburg", label: "Africa/Johannesburg (SAST)" },
+  { value: "UTC", label: "UTC" },
+];
+
 export default function CreateAgent() {
   const { type } = useParams<{ type: "inbound" | "outbound" }>();
   const [searchParams] = useSearchParams();
@@ -114,6 +153,9 @@ export default function CreateAgent() {
   const [enableRecording, setEnableRecording] = useState(true);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("17:00");
+  const [timezone, setTimezone] = useState("Europe/Tallinn");
+  const [knowledgeItems, setKnowledgeItems] = useState<Array<{ id: string; name: string; content: string }>>([]);
+  const [knowledgeText, setKnowledgeText] = useState("");
 
   const isInbound = type === "inbound";
 
@@ -155,6 +197,10 @@ export default function CreateAgent() {
         setStartTime(agent.schedule.start_time || "09:00");
         setEndTime(agent.schedule.end_time || "17:00");
         setSelectedDays(agent.schedule.days || []);
+        setTimezone(agent.schedule.timezone || "Europe/Tallinn");
+      }
+      if (agent.knowledge_base && Array.isArray(agent.knowledge_base)) {
+        setKnowledgeItems(agent.knowledge_base as any[] || []);
       }
       setLoadingEdit(false);
     })();
@@ -210,8 +256,9 @@ export default function CreateAgent() {
         start_time: startTime,
         end_time: endTime,
         days: selectedDays,
-        timezone: "Europe/Tallinn",
+        timezone,
       },
+      knowledge_base: knowledgeItems,
     };
 
     try {
@@ -613,9 +660,22 @@ export default function CreateAgent() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3 p-4 rounded-xl border border-border bg-secondary/30">
-                  <Globe className="h-5 w-5 text-orange-500" />
-                  <p className="font-medium text-foreground">Europe/Tallinn (EET/EEST)</p>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <Globe className="h-5 w-5 text-orange-500" />
+                    <p className="font-medium text-foreground">Timezone</p>
+                  </div>
+                  <select
+                    value={timezone}
+                    onChange={(e) => setTimezone(e.target.value)}
+                    className="w-full p-3 rounded-xl border border-border bg-secondary/30 text-foreground"
+                  >
+                    {timezones.map((tz) => (
+                      <option key={tz.value} value={tz.value}>
+                        {tz.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>
@@ -631,19 +691,90 @@ export default function CreateAgent() {
               <div className="flex-1 space-y-4">
                 <div>
                   <h3 className="font-semibold text-foreground">Knowledge Base</h3>
-                  <p className="text-sm text-muted-foreground">Add documents the AI can reference during calls</p>
+                  <p className="text-sm text-muted-foreground">Add information the AI can reference during calls</p>
                 </div>
-                <div className="border-2 border-dashed border-border rounded-xl p-8 text-center hover:border-primary/50 transition-colors cursor-pointer">
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-                      <Upload className="h-6 w-6 text-primary" />
-                    </div>
-                    <div>
-                      <p className="font-medium text-foreground">Drag files here or click to browse</p>
-                      <p className="text-sm text-muted-foreground mt-1">Supports .txt, .doc, and .docx files up to 10MB</p>
+
+                {/* Add knowledge item */}
+                <div className="space-y-3">
+                  <Input
+                    placeholder="Topic name (e.g. Pricing, FAQ, Product Info)..."
+                    value={knowledgeText}
+                    onChange={(e) => setKnowledgeText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && knowledgeText.trim()) {
+                        setKnowledgeItems((prev) => [
+                          ...prev,
+                          { id: crypto.randomUUID(), name: knowledgeText.trim(), content: "" },
+                        ]);
+                        setKnowledgeText("");
+                      }
+                    }}
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2"
+                    onClick={() => {
+                      if (knowledgeText.trim()) {
+                        setKnowledgeItems((prev) => [
+                          ...prev,
+                          { id: crypto.randomUUID(), name: knowledgeText.trim(), content: "" },
+                        ]);
+                        setKnowledgeText("");
+                      }
+                    }}
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add Topic
+                  </Button>
+                </div>
+
+                {/* Knowledge items list */}
+                {knowledgeItems.length > 0 && (
+                  <div className="space-y-4">
+                    {knowledgeItems.map((item) => (
+                      <div key={item.id} className="border border-border rounded-xl p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <FileText className="h-4 w-4 text-primary" />
+                            <span className="font-medium text-foreground text-sm">{item.name}</span>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setKnowledgeItems((prev) => prev.filter((k) => k.id !== item.id))}
+                          >
+                            <X className="h-4 w-4 text-muted-foreground" />
+                          </Button>
+                        </div>
+                        <Textarea
+                          value={item.content}
+                          onChange={(e) =>
+                            setKnowledgeItems((prev) =>
+                              prev.map((k) => (k.id === item.id ? { ...k, content: e.target.value } : k))
+                            )
+                          }
+                          placeholder={`Enter information about ${item.name}...`}
+                          className="min-h-[100px]"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {knowledgeItems.length === 0 && (
+                  <div className="border-2 border-dashed border-border rounded-xl p-8 text-center">
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+                        <Database className="h-6 w-6 text-primary" />
+                      </div>
+                      <div>
+                        <p className="font-medium text-foreground">No knowledge items yet</p>
+                        <p className="text-sm text-muted-foreground mt-1">Add topics with content the AI can reference during calls</p>
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
               </div>
             </div>
           </div>

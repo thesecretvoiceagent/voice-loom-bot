@@ -18,7 +18,7 @@ serve(async (req) => {
 
     const { agent_id, phone_number, fallback_first } = await req.json();
 
-    const selectFields = "id,name,greeting,system_prompt,analysis_prompt,voice,tools,settings,schedule";
+    const selectFields = "id,name,greeting,system_prompt,analysis_prompt,voice,tools,settings,schedule,knowledge_base";
 
     // 1. Try by agent ID
     if (agent_id && agent_id !== "default") {
