@@ -12,7 +12,7 @@ import {
 import { Phone, Loader2, User, Building, Plus, X } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { callService } from "@/services/callService";
 
 interface TestCallDialogProps {
   open: boolean;
@@ -66,21 +66,17 @@ export function TestCallDialog({ open, onOpenChange, agentName, agentId, agentTy
         if (v.key && v.value) variables[v.key] = v.value;
       });
 
-      const { data, error } = await supabase.functions.invoke("calls-start", {
-        body: {
-          to_number: phoneNumber,
-          agent_id: agentId,
-          variables,
-        },
+      const response = await callService.startCall({
+        to_number: phoneNumber,
+        agent_id: agentId,
+        variables,
       });
 
-      if (error) throw error;
-
-      if (data?.success) {
+      if (response.success) {
         toast.success(`Call initiated to ${phoneNumber}`);
         onOpenChange(false);
       } else {
-        toast.error(data?.error || "Failed to start call");
+        toast.error(response.error || "Failed to start call");
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to start call");
