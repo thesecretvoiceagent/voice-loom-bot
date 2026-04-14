@@ -47,7 +47,7 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
   try {
     const callId = crypto.randomUUID();
     const wsBaseUrl = config.publicWsBaseUrl || config.publicBaseUrl.replace("https://", "wss://");
-    const voiceUrl = `${config.publicBaseUrl}/twilio/voice?callId=${callId}&agentId=${agent_id}`;
+    const voiceUrl = `${config.publicBaseUrl}/twilio/voice?callId=${callId}&agentId=${agent_id}${campaign_id ? `&campaignId=${campaign_id}` : ""}`;
     const statusUrl = `${config.publicBaseUrl}/twilio/status`;
 
     // Call Twilio REST API to initiate outbound call
