@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Table,
   TableBody,
@@ -26,91 +25,78 @@ import {
 import {
   ArrowLeft,
   Download,
-  Play,
-  Pause,
   Volume2,
   FileText,
-  MoreVertical,
   PhoneOutgoing,
   PhoneIncoming,
-  User,
   Phone,
   Clock,
   Calendar,
   MessageSquare,
-  X,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCalls, type CallRow } from "@/hooks/useCalls";
+import { useAgents } from "@/hooks/useAgents";
+import { Skeleton } from "@/components/ui/skeleton";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 
-const callLogs = [
-  {
-    id: "1",
-    contact: "Alar Tamm",
-    toNumber: "+37253402318",
-    fromNumber: "+37256011298",
-    direction: "outbound",
-    startTime: "Dec 3, 2025, 17:43",
-    endTime: "Dec 3, 2025, 17:45",
-    duration: "1m 16s",
-    turns: "1/4",
-    status: "completed",
-    updatedAt: "Dec 3, 2025, 17:43",
-    aiSummary: "Called Henri who wanted to book an appointment at Barbershop. He wanted to book for Friday...",
-    transcript: [
-      { speaker: "agent", text: "Hello Kristjan! This is Barbershop calling. What time would you like to book?" },
-      { speaker: "user", text: "Yes, okay, please book me for Friday at three thirty in the afternoon, please." },
-      { speaker: "agent", text: "Alright. Let me check Friday's schedule and see if three thirty is available. One moment..." },
-      { speaker: "user", text: "Well, at three-- at three thirty, please." },
-      { speaker: "agent", text: "Let me check. Yes, one moment. Good news. Friday at three thirty is available. Let's book that. Please tell me your name and phone number." },
-      { speaker: "user", text: "Yes, uh, my name is Henri and my phone number is one, one, one, one, one, one, one." },
-      { speaker: "agent", text: "Okay. Henri, is this booking for a haircut, beard grooming, or both together?" },
-      { speaker: "user", text: "Beard grooming, please." },
-      { speaker: "agent", text: "Got it. Your booking is for Friday at three thirty, service \"Beard Grooming\". See you at Barber Shop then. Have a nice day!" },
-    ],
-  },
-  {
-    id: "2",
-    contact: "Alar Tamm",
-    toNumber: "+37253402318",
-    fromNumber: "+37256011298",
-    direction: "outbound",
-    startTime: "Dec 3, 2025, 17:42",
-    endTime: "Dec 3, 2025, 17:43",
-    duration: "48s",
-    turns: "1/4",
-    status: "completed",
-    updatedAt: "Dec 3, 2025, 17:42",
-    aiSummary: "The caller was an AI agent who wanted to book an appointment at Barbershop. He wanted to book for...",
-    transcript: [
-      { speaker: "agent", text: "Hello! This is Barbershop AI calling. How can I help you today?" },
-      { speaker: "user", text: "I'd like to book an appointment for a haircut." },
-    ],
-  },
-  {
-    id: "3",
-    contact: "Alar Tamm",
-    toNumber: "+37253402318",
-    fromNumber: "+37256011298",
-    direction: "outbound",
-    startTime: "Dec 3, 2025, 17:30",
-    endTime: "Dec 3, 2025, 17:32",
-    duration: "1m 56s",
-    turns: "1/4",
-    status: "completed",
-    updatedAt: "Dec 3, 2025, 17:30",
-    aiSummary: "Called Henry who wanted to book an appointment at Barbershop. He wanted to book for...",
-    transcript: [],
-  },
-];
+function formatDuration(seconds: number | null): string {
+  if (!seconds) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function formatTime(dateStr: string | null): string {
+  if (!dateStr) return "—";
+  try {
+    return new Date(dateStr).toLocaleString();
+  } catch {
+    return dateStr;
+  }
+}
 
 export default function AgentCalls() {
   const { id } = useParams();
-  const [filter, setFilter] = useState("all");
-  const [transcriptModal, setTranscriptModal] = useState<typeof callLogs[0] | null>(null);
-  const [summaryModal, setSummaryModal] = useState<typeof callLogs[0] | null>(null);
-  const [playingAudio, setPlayingAudio] = useState<string | null>(null);
+  const { calls, loading, refetch } = useCalls({ agent_id: id, limit: 200 });
+  const { agents } = useAgents();
+  const agent = agents.find((a) => a.id === id);
 
-  const agentName = "Edvini AI";
+  const [filter, setFilter] = useState("all");
+  const [transcriptModal, setTranscriptModal] = useState<CallRow | null>(null);
+  const [summaryModal, setSummaryModal] = useState<CallRow | null>(null);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+
+  const filteredCalls = filter === "all"
+    ? calls
+    : calls.filter((c) => c.status === filter);
+
+  const handleDelete = async (callId: string) => {
+    if (!confirm("Delete this call log?")) return;
+    setDeletingIds((prev) => new Set(prev).add(callId));
+    try {
+      const { error } = await supabase.from("calls").delete().eq("id", callId);
+      if (error) throw error;
+      toast.success("Call log deleted");
+      refetch();
+    } catch {
+      toast.error("Failed to delete");
+    } finally {
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(callId);
+        return next;
+      });
+    }
+  };
+
+  const agentName = agent?.name || "Agent";
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -128,9 +114,9 @@ export default function AgentCalls() {
             Call Logs: {agentName}
           </h1>
           <p className="mt-1 text-muted-foreground">
-            Detailed campaign "{agentName}" call logs.
-            <br />
-            <span className="text-sm">Showing 1-3 / 3 calls</span>
+            <span className="text-sm">
+              {loading ? "Loading..." : `${filteredCalls.length} call${filteredCalls.length !== 1 ? "s" : ""}`}
+            </span>
           </p>
         </div>
         <Button className="gap-2">
@@ -149,8 +135,9 @@ export default function AgentCalls() {
           <SelectContent>
             <SelectItem value="all">All statuses</SelectItem>
             <SelectItem value="completed">Completed</SelectItem>
-            <SelectItem value="missed">Missed</SelectItem>
             <SelectItem value="failed">Failed</SelectItem>
+            <SelectItem value="no-answer">No Answer</SelectItem>
+            <SelectItem value="busy">Busy</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -162,159 +149,193 @@ export default function AgentCalls() {
             <TableRow className="border-border hover:bg-transparent">
               <TableHead className="text-muted-foreground">
                 <div className="flex items-center gap-1">
-                  <User className="h-4 w-4" />
-                  Contact
-                </div>
-              </TableHead>
-              <TableHead className="text-muted-foreground">
-                <div className="flex items-center gap-1">
                   <Phone className="h-4 w-4" />
-                  Phone Numbers
+                  Phone
                 </div>
               </TableHead>
-              <TableHead className="text-muted-foreground">
-                <div className="flex items-center gap-1">
-                  ↕ Direction
-                </div>
-              </TableHead>
+              <TableHead className="text-muted-foreground">Direction</TableHead>
               <TableHead className="text-muted-foreground">
                 <div className="flex items-center gap-1">
                   <Calendar className="h-4 w-4" />
                   Call Time
                 </div>
               </TableHead>
-              <TableHead className="text-muted-foreground">
-                <div className="flex items-center gap-1">
-                  📊 Status
-                </div>
-              </TableHead>
+              <TableHead className="text-muted-foreground">Status</TableHead>
               <TableHead className="text-muted-foreground">
                 <div className="flex items-center gap-1">
                   <Clock className="h-4 w-4" />
-                  Updated
+                  Duration
                 </div>
               </TableHead>
-              <TableHead className="text-muted-foreground">AI Summary</TableHead>
-              <TableHead className="text-muted-foreground text-right">
-                Actions
-              </TableHead>
+              <TableHead className="text-muted-foreground">Summary</TableHead>
+              <TableHead className="text-muted-foreground text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {callLogs.map((call) => (
-              <TableRow
-                key={call.id}
-                className="border-border hover:bg-secondary/30"
-              >
-                <TableCell>
-                  <span className="font-medium">{call.contact}</span>
+            {loading ? (
+              Array.from({ length: 4 }).map((_, i) => (
+                <TableRow key={i} className="border-border">
+                  {Array.from({ length: 7 }).map((_, j) => (
+                    <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
+                  ))}
+                </TableRow>
+              ))
+            ) : filteredCalls.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
+                  No calls recorded yet
                 </TableCell>
-                <TableCell>
-                  <div className="space-y-0.5 text-sm">
-                    <p className="text-muted-foreground">
-                      To: <span className="font-mono">{call.toNumber}</span>
-                    </p>
-                    <p className="text-muted-foreground">
-                      From: <span className="font-mono">{call.fromNumber}</span>
-                    </p>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <span
-                    className={cn(
-                      "inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full",
-                      call.direction === "outbound"
-                        ? "bg-primary/10 text-primary"
-                        : "bg-success/10 text-success"
-                    )}
-                  >
-                    {call.direction === "outbound" ? (
-                      <PhoneOutgoing className="h-3 w-3" />
-                    ) : (
-                      <PhoneIncoming className="h-3 w-3" />
-                    )}
-                    {call.direction === "outbound" ? "Outbound" : "Inbound"}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  <div className="space-y-0.5 text-sm">
-                    <p className="text-muted-foreground">
-                      Start: {call.startTime}
-                    </p>
-                    <p className="text-muted-foreground">
-                      End: {call.endTime}
-                    </p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="bg-success/10 text-success text-xs px-2 py-0.5 rounded-full font-medium">
-                        Completed
-                      </span>
-                      <span className="text-xs text-muted-foreground flex items-center gap-1">
-                        <Clock className="h-3 w-3" />
-                        {call.duration}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        📊 {call.turns}
+              </TableRow>
+            ) : (
+              filteredCalls.map((call) => (
+                <TableRow key={call.id} className="border-border hover:bg-secondary/30">
+                  <TableCell>
+                    <div className="space-y-0.5 text-sm">
+                      <p className="font-mono">{call.to_number}</p>
+                      {call.from_number && (
+                        <p className="text-muted-foreground text-xs font-mono">
+                          From: {call.from_number}
+                        </p>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full",
+                        call.direction === "outbound"
+                          ? "bg-primary/10 text-primary"
+                          : "bg-success/10 text-success"
+                      )}
+                    >
+                      {call.direction === "outbound" ? (
+                        <PhoneOutgoing className="h-3 w-3" />
+                      ) : (
+                        <PhoneIncoming className="h-3 w-3" />
+                      )}
+                      {call.direction === "outbound" ? "Outbound" : "Inbound"}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    <div className="text-sm">
+                      <p className="text-muted-foreground">{formatTime(call.started_at || call.created_at)}</p>
+                      {call.ended_at && (
+                        <p className="text-xs text-muted-foreground">
+                          End: {formatTime(call.ended_at)}
+                        </p>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1.5">
+                      {call.status === "completed" && <CheckCircle2 className="h-4 w-4 text-success" />}
+                      {["failed", "busy", "no-answer", "canceled"].includes(call.status) && <XCircle className="h-4 w-4 text-destructive" />}
+                      {["initiated", "ringing", "in-progress", "queued", "pending"].includes(call.status) && <Clock className="h-4 w-4 text-primary animate-pulse" />}
+                      <span className={cn(
+                        "text-xs font-medium capitalize",
+                        call.status === "completed" && "text-success",
+                        ["failed", "busy", "no-answer", "canceled"].includes(call.status) && "text-destructive",
+                      )}>
+                        {call.status.replace(/-/g, " ")}
                       </span>
                     </div>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <span className="inline-flex items-center gap-1 bg-success/10 text-success text-xs px-2.5 py-1 rounded-full font-medium">
-                    Completed
-                  </span>
-                </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {call.updatedAt}
-                </TableCell>
-                <TableCell>
-                  <p className="text-sm text-muted-foreground line-clamp-2 max-w-[200px]">
-                    {call.aiSummary}
-                  </p>
-                </TableCell>
-                <TableCell>
-                  <div className="flex items-center justify-end gap-1">
-                    {/* Audio Player */}
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                  </TableCell>
+                  <TableCell className="font-mono text-sm">
+                    {formatDuration(call.duration_seconds)}
+                  </TableCell>
+                  <TableCell>
+                    <p className="text-sm text-muted-foreground line-clamp-2 max-w-[200px]">
+                      {call.summary || "—"}
+                    </p>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center justify-end gap-1">
+                      {call.recording_url && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          onClick={() => setPlayingId(playingId === call.id ? null : call.id)}
+                          title="Play recording"
+                        >
+                          <Volume2 className={cn("h-4 w-4", playingId === call.id && "text-primary")} />
+                        </Button>
+                      )}
+                      {call.transcript && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-1.5"
+                          onClick={() => setTranscriptModal(call)}
+                        >
+                          <FileText className="h-3.5 w-3.5" />
+                          Transcript
+                        </Button>
+                      )}
+                      {call.summary && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          onClick={() => setSummaryModal(call)}
+                          title="AI Summary"
+                        >
+                          <MessageSquare className="h-4 w-4" />
+                        </Button>
+                      )}
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7"
-                        onClick={() =>
-                          setPlayingAudio(
-                            playingAudio === call.id ? null : call.id
-                          )
-                        }
+                        className="h-7 w-7 text-destructive hover:text-destructive"
+                        onClick={() => handleDelete(call.id)}
+                        disabled={deletingIds.has(call.id)}
+                        title="Delete"
                       >
-                        {playingAudio === call.id ? (
-                          <Pause className="h-3.5 w-3.5" />
+                        {deletingIds.has(call.id) ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
-                          <Play className="h-3.5 w-3.5" />
+                          <Trash2 className="h-4 w-4" />
                         )}
                       </Button>
-                      <span>0:00 / {call.duration.replace("m ", ":").replace("s", "")}</span>
-                      <Button variant="ghost" size="icon" className="h-7 w-7">
-                        <Volume2 className="h-3.5 w-3.5" />
-                      </Button>
                     </div>
-                    <Button variant="ghost" size="icon" className="h-7 w-7">
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-1.5"
-                      onClick={() => setTranscriptModal(call)}
-                    >
-                      <FileText className="h-3.5 w-3.5" />
-                      Transcript
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
           </TableBody>
         </Table>
       </div>
+
+      {/* Inline Audio Player */}
+      {playingId && (() => {
+        const call = calls.find((c) => c.id === playingId);
+        if (!call?.recording_url) return null;
+        return (
+          <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 glass-card rounded-xl p-4 shadow-elevated flex items-center gap-4 min-w-[400px]">
+            <Volume2 className="h-5 w-5 text-primary shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-foreground mb-2">
+                Recording — {call.to_number}
+              </p>
+              <audio
+                src={call.recording_url}
+                controls
+                autoPlay
+                className="w-full h-8"
+                onEnded={() => setPlayingId(null)}
+              />
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              onClick={() => setPlayingId(null)}
+            >
+              <XCircle className="h-4 w-4" />
+            </Button>
+          </div>
+        );
+      })()}
 
       {/* Transcript Modal */}
       <Dialog open={!!transcriptModal} onOpenChange={() => setTranscriptModal(null)}>
@@ -324,78 +345,34 @@ export default function AgentCalls() {
               <FileText className="h-5 w-5" />
               Call Transcript
             </DialogTitle>
-            <p className="text-sm text-muted-foreground">
-              View the full transcript and call details
-            </p>
           </DialogHeader>
-
           {transcriptModal && (
-            <div className="flex-1 overflow-auto space-y-6">
-              {/* Call Info */}
+            <div className="flex-1 overflow-auto space-y-4">
               <div className="grid grid-cols-2 gap-4 p-4 rounded-lg bg-secondary/50">
-                <div className="flex items-center gap-2">
-                  <User className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm">
-                    <span className="text-muted-foreground">Contact:</span>{" "}
-                    <span className="font-medium">{transcriptModal.contact}</span>
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 text-sm">
                   <Phone className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm">
-                    <span className="text-muted-foreground">Phone:</span>{" "}
-                    <span className="font-mono">{transcriptModal.toNumber}</span>
-                  </span>
+                  <span className="font-mono">{transcriptModal.to_number}</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 text-sm">
                   <Clock className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm">
-                    <span className="text-muted-foreground">Time:</span>{" "}
-                    {transcriptModal.startTime}
-                  </span>
+                  {formatDuration(transcriptModal.duration_seconds)}
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex items-center gap-1 bg-success/10 text-success text-xs px-2 py-0.5 rounded-full font-medium">
-                    <span className="text-muted-foreground mr-1">Status:</span>
-                    Completed
+                <div className="flex items-center gap-2 text-sm">
+                  <Calendar className="h-4 w-4 text-muted-foreground" />
+                  {formatTime(transcriptModal.started_at || transcriptModal.created_at)}
+                </div>
+                <div>
+                  <span className={cn(
+                    "text-xs font-medium capitalize px-2 py-0.5 rounded-full",
+                    transcriptModal.status === "completed" ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"
+                  )}>
+                    {transcriptModal.status}
                   </span>
                 </div>
               </div>
-
-              {/* Transcript */}
-              <div className="space-y-3">
-                <h4 className="font-semibold text-foreground">Transcript</h4>
-                <div className="space-y-3 p-4 rounded-lg bg-muted/30 max-h-[300px] overflow-auto">
-                  {transcriptModal.transcript.map((turn, index) => (
-                    <p key={index} className="text-sm">
-                      <span
-                        className={cn(
-                          "font-semibold",
-                          turn.speaker === "agent"
-                            ? "text-primary"
-                            : "text-orange-500"
-                        )}
-                      >
-                        [{turn.speaker === "agent" ? "Agent" : "User"}]
-                      </span>{" "}
-                      <span className="text-foreground">{turn.text}</span>
-                    </p>
-                  ))}
-                </div>
+              <div className="p-4 rounded-lg bg-muted/30 max-h-[350px] overflow-auto whitespace-pre-wrap text-sm text-foreground">
+                {transcriptModal.transcript}
               </div>
-
-              {/* AI Summary Button */}
-              <Button
-                variant="outline"
-                className="w-full gap-2"
-                onClick={() => {
-                  setTranscriptModal(null);
-                  setSummaryModal(transcriptModal);
-                }}
-              >
-                <MessageSquare className="h-4 w-4" />
-                View AI Summary
-              </Button>
             </div>
           )}
         </DialogContent>
@@ -409,23 +386,11 @@ export default function AgentCalls() {
               <MessageSquare className="h-5 w-5" />
               AI Call Summary
             </DialogTitle>
-            <p className="text-sm text-muted-foreground">
-              Call with {summaryModal?.contact} on {summaryModal?.startTime}
-            </p>
           </DialogHeader>
-
           {summaryModal && (
-            <div className="space-y-4">
-              <p className="text-sm text-foreground leading-relaxed">
-                {summaryModal.aiSummary}
-              </p>
-              <p className="text-sm text-foreground leading-relaxed">
-                The caller was an AI agent who wanted to book an appointment at
-                Barbershop. The client wanted a booking at 13:00 on 06.12.2023.
-                They also wanted a haircut and beard grooming. The agent noted
-                that the date might be wrong, as Friday is actually 05.12.2023.
-              </p>
-            </div>
+            <p className="text-sm text-foreground leading-relaxed">
+              {summaryModal.summary}
+            </p>
           )}
         </DialogContent>
       </Dialog>
