@@ -2,12 +2,15 @@ import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Activity, Database, Phone, Bot, Server,
-  RefreshCw, CheckCircle2, XCircle, AlertTriangle, Clock
+  RefreshCw, CheckCircle2, XCircle, AlertTriangle, Clock, Save, Settings2, Loader2, ExternalLink
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { orchestratorClient } from "@/services/orchestratorClient";
+import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { format } from "date-fns";
 
@@ -21,18 +24,80 @@ interface ServiceStatus {
 }
 
 export default function SystemHealth() {
+  const { user } = useAuth();
   const [services, setServices] = useState<ServiceStatus[]>([]);
   const [isChecking, setIsChecking] = useState(false);
   const [lastFullCheck, setLastFullCheck] = useState<Date | null>(null);
-  const [orchestratorUrl, setOrchestratorUrl] = useState<string>("");
   const [providerRows, setProviderRows] = useState<any[]>([]);
+
+  // Configuration form
+  const [orchUrl, setOrchUrl] = useState("");
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [configLoaded, setConfigLoaded] = useState(false);
+
+  // Load saved orchestrator URL from DB
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      const { data } = await supabase
+        .from("organization_settings")
+        .select("orchestrator_url")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      const savedUrl = (data as any)?.orchestrator_url || "";
+      setOrchUrl(savedUrl);
+      if (savedUrl) {
+        orchestratorClient.setRuntimeUrl(savedUrl);
+      }
+      setConfigLoaded(true);
+    })();
+  }, [user]);
+
+  // Run health checks after config loads
+  useEffect(() => {
+    if (configLoaded) checkHealth();
+  }, [configLoaded]);
+
+  const saveConfig = async () => {
+    if (!user) return;
+    setSavingConfig(true);
+    try {
+      const { data: existing } = await supabase
+        .from("organization_settings")
+        .select("id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (existing) {
+        const { error } = await supabase
+          .from("organization_settings")
+          .update({ orchestrator_url: orchUrl } as any)
+          .eq("user_id", user.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from("organization_settings")
+          .insert({ user_id: user.id, orchestrator_url: orchUrl } as any);
+        if (error) throw error;
+      }
+
+      orchestratorClient.setRuntimeUrl(orchUrl);
+      toast.success("Configuration saved");
+      checkHealth();
+    } catch (err) {
+      toast.error("Failed to save configuration");
+      console.error(err);
+    } finally {
+      setSavingConfig(false);
+    }
+  };
 
   const checkHealth = async () => {
     setIsChecking(true);
     const now = new Date().toISOString();
     const results: ServiceStatus[] = [];
 
-    // 1. Check Database
+    // 1. Database
     const dbStart = performance.now();
     try {
       const { error: dbError } = await supabase.from("calls").select("id").limit(1);
@@ -49,7 +114,7 @@ export default function SystemHealth() {
       results.push({ name: "Database", status: "down", lastCheck: now, details: "Connection failed", icon: Database });
     }
 
-    // 2. Check Auth
+    // 2. Auth
     const { data: { session } } = await supabase.auth.getSession();
     results.push({
       name: "Authentication",
@@ -59,14 +124,13 @@ export default function SystemHealth() {
       icon: Activity,
     });
 
-    // 3. Check Orchestrator + Twilio + OpenAI
+    // 3. Orchestrator + Twilio + OpenAI
     const orchestratorConfig = orchestratorClient.getConfig();
-    setOrchestratorUrl(orchestratorConfig.baseUrl);
 
     if (!orchestratorConfig.isConfigured) {
-      results.push({ name: "Orchestrator", status: "not_configured", lastCheck: now, details: "VITE_API_BASE_URL not set", icon: Server });
+      results.push({ name: "Orchestrator", status: "not_configured", lastCheck: now, details: "URL not set — configure below", icon: Server });
       results.push({ name: "Twilio", status: "not_configured", lastCheck: now, details: "Requires orchestrator", icon: Phone });
-      results.push({ name: "OpenAI", status: "not_configured", lastCheck: now, details: "Requires orchestrator", icon: Bot });
+      results.push({ name: "OpenAI API", status: "not_configured", lastCheck: now, details: "Requires orchestrator", icon: Bot });
     } else {
       const orchStart = performance.now();
       const healthResponse = await orchestratorClient.health();
@@ -93,7 +157,7 @@ export default function SystemHealth() {
 
         const openai = healthResponse.providers?.openai;
         results.push({
-          name: "OpenAI",
+          name: "OpenAI API",
           status: openai?.configured ? "healthy" : "not_configured",
           lastCheck: now,
           details: openai?.status || "Unknown",
@@ -102,21 +166,11 @@ export default function SystemHealth() {
       } else {
         results.push({ name: "Orchestrator", status: "down", lastCheck: now, details: `Cannot reach ${orchestratorConfig.baseUrl}`, icon: Server });
         results.push({ name: "Twilio", status: "unknown", lastCheck: now, details: "Orchestrator unreachable", icon: Phone });
-        results.push({ name: "OpenAI", status: "unknown", lastCheck: now, details: "Orchestrator unreachable", icon: Bot });
+        results.push({ name: "OpenAI API", status: "unknown", lastCheck: now, details: "Orchestrator unreachable", icon: Bot });
       }
     }
 
-    // 4. Read provider_status table for additional context
-    const { data: providerData } = await supabase
-      .from("provider_status")
-      .select("*")
-      .order("last_checked_at", { ascending: false });
-
-    if (providerData) {
-      setProviderRows(providerData);
-    }
-
-    // 5. Edge Functions check (hit health-check function)
+    // 4. Edge Functions
     const efStart = performance.now();
     try {
       const { data, error } = await supabase.functions.invoke("health-check");
@@ -133,15 +187,27 @@ export default function SystemHealth() {
       results.push({ name: "Edge Functions", status: "down", lastCheck: now, details: "Unreachable", icon: Activity });
     }
 
+    // 5. Provider status from DB
+    const { data: providerData } = await supabase
+      .from("provider_status")
+      .select("*")
+      .order("last_checked_at", { ascending: false });
+    if (providerData) setProviderRows(providerData);
+
+    // Supabase (always healthy if we got this far)
+    results.push({
+      name: "Supabase",
+      status: "healthy",
+      lastCheck: now,
+      details: "Connected",
+      icon: Database,
+    });
+
     setServices(results);
     setLastFullCheck(new Date());
     setIsChecking(false);
     toast.success("Health check completed");
   };
-
-  useEffect(() => {
-    checkHealth();
-  }, []);
 
   const getStatusIcon = (status: ServiceStatus["status"]) => {
     switch (status) {
@@ -186,20 +252,38 @@ export default function SystemHealth() {
         </Button>
       </div>
 
-      {!orchestratorUrl && (
-        <Card className="border-warning/50 bg-warning/5 p-4">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="h-5 w-5 text-warning mt-0.5" />
-            <div>
-              <h4 className="font-medium text-foreground">Orchestrator Not Configured</h4>
-              <p className="text-sm text-muted-foreground">
-                Set <code className="bg-muted px-1 rounded">VITE_API_BASE_URL</code> to your Railway orchestrator URL for call placement and voice features.
-              </p>
+      {/* Configuration Panel */}
+      <Card className="glass-card p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <Settings2 className="h-5 w-5 text-primary" />
+          <h2 className="text-lg font-semibold text-foreground">Service Configuration</h2>
+        </div>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="orch-url" className="text-sm font-medium">
+              Orchestrator URL <span className="text-muted-foreground">(Railway deployment)</span>
+            </Label>
+            <div className="flex gap-2">
+              <Input
+                id="orch-url"
+                placeholder="https://your-orchestrator.up.railway.app"
+                value={orchUrl}
+                onChange={(e) => setOrchUrl(e.target.value)}
+                className="flex-1 font-mono text-sm"
+              />
+              <Button onClick={saveConfig} disabled={savingConfig} className="gap-2">
+                {savingConfig ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                Save
+              </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Your Railway orchestrator URL. This connects the UI to Twilio and OpenAI for call placement and voice features.
+            </p>
           </div>
-        </Card>
-      )}
+        </div>
+      </Card>
 
+      {/* Status Summary */}
       <div className="grid gap-4 md:grid-cols-4">
         {[
           { count: healthyCount, label: "Healthy", icon: CheckCircle2, color: "success" },
@@ -221,6 +305,7 @@ export default function SystemHealth() {
         ))}
       </div>
 
+      {/* Service Cards */}
       <div className="grid gap-4 md:grid-cols-2">
         {services.map((service) => (
           <Card key={service.name} className="glass-card p-4">
@@ -249,7 +334,7 @@ export default function SystemHealth() {
         ))}
       </div>
 
-      {/* Provider Status from DB */}
+      {/* Circuit Breaker States */}
       {providerRows.length > 0 && (
         <div className="space-y-4">
           <h2 className="text-lg font-semibold text-foreground">Circuit Breaker States</h2>
@@ -278,6 +363,7 @@ export default function SystemHealth() {
         </div>
       )}
 
+      {/* Architecture */}
       <Card className="glass-card p-4">
         <div className="flex items-start gap-3">
           <Server className="h-5 w-5 text-primary mt-0.5" />
