@@ -30,123 +30,44 @@ import {
   FileText,
   Trash2,
   Settings,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TranscriptDialog } from "@/components/call-logs/TranscriptDialog";
 import { Card } from "@/components/ui/card";
+import { useCalls, type CallRow } from "@/hooks/useCalls";
+import { Skeleton } from "@/components/ui/skeleton";
 
-const callLogs = [
-  {
-    id: 1,
-    phone: "+372 5123 4567",
-    type: "inbound",
-    agent: "Sales Assistant",
-    duration: "3:42",
-    status: "completed",
-    outcome: "Lead qualified",
-    timestamp: "2025-12-13 14:32:15",
-    hasRecording: true,
-    hasTranscript: true,
-  },
-  {
-    id: 2,
-    phone: "+372 5234 5678",
-    type: "outbound",
-    agent: "Reminder Bot",
-    duration: "1:15",
-    status: "completed",
-    outcome: "Payment confirmed",
-    timestamp: "2025-12-13 14:28:42",
-    hasRecording: true,
-    hasTranscript: true,
-  },
-  {
-    id: 3,
-    phone: "+372 5345 6789",
-    type: "inbound",
-    agent: "Support Agent",
-    duration: "0:00",
-    status: "missed",
-    outcome: "No answer",
-    timestamp: "2025-12-13 14:15:33",
-    hasRecording: false,
-    hasTranscript: false,
-  },
-  {
-    id: 4,
-    phone: "+372 5456 7890",
-    type: "outbound",
-    agent: "Collection Agent",
-    duration: "2:30",
-    status: "completed",
-    outcome: "Payment plan agreed",
-    timestamp: "2025-12-13 14:08:21",
-    hasRecording: true,
-    hasTranscript: true,
-  },
-  {
-    id: 5,
-    phone: "+372 5567 8901",
-    type: "inbound",
-    agent: "Sales Assistant",
-    duration: "5:12",
-    status: "in_progress",
-    outcome: "Active call",
-    timestamp: "2025-12-13 14:05:00",
-    hasRecording: false,
-    hasTranscript: false,
-  },
-  {
-    id: 6,
-    phone: "+372 5678 9012",
-    type: "outbound",
-    agent: "Survey Bot",
-    duration: "1:48",
-    status: "completed",
-    outcome: "Survey completed",
-    timestamp: "2025-12-13 13:55:12",
-    hasRecording: true,
-    hasTranscript: true,
-  },
-  {
-    id: 7,
-    phone: "+372 5789 0123",
-    type: "outbound",
-    agent: "Reminder Bot",
-    duration: "0:32",
-    status: "failed",
-    outcome: "Voicemail",
-    timestamp: "2025-12-13 13:48:45",
-    hasRecording: true,
-    hasTranscript: false,
-  },
-  {
-    id: 8,
-    phone: "+372 5890 1234",
-    type: "inbound",
-    agent: "Support Agent",
-    duration: "8:15",
-    status: "completed",
-    outcome: "Issue resolved",
-    timestamp: "2025-12-13 13:32:18",
-    hasRecording: true,
-    hasTranscript: true,
-  },
-];
+function formatDuration(seconds: number | null): string {
+  if (!seconds) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function formatTime(dateStr: string): string {
+  try {
+    return new Date(dateStr).toLocaleString();
+  } catch {
+    return dateStr;
+  }
+}
 
 export default function CallLogs() {
+  const { calls, loading } = useCalls({ limit: 200 });
   const [searchQuery, setSearchQuery] = useState("");
   const [transcriptDialogOpen, setTranscriptDialogOpen] = useState(false);
-  const [selectedCall, setSelectedCall] = useState<typeof callLogs[0] | null>(null);
+  const [selectedCall, setSelectedCall] = useState<CallRow | null>(null);
   const [retentionDays, setRetentionDays] = useState("90");
 
-  const filteredLogs = callLogs.filter(
+  const filteredLogs = calls.filter(
     (log) =>
-      log.phone.includes(searchQuery) ||
-      log.agent.toLowerCase().includes(searchQuery.toLowerCase())
+      log.to_number.includes(searchQuery) ||
+      (log.from_number || "").includes(searchQuery) ||
+      (log.agent_id || "").toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const openTranscript = (call: typeof callLogs[0]) => {
+  const openTranscript = (call: CallRow) => {
     setSelectedCall(call);
     setTranscriptDialogOpen(true);
   };
@@ -232,7 +153,7 @@ export default function CallLogs() {
               <TableHead className="text-muted-foreground">Agent</TableHead>
               <TableHead className="text-muted-foreground">Duration</TableHead>
               <TableHead className="text-muted-foreground">Status</TableHead>
-              <TableHead className="text-muted-foreground">Outcome</TableHead>
+              <TableHead className="text-muted-foreground">Summary</TableHead>
               <TableHead className="text-muted-foreground">Time</TableHead>
               <TableHead className="text-muted-foreground text-right">
                 Actions
@@ -240,82 +161,100 @@ export default function CallLogs() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filteredLogs.map((log) => (
-              <TableRow
-                key={log.id}
-                className="border-border hover:bg-secondary/30"
-              >
-                <TableCell>
-                  <div
-                    className={cn(
-                      "flex h-8 w-8 items-center justify-center rounded-lg",
-                      log.type === "inbound" ? "bg-success/10" : "bg-primary/10"
-                    )}
-                  >
-                    {log.type === "inbound" ? (
-                      <PhoneIncoming className="h-4 w-4 text-success" />
-                    ) : (
-                      <PhoneOutgoing className="h-4 w-4 text-primary" />
-                    )}
-                  </div>
-                </TableCell>
-                <TableCell className="font-mono text-sm">{log.phone}</TableCell>
-                <TableCell className="text-sm">{log.agent}</TableCell>
-                <TableCell className="font-mono text-sm">{log.duration}</TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-1.5">
-                    {log.status === "completed" && (
-                      <CheckCircle2 className="h-4 w-4 text-success" />
-                    )}
-                    {log.status === "missed" && (
-                      <XCircle className="h-4 w-4 text-destructive" />
-                    )}
-                    {log.status === "failed" && (
-                      <XCircle className="h-4 w-4 text-warning" />
-                    )}
-                    {log.status === "in_progress" && (
-                      <Clock className="h-4 w-4 text-primary animate-pulse" />
-                    )}
-                    <span
-                      className={cn(
-                        "text-xs font-medium capitalize",
-                        log.status === "completed" && "text-success",
-                        log.status === "missed" && "text-destructive",
-                        log.status === "failed" && "text-warning",
-                        log.status === "in_progress" && "text-primary"
-                      )}
-                    >
-                      {log.status.replace("_", " ")}
-                    </span>
-                  </div>
-                </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {log.outcome}
-                </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {log.timestamp.split(" ")[1]}
-                </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex items-center justify-end gap-1">
-                    {log.hasRecording && (
-                      <Button variant="ghost" size="icon" className="h-8 w-8">
-                        <Play className="h-4 w-4" />
-                      </Button>
-                    )}
-                    {log.hasTranscript && (
-                      <Button 
-                        variant="ghost" 
-                        size="icon" 
-                        className="h-8 w-8"
-                        onClick={() => openTranscript(log)}
-                      >
-                        <FileText className="h-4 w-4" />
-                      </Button>
-                    )}
-                  </div>
+            {loading ? (
+              Array.from({ length: 5 }).map((_, i) => (
+                <TableRow key={i} className="border-border">
+                  {Array.from({ length: 8 }).map((_, j) => (
+                    <TableCell key={j}>
+                      <Skeleton className="h-4 w-full" />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))
+            ) : filteredLogs.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
+                  {calls.length === 0 ? "No calls recorded yet" : "No matching calls"}
                 </TableCell>
               </TableRow>
-            ))}
+            ) : (
+              filteredLogs.map((log) => (
+                <TableRow
+                  key={log.id}
+                  className="border-border hover:bg-secondary/30"
+                >
+                  <TableCell>
+                    <div
+                      className={cn(
+                        "flex h-8 w-8 items-center justify-center rounded-lg",
+                        log.direction === "inbound" ? "bg-success/10" : "bg-primary/10"
+                      )}
+                    >
+                      {log.direction === "inbound" ? (
+                        <PhoneIncoming className="h-4 w-4 text-success" />
+                      ) : (
+                        <PhoneOutgoing className="h-4 w-4 text-primary" />
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="font-mono text-sm">{log.to_number}</TableCell>
+                  <TableCell className="text-sm">{log.agent_id || "—"}</TableCell>
+                  <TableCell className="font-mono text-sm">
+                    {formatDuration(log.duration_seconds)}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1.5">
+                      {log.status === "completed" && (
+                        <CheckCircle2 className="h-4 w-4 text-success" />
+                      )}
+                      {["failed", "busy", "no-answer", "canceled"].includes(log.status) && (
+                        <XCircle className="h-4 w-4 text-destructive" />
+                      )}
+                      {["initiated", "ringing", "in-progress", "queued"].includes(log.status) && (
+                        <Clock className="h-4 w-4 text-primary animate-pulse" />
+                      )}
+                      <span
+                        className={cn(
+                          "text-xs font-medium capitalize",
+                          log.status === "completed" && "text-success",
+                          ["failed", "busy", "no-answer", "canceled"].includes(log.status) && "text-destructive",
+                          ["initiated", "ringing", "in-progress", "queued"].includes(log.status) && "text-primary"
+                        )}
+                      >
+                        {log.status.replace(/-/g, " ")}
+                      </span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground max-w-[200px] truncate">
+                    {log.summary || "—"}
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                    {formatTime(log.created_at)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      {log.recording_url && (
+                        <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
+                          <a href={log.recording_url} target="_blank" rel="noopener noreferrer">
+                            <Play className="h-4 w-4" />
+                          </a>
+                        </Button>
+                      )}
+                      {log.transcript && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => openTranscript(log)}
+                        >
+                          <FileText className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
           </TableBody>
         </Table>
       </div>
@@ -326,10 +265,11 @@ export default function CallLogs() {
           open={transcriptDialogOpen}
           onOpenChange={setTranscriptDialogOpen}
           callData={{
-            phone: selectedCall.phone,
-            agent: selectedCall.agent,
-            timestamp: selectedCall.timestamp,
-            duration: selectedCall.duration,
+            phone: selectedCall.to_number,
+            agent: selectedCall.agent_id || "Unknown",
+            timestamp: selectedCall.created_at,
+            duration: formatDuration(selectedCall.duration_seconds),
+            transcript: selectedCall.transcript || undefined,
           }}
         />
       )}
