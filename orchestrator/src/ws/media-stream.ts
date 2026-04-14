@@ -16,6 +16,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let streamSid: string = "";
   let callId: string = "";
   let agentId: string = "";
+  let calledNumber: string = "";
 
   // Connect to OpenAI Realtime API with agent-specific config
   const connectToOpenAI = async () => {
