@@ -30,6 +30,8 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
   const streamUrl = `${wsBase}/twilio/stream`;
 
   // No <Say> before <Connect> — the AI agent will speak its own greeting
+  const calledNumber = req.body?.To || "";
+
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -38,6 +40,7 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
       <Parameter name="agentId" value="${agentId}"/>
       <Parameter name="campaignId" value="${campaignId}"/>
       <Parameter name="callSid" value="${req.body?.CallSid || ""}"/>
+      <Parameter name="calledNumber" value="${calledNumber}"/>
     </Stream>
   </Connect>
 </Response>`;
