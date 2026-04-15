@@ -10,6 +10,7 @@ import Dashboard from "./pages/Dashboard";
 import Agents from "./pages/Agents";
 import CreateAgent from "./pages/CreateAgent";
 import AgentCalls from "./pages/AgentCalls";
+import FlowBuilder from "./pages/FlowBuilder";
 import Campaigns from "./pages/Campaigns";
 import CampaignAnalytics from "./pages/CampaignAnalytics";
 import CreateCampaign from "./pages/CreateCampaign";
@@ -52,6 +53,7 @@ const App = () => (
                 <Route path="/agents" element={<Agents />} />
                 <Route path="/agents/create/:type" element={<CreateAgent />} />
                 <Route path="/agents/:id/calls" element={<AgentCalls />} />
+                <Route path="/agents/:id/flow" element={<FlowBuilder />} />
                 <Route path="/campaigns" element={<Campaigns />} />
                 <Route path="/campaigns/:campaignId/analytics" element={<CampaignAnalytics />} />
                 <Route path="/campaigns/create" element={<CreateCampaign />} />

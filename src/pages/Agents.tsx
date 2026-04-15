@@ -15,6 +15,7 @@ import {
   PhoneIncoming,
   PhoneOutgoing,
   Loader2,
+  Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TestCallDialog } from "@/components/agents/TestCallDialog";
@@ -229,6 +230,12 @@ export default function Agents() {
                   <Button variant="outline" className="w-full gap-2">
                     <FileText className="h-4 w-4" />
                     Call Logs
+                  </Button>
+                </Link>
+                <Link to={`/agents/${agent.id}/flow`} className="flex-1">
+                  <Button variant="neon" className="w-full gap-2">
+                    <Workflow className="h-4 w-4" />
+                    See Flow
                   </Button>
                 </Link>
                 <Button
