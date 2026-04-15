@@ -14,6 +14,51 @@ export type Database = {
   }
   public: {
     Tables: {
+      agent_flows: {
+        Row: {
+          agent_id: string
+          created_at: string
+          edges: Json
+          id: string
+          name: string
+          nodes: Json
+          published_at: string | null
+          status: string
+          updated_at: string
+          user_id: string
+          version: number
+          viewport: Json | null
+        }
+        Insert: {
+          agent_id: string
+          created_at?: string
+          edges?: Json
+          id?: string
+          name?: string
+          nodes?: Json
+          published_at?: string | null
+          status?: string
+          updated_at?: string
+          user_id: string
+          version?: number
+          viewport?: Json | null
+        }
+        Update: {
+          agent_id?: string
+          created_at?: string
+          edges?: Json
+          id?: string
+          name?: string
+          nodes?: Json
+          published_at?: string | null
+          status?: string
+          updated_at?: string
+          user_id?: string
+          version?: number
+          viewport?: Json | null
+        }
+        Relationships: []
+      }
       agents: {
         Row: {
           analysis_prompt: string | null
