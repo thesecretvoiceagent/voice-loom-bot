@@ -20,7 +20,7 @@ import "@xyflow/react/dist/style.css";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Save, Rocket, Loader2, Undo2, Redo2, Maximize2 } from "lucide-react";
+import { ArrowLeft, Save, Rocket, Loader2, Undo2, Redo2, Maximize2, Phone } from "lucide-react";
 import { toast } from "sonner";
 import { useAgentFlow } from "@/hooks/useAgentFlow";
 import { useAgents } from "@/hooks/useAgents";
@@ -30,6 +30,7 @@ import { FlowSidebar } from "@/components/flow/FlowSidebar";
 import { NodeConfigPanel } from "@/components/flow/NodeConfigPanel";
 import { FLOW_TEMPLATES } from "@/components/flow/flowTemplates";
 import { Skeleton } from "@/components/ui/skeleton";
+import { QuickTestCallDialog } from "@/components/agents/QuickTestCallDialog";
 
 function FlowBuilderInner() {
   const { id: agentId } = useParams<{ id: string }>();
@@ -38,6 +39,7 @@ function FlowBuilderInner() {
   const { agents } = useAgents();
   const agent = agents.find((a) => a.id === agentId);
   const { flow, loading, saving, lastSaved, createFlow, saveFlow, publishFlow, scheduleAutoSave } = useAgentFlow(agentId!);
+  const [testCallOpen, setTestCallOpen] = useState(false);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -289,8 +291,20 @@ function FlowBuilderInner() {
           <Button size="sm" className="gap-1.5" onClick={handlePublish} disabled={saving}>
             <Rocket className="h-3.5 w-3.5" /> Publish
           </Button>
+          <div className="h-5 w-px bg-border" />
+          <Button size="sm" variant="neon" className="gap-1.5" onClick={() => setTestCallOpen(true)}>
+            <Phone className="h-3.5 w-3.5" /> Test Call
+          </Button>
         </div>
       </div>
+
+      {/* Test Call Dialog */}
+      <QuickTestCallDialog
+        open={testCallOpen}
+        onOpenChange={setTestCallOpen}
+        agentName={agent?.name || "Agent"}
+        agentId={agentId!}
+      />
 
       {/* Builder */}
       <div className="flex flex-1 overflow-hidden">
