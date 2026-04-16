@@ -654,6 +654,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           const markName = msg.mark?.name || "";
           if (markName && responsePlaybackMarkName && markName === responsePlaybackMarkName) {
             console.log(`[MediaStream] Twilio playback mark received (callId=${callId}, mark=${markName})`);
+            clearMarkFallback();
             responsePlaybackMarkName = null;
             maybeCompleteAiTurn("twilio.mark");
           }
