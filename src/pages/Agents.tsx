@@ -282,6 +282,8 @@ export default function Agents() {
             agentName={selectedAgent.name}
             agentId={selectedAgent.id}
             agentType={selectedAgent.type}
+            systemPrompt={selectedAgent.system_prompt || ''}
+            greeting={selectedAgent.greeting || ''}
           />
           <BulkUploadDialog
             open={bulkUploadDialogOpen}
