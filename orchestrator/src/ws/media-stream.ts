@@ -266,7 +266,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           instructions: fullInstructions,
           voice,
           temperature: sessionTemperature,
-          max_response_output_tokens: 150,
+          max_response_output_tokens: 4096,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
