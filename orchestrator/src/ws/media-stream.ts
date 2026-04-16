@@ -427,14 +427,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "input_audio_buffer.speech_started":
-            // If greeting is in progress, completely ignore user speech
+            // If greeting is in progress, completely ignore user speech and clear any buffered audio
             if (greetingInProgress) {
-              console.log(`[MediaStream] Ignoring interruption during greeting (callId=${callId})`);
+              console.log(`[MediaStream] Ignoring interruption during greeting, clearing buffer (callId=${callId})`);
+              openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
               break;
             }
-            // If anti-barge-in is enabled and AI is speaking, ignore user speech
+            // If anti-barge-in is enabled and AI is speaking, ignore and clear buffered audio
             if (antiBargeinEnabled && aiIsSpeaking) {
-              console.log(`[MediaStream] Anti-barge-in: ignoring interruption while AI speaks (callId=${callId})`);
+              console.log(`[MediaStream] Anti-barge-in: ignoring interruption, clearing buffer (callId=${callId})`);
+              openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
               break;
             }
             console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId})`);
