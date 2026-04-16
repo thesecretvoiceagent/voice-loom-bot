@@ -153,6 +153,7 @@ export default function CreateAgent() {
   const [enableRecording, setEnableRecording] = useState(true);
   const [temperature, setTemperature] = useState([0.6]);
   const [uninterruptibleGreeting, setUninterruptibleGreeting] = useState(true);
+  const [antiBargein, setAntiBargein] = useState(false);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("17:00");
   const [timezone, setTimezone] = useState("Europe/Tallinn");
@@ -196,6 +197,7 @@ export default function CreateAgent() {
         setEnableRecording(agent.settings.enable_recording ?? true);
         setTemperature([(agent.settings as any).temperature ?? 0.6]);
         setUninterruptibleGreeting((agent.settings as any).uninterruptible_greeting ?? true);
+        setAntiBargein((agent.settings as any).anti_barge_in ?? false);
       }
       if (agent.schedule) {
         setStartTime(agent.schedule.start_time || "09:00");
@@ -257,6 +259,7 @@ export default function CreateAgent() {
         enable_recording: enableRecording,
         temperature: temperature[0],
         uninterruptible_greeting: uninterruptibleGreeting,
+        anti_barge_in: antiBargein,
       },
       schedule: {
         start_time: startTime,
@@ -451,6 +454,13 @@ export default function CreateAgent() {
                     </div>
                   </div>
                   <Textarea value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} placeholder="You are a helpful AI voice assistant..." className="min-h-[150px]" />
+                  <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/50">
+                    <div>
+                      <p className="font-medium text-foreground">Anti Barge-in</p>
+                      <p className="text-sm text-muted-foreground">Mute caller's microphone while the AI is speaking to prevent interruptions</p>
+                    </div>
+                    <Switch checked={antiBargein} onCheckedChange={setAntiBargein} />
+                  </div>
                 </div>
               </div>
             </div>
