@@ -265,6 +265,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.log(`[MediaStream] Substituted ${Object.keys(callVariables).length} variables into prompt (callId=${callId})`);
     }
 
+    // Remove any remaining unsubstituted {{variable}} placeholders to prevent AI confusion
+    const cleanVars = (text: string): string => text.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
+    instructions = cleanVars(instructions);
+    greeting = cleanVars(greeting);
+
     // Write initial call record to DB
     callStartTime = new Date();
     upsertCall(callId, {
