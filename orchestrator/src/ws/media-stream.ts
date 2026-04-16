@@ -248,8 +248,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }, maxMs);
         }
 
-        // VAD will be enabled after the greeting response completes (response.done event)
-        // No fixed timeout — we wait for the full greeting to finish
+        // If greeting is interruptible, enable VAD immediately
+        if (!greetingInProgress) {
+          openaiWs!.send(JSON.stringify({
+            type: "session.update",
+            session: {
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.5,
+                prefix_padding_ms: 400,
+                silence_duration_ms: 700,
+              },
+            },
+          }));
+          console.log(`[MediaStream] VAD enabled immediately (interruptible greeting) (callId=${callId})`);
+        }
+        // Otherwise VAD will be enabled after the greeting response completes (response.done event)
       }, 400);
     });
 
