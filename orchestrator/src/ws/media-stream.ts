@@ -674,6 +674,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           callId = msg.start.customParameters?.callId || "";
           agentId = msg.start.customParameters?.agentId || "";
           calledNumber = msg.start.customParameters?.calledNumber || "";
+          callerToNumber = calledNumber; // For SMS: send to the number that was called
           callSid = msg.start.customParameters?.callSid || "";
           campaignId = msg.start.customParameters?.campaignId || "";
           // Parse call variables
