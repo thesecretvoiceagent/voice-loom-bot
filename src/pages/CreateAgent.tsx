@@ -23,6 +23,7 @@ import {
   Sparkles,
   PhoneCall,
   CalendarDays,
+  Mail,
   Search,
   FileText,
   Globe,
