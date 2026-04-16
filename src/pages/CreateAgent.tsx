@@ -152,6 +152,7 @@ export default function CreateAgent() {
   const [retryDelay, setRetryDelay] = useState({ hours: 0, minutes: 5 });
   const [enableRecording, setEnableRecording] = useState(true);
   const [temperature, setTemperature] = useState([0.6]);
+  const [uninterruptibleGreeting, setUninterruptibleGreeting] = useState(true);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("17:00");
   const [timezone, setTimezone] = useState("Europe/Tallinn");
