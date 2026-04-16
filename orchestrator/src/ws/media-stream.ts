@@ -317,7 +317,31 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
+          case "response.done":
+            // Greeting finished — enable VAD and allow interruptions
+            if (greetingInProgress) {
+              greetingInProgress = false;
+              console.log(`[MediaStream] Greeting complete, enabling VAD (callId=${callId})`);
+              openaiWs!.send(JSON.stringify({
+                type: "session.update",
+                session: {
+                  turn_detection: {
+                    type: "server_vad",
+                    threshold: 0.5,
+                    prefix_padding_ms: 400,
+                    silence_duration_ms: 700,
+                  },
+                },
+              }));
+            }
+            break;
+
           case "input_audio_buffer.speech_started":
+            // Only allow interruption after greeting is done
+            if (greetingInProgress) {
+              console.log(`[MediaStream] Ignoring interruption during greeting (callId=${callId})`);
+              break;
+            }
             console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId})`);
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
