@@ -66,6 +66,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let calledNumber: string = "";
   let callSid: string = "";
   let campaignId: string = "";
+  let callVariables: Record<string, string> = {};
 
   // Collect transcript turns
   const transcriptLines: string[] = [];
@@ -139,6 +140,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
+    }
+
+    // Substitute template variables (e.g. {{first_name}}, {{custom_data.debt_amount}})
+    if (Object.keys(callVariables).length > 0) {
+      const substituteVars = (text: string): string => {
+        return text.replace(/\{\{([^}]+)\}\}/g, (match, varName) => {
+          const trimmed = varName.trim();
+          if (callVariables[trimmed] !== undefined) return callVariables[trimmed];
+          return match; // Leave unmatched variables as-is
+        });
+      };
+      instructions = substituteVars(instructions);
+      greeting = substituteVars(greeting);
+      console.log(`[MediaStream] Substituted ${Object.keys(callVariables).length} variables into prompt (callId=${callId})`);
     }
 
     // Write initial call record to DB
@@ -522,6 +537,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           calledNumber = msg.start.customParameters?.calledNumber || "";
           callSid = msg.start.customParameters?.callSid || "";
           campaignId = msg.start.customParameters?.campaignId || "";
+          // Parse call variables
+          const varsParam = msg.start.customParameters?.variables || "";
+          if (varsParam) {
+            try {
+              callVariables = JSON.parse(varsParam);
+              console.log(`[MediaStream] Parsed ${Object.keys(callVariables).length} call variables (callId=${callId})`);
+            } catch (e) {
+              console.warn(`[MediaStream] Failed to parse variables param (callId=${callId})`);
+            }
+          }
           console.log(`[MediaStream] Stream started: streamSid=${streamSid} callId=${callId} agentId=${agentId} callSid=${callSid}`);
 
           connectToOpenAI();

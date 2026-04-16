@@ -34,7 +34,7 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
     });
   }
 
-  const { to_number, agent_id, campaign_id } = req.body;
+  const { to_number, agent_id, campaign_id, variables } = req.body;
 
   if (!to_number || !agent_id) {
     return res.status(400).json({
@@ -47,7 +47,8 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
 
   try {
     const callId = crypto.randomUUID();
-    const voiceUrl = `${config.publicBaseUrl}/twilio/voice?callId=${callId}&agentId=${agent_id}${campaign_id ? `&campaignId=${campaign_id}` : ""}`;
+    const variablesParam = variables && Object.keys(variables).length > 0 ? `&variables=${encodeURIComponent(JSON.stringify(variables))}` : "";
+    const voiceUrl = `${config.publicBaseUrl}/twilio/voice?callId=${callId}&agentId=${agent_id}${campaign_id ? `&campaignId=${campaign_id}` : ""}${variablesParam}`;
     const statusUrl = `${config.publicBaseUrl}/twilio/status`;
 
     // Fetch agent settings to determine recording and ring timeout

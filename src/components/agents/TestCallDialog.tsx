@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -20,6 +20,8 @@ interface TestCallDialogProps {
   agentName: string;
   agentId: string;
   agentType: string;
+  systemPrompt?: string;
+  greeting?: string;
 }
 
 interface Variable {
@@ -27,13 +29,49 @@ interface Variable {
   value: string;
 }
 
-export function TestCallDialog({ open, onOpenChange, agentName, agentId, agentType }: TestCallDialogProps) {
+const EXCLUDED_VARS = ['current_date', 'current_time', 'date_time', 'date_and_time'];
+
+function extractPromptVariables(prompt?: string, greeting?: string): string[] {
+  const vars = new Set<string>();
+  const regex = /\{\{([^}]+)\}\}/g;
+  for (const text of [prompt, greeting]) {
+    if (!text) continue;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const varName = match[1].trim();
+      if (!EXCLUDED_VARS.includes(varName.toLowerCase().replace(/[\s.]/g, '_'))) {
+        vars.add(varName);
+      }
+    }
+  }
+  return Array.from(vars);
+}
+
+export function TestCallDialog({ open, onOpenChange, agentName, agentId, agentType, systemPrompt, greeting }: TestCallDialogProps) {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [company, setCompany] = useState("");
   const [customVariables, setCustomVariables] = useState<Variable[]>([]);
+  const [promptVariables, setPromptVariables] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
+
+  const detectedVars = useMemo(() => extractPromptVariables(systemPrompt, greeting), [systemPrompt, greeting]);
+
+  // Filter out standard vars (first_name, last_name, company, phone_number) from detected
+  const extraVars = useMemo(() => 
+    detectedVars.filter(v => !['first_name', 'last_name', 'company', 'phone_number'].includes(v.toLowerCase().replace(/[\s.]/g, '_'))),
+    [detectedVars]
+  );
+
+  useEffect(() => {
+    // Reset prompt variables when dialog opens
+    if (open) {
+      const initial: Record<string, string> = {};
+      extraVars.forEach(v => { initial[v] = ''; });
+      setPromptVariables(initial);
+    }
+  }, [open, extraVars]);
 
   const addCustomVariable = () => {
     setCustomVariables([...customVariables, { key: "", value: "" }]);
@@ -62,6 +100,10 @@ export function TestCallDialog({ open, onOpenChange, agentName, agentId, agentTy
       if (firstName) variables.first_name = firstName;
       if (lastName) variables.last_name = lastName;
       if (company) variables.company = company;
+      // Add detected prompt variables
+      Object.entries(promptVariables).forEach(([key, val]) => {
+        if (val) variables[key] = val;
+      });
       customVariables.forEach((v) => {
         if (v.key && v.value) variables[v.key] = v.value;
       });
@@ -136,6 +178,26 @@ export function TestCallDialog({ open, onOpenChange, agentName, agentId, agentTy
               </div>
             </div>
           </div>
+
+          {extraVars.length > 0 && (
+            <div className="border-t border-border pt-4">
+              <h4 className="text-sm font-medium text-foreground mb-3">Prompt Variables</h4>
+              <p className="text-xs text-muted-foreground mb-3">Detected from agent instructions — values will be substituted into the prompt</p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {extraVars.map((varName) => (
+                  <div key={varName} className="space-y-1">
+                    <Label htmlFor={`pv-${varName}`} className="text-xs font-mono">{`{{${varName}}}`}</Label>
+                    <Input
+                      id={`pv-${varName}`}
+                      placeholder={varName.replace(/[._]/g, ' ')}
+                      value={promptVariables[varName] || ''}
+                      onChange={(e) => setPromptVariables(prev => ({ ...prev, [varName]: e.target.value }))}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="border-t border-border pt-4">
             <div className="flex items-center justify-between mb-3">
