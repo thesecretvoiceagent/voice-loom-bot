@@ -20,6 +20,8 @@ interface TestCallDialogProps {
   agentName: string;
   agentId: string;
   agentType: string;
+  systemPrompt?: string;
+  greeting?: string;
 }
 
 interface Variable {
