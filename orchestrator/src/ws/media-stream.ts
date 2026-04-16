@@ -545,6 +545,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         clearTimeout(initialResponseFallbackTimer);
         initialResponseFallbackTimer = null;
       }
+      clearMarkFallback();
       console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
       openaiWs = null;
       finalizeCall();
