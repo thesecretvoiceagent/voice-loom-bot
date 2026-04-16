@@ -262,13 +262,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
       console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || "(none)"}"`);
 
-      const responseCreate: any = { type: "response.create" };
-      if (greeting) {
-        responseCreate.response = {
-          instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`,
-        };
-      }
-      openaiWs.send(JSON.stringify(responseCreate));
+      // Inject a user-role message to trigger the AI to speak its greeting.
+      // The session instructions already tell the AI exactly what to say.
+      openaiWs.send(JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "[Phone call connected. Begin with your greeting now.]" }],
+        },
+      }));
+      openaiWs.send(JSON.stringify({ type: "response.create" }));
 
       // Treat the initial response as speaking immediately so anti-barge-in stays active until playback is confirmed done.
       aiIsSpeaking = true;
@@ -529,13 +533,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               // Retry the greeting after a short delay
               setTimeout(() => {
                 if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                  const retryCreate: any = { type: "response.create" };
-                  if (greeting) {
-                    retryCreate.response = {
-                      instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else.`,
-                    };
-                  }
-                  openaiWs.send(JSON.stringify(retryCreate));
+                  openaiWs.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "message",
+                      role: "user",
+                      content: [{ type: "input_text", text: "[Phone call connected. Begin with your greeting now.]" }],
+                    },
+                  }));
+                  openaiWs.send(JSON.stringify({ type: "response.create" }));
                   aiIsSpeaking = true;
                 }
               }, 300);
