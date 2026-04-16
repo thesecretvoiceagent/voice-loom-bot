@@ -75,6 +75,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let greetingInProgress = true; // Protect initial greeting from interruption
+  let activeResponseId: string | null = null; // Track current response to discard stale audio
+  let lastAssistantItemId: string | null = null; // For Twilio mark-based sync
 
   // Connect to OpenAI Realtime API with agent-specific config
   const connectToOpenAI = async () => {
@@ -280,12 +282,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(`[MediaStream] OpenAI session configured (callId=${callId})`);
             break;
 
+          case "response.created":
+            activeResponseId = event.response?.id || null;
+            break;
+
           case "response.audio.delta":
+            // Only forward audio from the currently active response (discard stale/cancelled audio)
+            if (event.response_id && activeResponseId && event.response_id !== activeResponseId) {
+              break;
+            }
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({
                 event: "media",
                 streamSid,
                 media: { payload: event.delta },
+              }));
+              // Send a mark after each audio chunk for Twilio sync
+              twilioWs.send(JSON.stringify({
+                event: "mark",
+                streamSid,
+                mark: { name: `audio-${Date.now()}` },
               }));
             }
             break;
@@ -361,6 +377,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
             console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId})`);
+            // Invalidate current response so stale audio deltas are discarded
+            activeResponseId = null;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
             }
