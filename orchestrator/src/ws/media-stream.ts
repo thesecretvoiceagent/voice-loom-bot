@@ -377,6 +377,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
             console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId})`);
+            // Invalidate current response so stale audio deltas are discarded
+            activeResponseId = null;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
             }
