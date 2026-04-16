@@ -159,6 +159,8 @@ export default function CreateAgent() {
   const [timezone, setTimezone] = useState("Europe/Tallinn");
   const [knowledgeItems, setKnowledgeItems] = useState<Array<{ id: string; name: string; content: string }>>([]);
   const [knowledgeText, setKnowledgeText] = useState("");
+  const [postCallSmsEnabled, setPostCallSmsEnabled] = useState(false);
+  const [postCallSmsTemplate, setPostCallSmsTemplate] = useState("");
 
   const isInbound = type === "inbound";
 
@@ -198,6 +200,8 @@ export default function CreateAgent() {
         setTemperature([(agent.settings as any).temperature ?? 0.6]);
         setUninterruptibleGreeting((agent.settings as any).uninterruptible_greeting ?? true);
         setAntiBargein((agent.settings as any).anti_barge_in ?? false);
+        setPostCallSmsEnabled((agent.settings as any).post_call_sms_enabled ?? false);
+        setPostCallSmsTemplate((agent.settings as any).post_call_sms_template ?? "");
       }
       if (agent.schedule) {
         setStartTime(agent.schedule.start_time || "09:00");
@@ -260,6 +264,8 @@ export default function CreateAgent() {
         temperature: temperature[0],
         uninterruptible_greeting: uninterruptibleGreeting,
         anti_barge_in: antiBargein,
+        post_call_sms_enabled: postCallSmsEnabled,
+        post_call_sms_template: postCallSmsTemplate,
       },
       schedule: {
         start_time: startTime,
