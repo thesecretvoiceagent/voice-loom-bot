@@ -325,6 +325,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       // Treat the initial response as speaking immediately so anti-barge-in stays active until playback is confirmed done.
       aiIsSpeaking = true;
 
+      // Safety: if greeting never completes within 15s, force-enable VAD so user isn't permanently muted
+      if (greetingInProgress) {
+        setTimeout(() => {
+          if (greetingInProgress) {
+            console.warn(`[MediaStream] Greeting safety timeout — force-enabling VAD (callId=${callId})`);
+            greetingInProgress = false;
+            resetResponseState();
+            ignoreAudioUntilNextResponse = false;
+            aiIsSpeaking = false;
+            enableTurnDetection();
+          }
+        }, 15000);
+      }
+
       if (maxCallDurationMinutes > 0 && !callDurationTimer) {
         const maxMs = maxCallDurationMinutes * 60 * 1000;
         console.log(`[MediaStream] Max call duration: ${maxCallDurationMinutes}m (callId=${callId})`);
