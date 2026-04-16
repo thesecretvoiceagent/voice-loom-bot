@@ -151,6 +151,7 @@ export default function CreateAgent() {
   const [concurrentCalls, setConcurrentCalls] = useState(3);
   const [retryDelay, setRetryDelay] = useState({ hours: 0, minutes: 5 });
   const [enableRecording, setEnableRecording] = useState(true);
+  const [temperature, setTemperature] = useState([0.6]);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("17:00");
   const [timezone, setTimezone] = useState("Europe/Tallinn");
@@ -192,6 +193,7 @@ export default function CreateAgent() {
           minutes: agent.settings.retry_delay_minutes ?? 5,
         });
         setEnableRecording(agent.settings.enable_recording ?? true);
+        setTemperature([(agent.settings as any).temperature ?? 0.6]);
       }
       if (agent.schedule) {
         setStartTime(agent.schedule.start_time || "09:00");
@@ -251,6 +253,7 @@ export default function CreateAgent() {
         retry_delay_hours: retryDelay.hours,
         retry_delay_minutes: retryDelay.minutes,
         enable_recording: enableRecording,
+        temperature: temperature[0],
       },
       schedule: {
         start_time: startTime,
@@ -588,6 +591,29 @@ export default function CreateAgent() {
                         <p className="text-xs text-center text-muted-foreground mt-1">Minutes</p>
                       </div>
                     </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* AI Temperature */}
+            <div className="glass-card rounded-xl p-6">
+              <div className="flex items-start gap-4">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-500/10">
+                  <Sparkles className="h-5 w-5 text-orange-500" />
+                </div>
+                <div className="flex-1 space-y-4">
+                  <div>
+                    <h3 className="font-semibold text-foreground">AI Temperature</h3>
+                    <p className="text-sm text-muted-foreground">Controls how creative vs. focused the AI is. Lower = strict script follower, higher = more creative.</p>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-muted-foreground">Focused</p>
+                      <span className="text-lg font-semibold">{temperature[0].toFixed(1)}</span>
+                      <p className="text-sm text-muted-foreground">Creative</p>
+                    </div>
+                    <Slider value={temperature} onValueChange={setTemperature} min={0.1} max={1.0} step={0.1} />
                   </div>
                 </div>
               </div>
