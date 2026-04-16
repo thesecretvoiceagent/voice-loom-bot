@@ -81,6 +81,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let pendingInitialResponse = false;
   let initialResponseFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
+  let antiBargeinEnabled = false;
+  let aiIsSpeaking = false; // Track whether AI is currently outputting audio
+
   // Connect to OpenAI Realtime API with agent-specific config
   const connectToOpenAI = async () => {
     if (!config.openai.isConfigured) {
@@ -127,6 +131,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         if (settings.uninterruptible_greeting === false) {
           greetingInProgress = false; // Allow interruption from the start
         }
+        // Read anti-barge-in setting (default false)
+        if (settings.anti_barge_in === true) {
+          antiBargeinEnabled = true;
+          console.log(`[MediaStream] Anti-barge-in enabled (callId=${callId})`);
+        }
       }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
@@ -151,6 +160,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     pendingInitialResponse = false;
     activeResponseId = null;
     ignoreAudioUntilNextResponse = false;
+    aiIsSpeaking = false;
     if (initialResponseFallbackTimer) {
       clearTimeout(initialResponseFallbackTimer);
       initialResponseFallbackTimer = null;
@@ -199,6 +209,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }
       openaiWs.send(JSON.stringify(responseCreate));
 
+      // Mark AI as speaking for the greeting
+      aiIsSpeaking = true;
+
       if (maxCallDurationMinutes > 0 && !callDurationTimer) {
         const maxMs = maxCallDurationMinutes * 60 * 1000;
         console.log(`[MediaStream] Max call duration: ${maxCallDurationMinutes}m (callId=${callId})`);
@@ -209,6 +222,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         }, maxMs);
       }
 
+      // Don't enable VAD until greeting is done — it will be enabled in response.done
       if (!greetingInProgress) {
         enableTurnDetection();
         console.log(`[MediaStream] VAD enabled immediately (interruptible greeting) (callId=${callId})`);
@@ -236,7 +250,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - Maximum 1-3 sentences per response. Never give long answers.
 - Stay strictly on topic. Do not improvise or add unrequested information.
 - Follow the script above exactly. Do not deviate.
-- If asked about something outside your scope, briefly redirect back to the topic.`;
+- If asked about something outside your scope, briefly redirect back to the topic.
+- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
 
       const tools: any[] = [];
 
@@ -272,6 +287,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           input_audio_transcription: {
             model: "whisper-1",
           },
+          // Start with VAD disabled — we enable it after greeting or immediately if no greeting
           turn_detection: null,
         },
       };
@@ -315,6 +331,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "response.created":
             activeResponseId = event.response?.id || null;
             ignoreAudioUntilNextResponse = false;
+            aiIsSpeaking = true; // AI starts generating a response
             break;
 
           case "response.audio.delta": {
@@ -373,14 +390,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               setTimeout(() => {
                 console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
                 hangUpCall();
-              }, 5000);
+              }, 8000); // Give more time for goodbye message to complete
             }
             break;
           }
 
+          case "response.audio.done":
+            // Audio stream for this response is complete — AI finished speaking this part
+            // Don't clear aiIsSpeaking yet; wait for response.done for full completion
+            break;
+
           case "response.done":
             activeResponseId = null;
             ignoreAudioUntilNextResponse = false;
+            aiIsSpeaking = false; // AI finished speaking
             if (greetingInProgress) {
               greetingInProgress = false;
               console.log(`[MediaStream] Greeting complete, enabling VAD (callId=${callId})`);
@@ -389,13 +412,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "input_audio_buffer.speech_started":
+            // If greeting is in progress, completely ignore user speech
             if (greetingInProgress) {
               console.log(`[MediaStream] Ignoring interruption during greeting (callId=${callId})`);
+              break;
+            }
+            // If anti-barge-in is enabled and AI is speaking, ignore user speech
+            if (antiBargeinEnabled && aiIsSpeaking) {
+              console.log(`[MediaStream] Anti-barge-in: ignoring interruption while AI speaks (callId=${callId})`);
               break;
             }
             console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId})`);
             activeResponseId = null;
             ignoreAudioUntilNextResponse = true;
+            aiIsSpeaking = false;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
             }
@@ -498,6 +528,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           break;
 
         case "media":
+          // Don't forward audio to OpenAI during greeting (prevents VAD triggering)
+          if (greetingInProgress) {
+            break;
+          }
+          // Don't forward audio when anti-barge-in is active and AI is speaking
+          if (antiBargeinEnabled && aiIsSpeaking) {
+            break;
+          }
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN && sessionConfigured) {
             openaiWs.send(JSON.stringify({
               type: "input_audio_buffer.append",
