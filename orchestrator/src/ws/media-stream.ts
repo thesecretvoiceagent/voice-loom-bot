@@ -74,6 +74,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let agentKnowledgeBase: any[] = [];
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
+  let greetingInProgress = true; // Protect initial greeting from interruption
 
   // Connect to OpenAI Realtime API with agent-specific config
   const connectToOpenAI = async () => {
