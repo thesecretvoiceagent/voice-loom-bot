@@ -89,6 +89,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseHasAudio = false;
   let responseAudioDone = false;
   let responseDoneReceived = false;
+  let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearMarkFallback = () => {
+    if (markFallbackTimer) {
+      clearTimeout(markFallbackTimer);
+      markFallbackTimer = null;
+    }
+  };
 
   const resetResponseState = () => {
     activeResponseId = null;
@@ -96,6 +104,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseHasAudio = false;
     responseAudioDone = false;
     responseDoneReceived = false;
+    clearMarkFallback();
   };
 
   const enableTurnDetection = () => {
@@ -469,6 +478,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 streamSid,
                 mark: { name: responsePlaybackMarkName },
               }));
+
+              // Safety fallback: if Twilio never sends the mark back within 10 seconds,
+              // force-complete the turn to prevent the call from hanging forever.
+              clearMarkFallback();
+              markFallbackTimer = setTimeout(() => {
+                if (responsePlaybackMarkName) {
+                  console.warn(`[MediaStream] Mark fallback triggered — Twilio mark not received in 10s, force-completing turn (callId=${callId}, mark=${responsePlaybackMarkName})`);
+                  responsePlaybackMarkName = null;
+                  maybeCompleteAiTurn("mark-fallback-timeout");
+                }
+              }, 10000);
             }
             break;
           }
@@ -525,6 +545,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         clearTimeout(initialResponseFallbackTimer);
         initialResponseFallbackTimer = null;
       }
+      clearMarkFallback();
       console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
       openaiWs = null;
       finalizeCall();
@@ -634,6 +655,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           const markName = msg.mark?.name || "";
           if (markName && responsePlaybackMarkName && markName === responsePlaybackMarkName) {
             console.log(`[MediaStream] Twilio playback mark received (callId=${callId}, mark=${markName})`);
+            clearMarkFallback();
             responsePlaybackMarkName = null;
             maybeCompleteAiTurn("twilio.mark");
           }
