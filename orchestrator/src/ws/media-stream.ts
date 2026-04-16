@@ -122,6 +122,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         if (typeof settings.temperature === "number") {
           agentTemperature = settings.temperature;
         }
+        // Read uninterruptible greeting setting (default true)
+        if (settings.uninterruptible_greeting === false) {
+          greetingInProgress = false; // Allow interruption from the start
+        }
       }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
