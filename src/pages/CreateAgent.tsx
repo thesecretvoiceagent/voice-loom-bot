@@ -596,6 +596,29 @@ export default function CreateAgent() {
               </div>
             </div>
 
+            {/* AI Temperature */}
+            <div className="glass-card rounded-xl p-6">
+              <div className="flex items-start gap-4">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-500/10">
+                  <Sparkles className="h-5 w-5 text-orange-500" />
+                </div>
+                <div className="flex-1 space-y-4">
+                  <div>
+                    <h3 className="font-semibold text-foreground">AI Temperature</h3>
+                    <p className="text-sm text-muted-foreground">Controls how creative vs. focused the AI is. Lower = strict script follower, higher = more creative.</p>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-muted-foreground">Focused</p>
+                      <span className="text-lg font-semibold">{temperature[0].toFixed(1)}</span>
+                      <p className="text-sm text-muted-foreground">Creative</p>
+                    </div>
+                    <Slider value={temperature} onValueChange={setTemperature} min={0.1} max={1.0} step={0.1} />
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* Recording */}
             <div className="glass-card rounded-xl p-6">
               <div className="flex items-start gap-4">
