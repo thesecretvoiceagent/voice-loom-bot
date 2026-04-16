@@ -537,6 +537,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           calledNumber = msg.start.customParameters?.calledNumber || "";
           callSid = msg.start.customParameters?.callSid || "";
           campaignId = msg.start.customParameters?.campaignId || "";
+          // Parse call variables
+          const varsParam = msg.start.customParameters?.variables || "";
+          if (varsParam) {
+            try {
+              callVariables = JSON.parse(varsParam);
+              console.log(`[MediaStream] Parsed ${Object.keys(callVariables).length} call variables (callId=${callId})`);
+            } catch (e) {
+              console.warn(`[MediaStream] Failed to parse variables param (callId=${callId})`);
+            }
+          }
           console.log(`[MediaStream] Stream started: streamSid=${streamSid} callId=${callId} agentId=${agentId} callSid=${callSid}`);
 
           connectToOpenAI();
