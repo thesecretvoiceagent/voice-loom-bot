@@ -179,6 +179,26 @@ export function TestCallDialog({ open, onOpenChange, agentName, agentId, agentTy
             </div>
           </div>
 
+          {extraVars.length > 0 && (
+            <div className="border-t border-border pt-4">
+              <h4 className="text-sm font-medium text-foreground mb-3">Prompt Variables</h4>
+              <p className="text-xs text-muted-foreground mb-3">Detected from agent instructions — values will be substituted into the prompt</p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {extraVars.map((varName) => (
+                  <div key={varName} className="space-y-1">
+                    <Label htmlFor={`pv-${varName}`} className="text-xs font-mono">{`{{${varName}}}`}</Label>
+                    <Input
+                      id={`pv-${varName}`}
+                      placeholder={varName.replace(/[._]/g, ' ')}
+                      value={promptVariables[varName] || ''}
+                      onChange={(e) => setPromptVariables(prev => ({ ...prev, [varName]: e.target.value }))}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="border-t border-border pt-4">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-sm font-medium text-foreground">Custom Variables</h4>
