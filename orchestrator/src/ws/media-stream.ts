@@ -44,6 +44,51 @@ async function runPostCallAnalysis(callId: string, transcript: string, analysisP
   }
 }
 
+// Send post-call SMS via Twilio REST API
+async function sendPostCallSms(
+  toNumber: string,
+  smsTemplate: string,
+  variables: Record<string, string>,
+  callId: string
+) {
+  if (!config.twilio.isConfigured || !toNumber || !smsTemplate) return;
+
+  try {
+    // Substitute variables into the SMS template
+    const smsBody = smsTemplate.replace(/\{\{([^}]+)\}\}/g, (match, varName) => {
+      const trimmed = varName.trim();
+      if (variables[trimmed] !== undefined) return variables[trimmed];
+      return match;
+    });
+
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${config.twilio.accountSid}/Messages.json`;
+    const authHeader = Buffer.from(`${config.twilio.accountSid}:${config.twilio.authToken}`).toString("base64");
+
+    const res = await fetch(twilioUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${authHeader}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        To: toNumber,
+        From: config.twilio.fromNumber,
+        Body: smsBody,
+      }).toString(),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      console.log(`[MediaStream] Post-call SMS sent (callId=${callId}, sid=${data.sid}, to=${toNumber})`);
+    } else {
+      const errText = await res.text();
+      console.error(`[MediaStream] Post-call SMS failed (callId=${callId}): ${res.status} ${errText}`);
+    }
+  } catch (err) {
+    console.error(`[MediaStream] Post-call SMS error (callId=${callId}):`, err);
+  }
+}
+
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
 const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
@@ -74,6 +119,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let agentAnalysisPrompt: string = "";
   let agentKnowledgeBase: any[] = [];
   let maxCallDurationMinutes: number = 0;
+  let postCallSmsTemplate: string = "";
+  let callerToNumber: string = ""; // The number that was called (for outbound, recipient's number)
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let greetingInProgress = true; // Protect initial greeting from interruption
   let activeResponseId: string | null = null; // Track current response to discard stale audio
@@ -192,6 +239,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         if (settings.anti_barge_in === true) {
           antiBargeinEnabled = true;
           console.log(`[MediaStream] Anti-barge-in enabled (callId=${callId})`);
+        }
+        // Read post-call SMS settings
+        if (settings.post_call_sms_enabled === true && typeof settings.post_call_sms_template === "string") {
+          postCallSmsTemplate = settings.post_call_sms_template;
+          console.log(`[MediaStream] Post-call SMS enabled (callId=${callId})`);
         }
       }
     } else {
@@ -600,6 +652,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (transcript && agentAnalysisPrompt) {
       runPostCallAnalysis(callId, transcript, agentAnalysisPrompt);
     }
+
+    // Send post-call SMS if configured
+    if (postCallSmsTemplate && callerToNumber) {
+      sendPostCallSms(callerToNumber, postCallSmsTemplate, callVariables, callId);
+    }
   };
 
   // Handle messages from Twilio
@@ -617,6 +674,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           callId = msg.start.customParameters?.callId || "";
           agentId = msg.start.customParameters?.agentId || "";
           calledNumber = msg.start.customParameters?.calledNumber || "";
+          const callerNumber = msg.start.customParameters?.callerNumber || "";
+          // For post-call SMS: outbound → send to calledNumber, inbound → send to callerNumber
+          callerToNumber = calledNumber || callerNumber;
           callSid = msg.start.customParameters?.callSid || "";
           campaignId = msg.start.customParameters?.campaignId || "";
           // Parse call variables
