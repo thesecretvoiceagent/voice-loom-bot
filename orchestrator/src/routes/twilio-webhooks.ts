@@ -30,7 +30,7 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
   const wsBase = config.publicWsBaseUrl || config.publicBaseUrl.replace("https://", "wss://");
   const streamUrl = `${wsBase}/twilio/stream`;
   const calledNumber = req.body?.To || "";
-  const callerNumber = req.body?.From || "";
+
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -40,7 +40,6 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
       <Parameter name="campaignId" value="${campaignId}"/>
       <Parameter name="callSid" value="${req.body?.CallSid || ""}"/>
       <Parameter name="calledNumber" value="${calledNumber}"/>
-      <Parameter name="callerNumber" value="${callerNumber}"/>
       <Parameter name="variables" value="${variables.replace(/"/g, '&quot;')}"/>
     </Stream>
   </Connect>

@@ -75,7 +75,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let agentKnowledgeBase: any[] = [];
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
-  let finalized = false; // Prevent double finalization
   let greetingInProgress = true; // Protect initial greeting from interruption
   let activeResponseId: string | null = null; // Track current response to discard stale audio
   let ignoreAudioUntilNextResponse = false;
@@ -213,10 +212,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.log(`[MediaStream] Substituted ${Object.keys(callVariables).length} variables into prompt (callId=${callId})`);
     }
 
-    // Remove any remaining unsubstituted {{variable}} placeholders from instructions only (not greeting)
-    // to prevent AI confusion, but preserve greeting even if it has unsubstituted vars
-    instructions = instructions.replace(/\{\{[^}]+\}\}/g, "[unknown]").replace(/\s{2,}/g, " ").trim();
-
     // Write initial call record to DB
     callStartTime = new Date();
     upsertCall(callId, {
@@ -262,34 +257,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
       console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || "(none)"}"`);
 
-      // Inject a user-role message to trigger the AI to speak its greeting.
-      // The session instructions already tell the AI exactly what to say.
-      openaiWs.send(JSON.stringify({
-        type: "conversation.item.create",
-        item: {
-          type: "message",
-          role: "user",
-          content: [{ type: "input_text", text: "[Phone call connected. Begin with your greeting now.]" }],
-        },
-      }));
-      openaiWs.send(JSON.stringify({ type: "response.create" }));
+      const responseCreate: any = { type: "response.create" };
+      if (greeting) {
+        responseCreate.response = {
+          instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`,
+        };
+      }
+      openaiWs.send(JSON.stringify(responseCreate));
 
       // Treat the initial response as speaking immediately so anti-barge-in stays active until playback is confirmed done.
       aiIsSpeaking = true;
-
-      // Safety: if greeting never completes within 15s, force-enable VAD so user isn't permanently muted
-      if (greetingInProgress) {
-        setTimeout(() => {
-          if (greetingInProgress) {
-            console.warn(`[MediaStream] Greeting safety timeout — force-enabling VAD (callId=${callId})`);
-            greetingInProgress = false;
-            resetResponseState();
-            ignoreAudioUntilNextResponse = false;
-            aiIsSpeaking = false;
-            enableTurnDetection();
-          }
-        }, 15000);
-      }
 
       if (maxCallDurationMinutes > 0 && !callDurationTimer) {
         const maxMs = maxCallDurationMinutes * 60 * 1000;
@@ -518,37 +495,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.done": {
             const responseId = event.response?.id || activeResponseId || null;
-            const responseStatus = event.response?.status;
-            console.log(`[MediaStream] OpenAI response done (callId=${callId}, responseId=${responseId}, status=${responseStatus}, hasAudio=${responseHasAudio})`);
-
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
             }
 
-            // If the response failed or was cancelled and this was the greeting, retry once
-            if ((responseStatus === "failed" || responseStatus === "cancelled") && greetingInProgress) {
-              const failReason = event.response?.status_details?.error?.message || responseStatus;
-              console.warn(`[MediaStream] Initial greeting response failed: ${failReason}, retrying (callId=${callId})`);
-              resetResponseState();
-              // Retry the greeting after a short delay
-              setTimeout(() => {
-                if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                  openaiWs.send(JSON.stringify({
-                    type: "conversation.item.create",
-                    item: {
-                      type: "message",
-                      role: "user",
-                      content: [{ type: "input_text", text: "[Phone call connected. Begin with your greeting now.]" }],
-                    },
-                  }));
-                  openaiWs.send(JSON.stringify({ type: "response.create" }));
-                  aiIsSpeaking = true;
-                }
-              }, 300);
-              break;
-            }
-
             responseDoneReceived = true;
+            console.log(`[MediaStream] OpenAI response done received, waiting for playback completion if needed (callId=${callId}, responseId=${responseId})`);
             maybeCompleteAiTurn("response.done");
             break;
           }
@@ -625,8 +577,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   // Save final call data to DB
   const finalizeCall = () => {
-    if (!callId || finalized) return;
-    finalized = true;
+    if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
 
     const endTime = new Date();
@@ -649,7 +600,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (transcript && agentAnalysisPrompt) {
       runPostCallAnalysis(callId, transcript, agentAnalysisPrompt);
     }
-
   };
 
   // Handle messages from Twilio
