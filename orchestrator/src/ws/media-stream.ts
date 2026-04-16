@@ -75,6 +75,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let greetingInProgress = true; // Protect initial greeting from interruption
+  let activeResponseId: string | null = null; // Track current response to discard stale audio
+  let lastAssistantItemId: string | null = null; // For Twilio mark-based sync
 
   // Connect to OpenAI Realtime API with agent-specific config
   const connectToOpenAI = async () => {
