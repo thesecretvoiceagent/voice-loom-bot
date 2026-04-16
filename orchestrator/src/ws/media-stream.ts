@@ -122,6 +122,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let postCallSmsTemplate: string = "";
   let callerToNumber: string = ""; // The number that was called (for outbound, recipient's number)
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
+  let finalized = false; // Prevent double finalization (SMS sent twice, etc.)
   let greetingInProgress = true; // Protect initial greeting from interruption
   let activeResponseId: string | null = null; // Track current response to discard stale audio
   let ignoreAudioUntilNextResponse = false;
@@ -629,7 +630,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   // Save final call data to DB
   const finalizeCall = () => {
-    if (!callId) return;
+    if (!callId || finalized) return;
+    finalized = true;
     if (callDurationTimer) clearTimeout(callDurationTimer);
 
     const endTime = new Date();
