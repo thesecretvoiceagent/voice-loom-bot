@@ -44,6 +44,51 @@ async function runPostCallAnalysis(callId: string, transcript: string, analysisP
   }
 }
 
+// Send post-call SMS via Twilio REST API
+async function sendPostCallSms(
+  toNumber: string,
+  smsTemplate: string,
+  variables: Record<string, string>,
+  callId: string
+) {
+  if (!config.twilio.isConfigured || !toNumber || !smsTemplate) return;
+
+  try {
+    // Substitute variables into the SMS template
+    const smsBody = smsTemplate.replace(/\{\{([^}]+)\}\}/g, (match, varName) => {
+      const trimmed = varName.trim();
+      if (variables[trimmed] !== undefined) return variables[trimmed];
+      return match;
+    });
+
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${config.twilio.accountSid}/Messages.json`;
+    const authHeader = Buffer.from(`${config.twilio.accountSid}:${config.twilio.authToken}`).toString("base64");
+
+    const res = await fetch(twilioUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${authHeader}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        To: toNumber,
+        From: config.twilio.fromNumber,
+        Body: smsBody,
+      }).toString(),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      console.log(`[MediaStream] Post-call SMS sent (callId=${callId}, sid=${data.sid}, to=${toNumber})`);
+    } else {
+      const errText = await res.text();
+      console.error(`[MediaStream] Post-call SMS failed (callId=${callId}): ${res.status} ${errText}`);
+    }
+  } catch (err) {
+    console.error(`[MediaStream] Post-call SMS error (callId=${callId}):`, err);
+  }
+}
+
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
 const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
