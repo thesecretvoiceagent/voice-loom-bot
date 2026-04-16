@@ -652,6 +652,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (transcript && agentAnalysisPrompt) {
       runPostCallAnalysis(callId, transcript, agentAnalysisPrompt);
     }
+
+    // Send post-call SMS if configured
+    if (postCallSmsTemplate && callerToNumber) {
+      sendPostCallSms(callerToNumber, postCallSmsTemplate, callVariables, callId);
+    }
   };
 
   // Handle messages from Twilio
