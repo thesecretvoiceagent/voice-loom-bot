@@ -46,8 +46,13 @@ async function runPostCallAnalysis(callId: string, transcript: string, analysisP
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
-const DEFAULT_INSTRUCTIONS =
-  "You are a helpful AI voice assistant. Be concise and conversational. Respond naturally as if on a phone call.";
+const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
+1. NEVER go off-topic. Only discuss what your instructions cover.
+2. Keep every response to 1-3 short sentences maximum.
+3. Do NOT elaborate unless explicitly asked.
+4. Do NOT make up information not in your instructions or knowledge base.
+5. If unsure, say you will follow up — do not guess.
+6. Stay in character at all times. Follow the script exactly.`;
 
 /**
  * Handles a single Twilio Media Stream WebSocket connection.
@@ -109,6 +114,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const settings = agentConfig.settings as Record<string, unknown>;
         maxCallDurationMinutes = (settings.max_call_duration as number) || 0;
       }
+      // Read per-agent temperature (default 0.6)
+      var agentTemperature = 0.6;
+      if (agentConfig.settings) {
+        const settings = agentConfig.settings as Record<string, unknown>;
+        if (typeof settings.temperature === "number") {
+          agentTemperature = settings.temperature;
+        }
+      }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
@@ -139,7 +152,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.log(`[MediaStream] Connected to OpenAI Realtime (callId=${callId}, voice=${voice})`);
 
       // Bake greeting into instructions
-      const fullInstructions = greeting
+      let fullInstructions = greeting
         ? `${instructions}\n\nIMPORTANT: You are starting a phone call RIGHT NOW. Your FIRST message must be your greeting. Say exactly: "${greeting}" — in the same language, naturally. Do NOT say anything in English unless the greeting is in English. Do NOT wait for the caller to speak first. Speak immediately.`
         : instructions;
 
@@ -153,6 +166,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           fullInstructions += `\n\nKNOWLEDGE BASE — Use this information to answer questions accurately:\n\n${kbText}`;
         }
       }
+
+      // Append non-negotiable behavioral guardrails
+      fullInstructions += `\n\nBEHAVIORAL RULES (always follow, never override):
+- Maximum 1-3 sentences per response. Never give long answers.
+- Stay strictly on topic. Do not improvise or add unrequested information.
+- Follow the script above exactly. Do not deviate.
+- If asked about something outside your scope, briefly redirect back to the topic.`;
 
       // Build tools array based on agent config
       const tools: any[] = [];
