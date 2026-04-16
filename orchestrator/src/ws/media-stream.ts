@@ -319,11 +319,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (greeting) {
         responseCreate.response = {
           instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`,
-          max_response_output_tokens: "inf",
-        };
-      } else {
-        responseCreate.response = {
-          max_response_output_tokens: "inf",
         };
       }
       openaiWs.send(JSON.stringify(responseCreate));
@@ -400,7 +395,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           instructions: fullInstructions,
           voice,
           temperature: sessionTemperature,
-          max_response_output_tokens: 300,
+          max_response_output_tokens: 4096,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
