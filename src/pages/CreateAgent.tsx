@@ -253,6 +253,7 @@ export default function CreateAgent() {
         retry_delay_hours: retryDelay.hours,
         retry_delay_minutes: retryDelay.minutes,
         enable_recording: enableRecording,
+        temperature: temperature[0],
       },
       schedule: {
         start_time: startTime,
