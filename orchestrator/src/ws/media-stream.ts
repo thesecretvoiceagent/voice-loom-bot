@@ -122,6 +122,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         if (typeof settings.temperature === "number") {
           agentTemperature = settings.temperature;
         }
+        // Read uninterruptible greeting setting (default true)
+        if (settings.uninterruptible_greeting === false) {
+          greetingInProgress = false; // Allow interruption from the start
+        }
       }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
@@ -244,8 +248,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }, maxMs);
         }
 
-        // VAD will be enabled after the greeting response completes (response.done event)
-        // No fixed timeout — we wait for the full greeting to finish
+        // If greeting is interruptible, enable VAD immediately
+        if (!greetingInProgress) {
+          openaiWs!.send(JSON.stringify({
+            type: "session.update",
+            session: {
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.5,
+                prefix_padding_ms: 400,
+                silence_duration_ms: 700,
+              },
+            },
+          }));
+          console.log(`[MediaStream] VAD enabled immediately (interruptible greeting) (callId=${callId})`);
+        }
+        // Otherwise VAD will be enabled after the greeting response completes (response.done event)
       }, 400);
     });
 
