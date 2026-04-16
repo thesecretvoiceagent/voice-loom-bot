@@ -66,6 +66,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let calledNumber: string = "";
   let callSid: string = "";
   let campaignId: string = "";
+  let callVariables: Record<string, string> = {};
 
   // Collect transcript turns
   const transcriptLines: string[] = [];
