@@ -122,6 +122,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let postCallSmsTemplate: string = "";
   let callerToNumber: string = ""; // The number that was called (for outbound, recipient's number)
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
+  let finalized = false; // Prevent double finalization (SMS sent twice, etc.)
   let greetingInProgress = true; // Protect initial greeting from interruption
   let activeResponseId: string | null = null; // Track current response to discard stale audio
   let ignoreAudioUntilNextResponse = false;
@@ -264,6 +265,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.log(`[MediaStream] Substituted ${Object.keys(callVariables).length} variables into prompt (callId=${callId})`);
     }
 
+    // Remove any remaining unsubstituted {{variable}} placeholders to prevent AI confusion
+    const cleanVars = (text: string): string => text.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
+    instructions = cleanVars(instructions);
+    greeting = cleanVars(greeting);
+
     // Write initial call record to DB
     callStartTime = new Date();
     upsertCall(callId, {
@@ -313,6 +319,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (greeting) {
         responseCreate.response = {
           instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`,
+          max_response_output_tokens: "inf",
+        };
+      } else {
+        responseCreate.response = {
+          max_response_output_tokens: "inf",
         };
       }
       openaiWs.send(JSON.stringify(responseCreate));
@@ -389,7 +400,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           instructions: fullInstructions,
           voice,
           temperature: sessionTemperature,
-          max_response_output_tokens: "inf",
+          max_response_output_tokens: 300,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
@@ -629,7 +640,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   // Save final call data to DB
   const finalizeCall = () => {
-    if (!callId) return;
+    if (!callId || finalized) return;
+    finalized = true;
     if (callDurationTimer) clearTimeout(callDurationTimer);
 
     const endTime = new Date();
