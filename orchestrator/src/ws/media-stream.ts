@@ -89,6 +89,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseHasAudio = false;
   let responseAudioDone = false;
   let responseDoneReceived = false;
+  let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearMarkFallback = () => {
+    if (markFallbackTimer) {
+      clearTimeout(markFallbackTimer);
+      markFallbackTimer = null;
+    }
+  };
 
   const resetResponseState = () => {
     activeResponseId = null;
@@ -96,6 +104,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseHasAudio = false;
     responseAudioDone = false;
     responseDoneReceived = false;
+    clearMarkFallback();
   };
 
   const enableTurnDetection = () => {
