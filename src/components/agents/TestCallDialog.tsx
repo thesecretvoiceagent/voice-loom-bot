@@ -100,6 +100,10 @@ export function TestCallDialog({ open, onOpenChange, agentName, agentId, agentTy
       if (firstName) variables.first_name = firstName;
       if (lastName) variables.last_name = lastName;
       if (company) variables.company = company;
+      // Add detected prompt variables
+      Object.entries(promptVariables).forEach(([key, val]) => {
+        if (val) variables[key] = val;
+      });
       customVariables.forEach((v) => {
         if (v.key && v.value) variables[v.key] = v.value;
       });
