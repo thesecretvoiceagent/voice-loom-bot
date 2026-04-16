@@ -486,6 +486,47 @@ export default function CreateAgent() {
                 </div>
               </div>
             </div>
+
+            {/* Post-Call SMS */}
+            <div className="glass-card rounded-xl p-6">
+              <div className="flex items-start gap-4">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-cyan-500/10">
+                  <Mail className="h-5 w-5 text-cyan-500" />
+                </div>
+                <div className="flex-1 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="font-semibold text-foreground">Post-Call SMS</h3>
+                      <p className="text-sm text-muted-foreground">Automatically send an SMS to the caller after the call ends</p>
+                    </div>
+                    <Switch checked={postCallSmsEnabled} onCheckedChange={setPostCallSmsEnabled} />
+                  </div>
+                  {postCallSmsEnabled && (
+                    <>
+                      <div className="space-y-2">
+                        <Label className="text-sm text-muted-foreground">Quick Insert Variables:</Label>
+                        <div className="flex flex-wrap gap-2">
+                          {quickInserts.map((item) => (
+                            <Button key={item.id} variant="outline" size="sm" onClick={() => insertVariable(item.id, setPostCallSmsTemplate)} className="text-xs">
+                              ○ {item.label}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                      <Textarea
+                        value={postCallSmsTemplate}
+                        onChange={(e) => setPostCallSmsTemplate(e.target.value)}
+                        placeholder="Hi {{first_name}}, thank you for your time today. If you have any questions, please don't hesitate to reach out."
+                        className="min-h-[100px]"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Variables like {"{{first_name}}"}, {"{{last_name}}"}, etc. will be replaced with actual values from the call.
+                      </p>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
           </>
         )}
 
