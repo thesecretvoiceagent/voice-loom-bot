@@ -13,7 +13,7 @@ async function runPostCallAnalysis(callId: string, transcript: string, analysisP
   if (!config.supabase.url || !config.supabase.anonKey) return;
   try {
     const url = `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/ai-completion`;
-    const systemMsg = analysisPrompt || "Analyze this call transcript. Provide a brief summary of the conversation, the outcome, and any action items.";
+    const systemMsg = analysisPrompt || "Analyze this call transcript. Provide a brief summary of the conversation, the outcome, and any action items. IMPORTANT: Detect the language used in the transcript (Estonian, Russian, or English) and write your entire analysis in that same language. Do not mix languages.";
     const res = await fetch(url, {
       method: "POST",
       headers: {
