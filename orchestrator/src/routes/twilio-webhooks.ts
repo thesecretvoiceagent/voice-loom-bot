@@ -13,8 +13,9 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
   const callId = (req.query.callId as string) || crypto.randomUUID();
   const agentId = (req.query.agentId as string) || "default";
   const campaignId = (req.query.campaignId as string) || "";
+  const variables = (req.query.variables as string) || "";
 
-  console.log(`[${correlationId}] POST /twilio/voice callId=${callId} agentId=${agentId} campaignId=${campaignId}`);
+  console.log(`[${correlationId}] POST /twilio/voice callId=${callId} agentId=${agentId} campaignId=${campaignId} variables=${variables ? 'yes' : 'no'}`);
   console.log(`[${correlationId}] CallSid=${req.body?.CallSid} From=${req.body?.From} To=${req.body?.To}`);
 
   if (!config.openai.isConfigured) {
@@ -39,6 +40,7 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
       <Parameter name="campaignId" value="${campaignId}"/>
       <Parameter name="callSid" value="${req.body?.CallSid || ""}"/>
       <Parameter name="calledNumber" value="${calledNumber}"/>
+      <Parameter name="variables" value="${variables.replace(/"/g, '&quot;')}"/>
     </Stream>
   </Connect>
 </Response>`;
