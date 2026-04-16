@@ -478,6 +478,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 streamSid,
                 mark: { name: responsePlaybackMarkName },
               }));
+
+              // Safety fallback: if Twilio never sends the mark back within 10 seconds,
+              // force-complete the turn to prevent the call from hanging forever.
+              clearMarkFallback();
+              markFallbackTimer = setTimeout(() => {
+                if (responsePlaybackMarkName) {
+                  console.warn(`[MediaStream] Mark fallback triggered — Twilio mark not received in 10s, force-completing turn (callId=${callId}, mark=${responsePlaybackMarkName})`);
+                  responsePlaybackMarkName = null;
+                  maybeCompleteAiTurn("mark-fallback-timeout");
+                }
+              }, 10000);
             }
             break;
           }
