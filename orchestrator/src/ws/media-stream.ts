@@ -552,12 +552,35 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.done": {
             const responseId = event.response?.id || activeResponseId || null;
+            const responseStatus = event.response?.status;
+            console.log(`[MediaStream] OpenAI response done (callId=${callId}, responseId=${responseId}, status=${responseStatus}, hasAudio=${responseHasAudio})`);
+
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
             }
 
+            // If the response failed or was cancelled and this was the greeting, retry once
+            if ((responseStatus === "failed" || responseStatus === "cancelled") && greetingInProgress) {
+              const failReason = event.response?.status_details?.error?.message || responseStatus;
+              console.warn(`[MediaStream] Initial greeting response failed: ${failReason}, retrying (callId=${callId})`);
+              resetResponseState();
+              // Retry the greeting after a short delay
+              setTimeout(() => {
+                if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+                  const retryCreate: any = { type: "response.create" };
+                  if (greeting) {
+                    retryCreate.response = {
+                      instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else.`,
+                    };
+                  }
+                  openaiWs.send(JSON.stringify(retryCreate));
+                  aiIsSpeaking = true;
+                }
+              }, 300);
+              break;
+            }
+
             responseDoneReceived = true;
-            console.log(`[MediaStream] OpenAI response done received, waiting for playback completion if needed (callId=${callId}, responseId=${responseId})`);
             maybeCompleteAiTurn("response.done");
             break;
           }
