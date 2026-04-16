@@ -265,10 +265,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.log(`[MediaStream] Substituted ${Object.keys(callVariables).length} variables into prompt (callId=${callId})`);
     }
 
-    // Remove any remaining unsubstituted {{variable}} placeholders to prevent AI confusion
-    const cleanVars = (text: string): string => text.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
-    instructions = cleanVars(instructions);
-    greeting = cleanVars(greeting);
+    // Remove any remaining unsubstituted {{variable}} placeholders from instructions only (not greeting)
+    // to prevent AI confusion, but preserve greeting even if it has unsubstituted vars
+    instructions = instructions.replace(/\{\{[^}]+\}\}/g, "[unknown]").replace(/\s{2,}/g, " ").trim();
 
     // Write initial call record to DB
     callStartTime = new Date();
@@ -395,7 +394,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           instructions: fullInstructions,
           voice,
           temperature: sessionTemperature,
-          max_response_output_tokens: 4096,
+          max_response_output_tokens: "inf",
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
