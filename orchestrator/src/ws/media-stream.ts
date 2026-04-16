@@ -119,6 +119,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let agentAnalysisPrompt: string = "";
   let agentKnowledgeBase: any[] = [];
   let maxCallDurationMinutes: number = 0;
+  let postCallSmsTemplate: string = "";
+  let callerToNumber: string = ""; // The number that was called (for outbound, recipient's number)
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let greetingInProgress = true; // Protect initial greeting from interruption
   let activeResponseId: string | null = null; // Track current response to discard stale audio
