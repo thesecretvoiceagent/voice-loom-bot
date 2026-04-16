@@ -195,13 +195,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
       }
 
-      // Configure session
+      // Configure session with temperature and token limits
+      const sessionTemperature = agentConfig ? agentTemperature : 0.6;
       const sessionUpdate: any = {
         type: "session.update",
         session: {
           modalities: ["text", "audio"],
           instructions: fullInstructions,
           voice,
+          temperature: sessionTemperature,
+          max_response_output_tokens: 150,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
@@ -248,8 +251,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               turn_detection: {
                 type: "server_vad",
                 threshold: 0.5,
-                prefix_padding_ms: 300,
-                silence_duration_ms: 500,
+                prefix_padding_ms: 400,
+                silence_duration_ms: 700,
               },
             },
           }));
