@@ -193,6 +193,7 @@ export default function CreateAgent() {
           minutes: agent.settings.retry_delay_minutes ?? 5,
         });
         setEnableRecording(agent.settings.enable_recording ?? true);
+        setTemperature([(agent.settings as any).temperature ?? 0.6]);
       }
       if (agent.schedule) {
         setStartTime(agent.schedule.start_time || "09:00");
