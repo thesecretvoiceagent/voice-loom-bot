@@ -314,19 +314,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
       console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || "(none)"}"`);
 
-      const responseCreate: any = {
-        type: "response.create",
-        response: {
-          modalities: ["text", "audio"],
-          voice,
-          output_audio_format: "g711_ulaw",
-          ...(greeting
-            ? {
-                instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`,
-              }
-            : {}),
-        },
-      };
+      const responseCreate: any = { type: "response.create" };
+      if (greeting) {
+        responseCreate.response = {
+          instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`,
+        };
+      }
       openaiWs.send(JSON.stringify(responseCreate));
 
       // Treat the initial response as speaking immediately so anti-barge-in stays active until playback is confirmed done.
