@@ -29,13 +29,49 @@ interface Variable {
   value: string;
 }
 
-export function TestCallDialog({ open, onOpenChange, agentName, agentId, agentType }: TestCallDialogProps) {
+const EXCLUDED_VARS = ['current_date', 'current_time', 'date_time', 'date_and_time'];
+
+function extractPromptVariables(prompt?: string, greeting?: string): string[] {
+  const vars = new Set<string>();
+  const regex = /\{\{([^}]+)\}\}/g;
+  for (const text of [prompt, greeting]) {
+    if (!text) continue;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const varName = match[1].trim();
+      if (!EXCLUDED_VARS.includes(varName.toLowerCase().replace(/[\s.]/g, '_'))) {
+        vars.add(varName);
+      }
+    }
+  }
+  return Array.from(vars);
+}
+
+export function TestCallDialog({ open, onOpenChange, agentName, agentId, agentType, systemPrompt, greeting }: TestCallDialogProps) {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [company, setCompany] = useState("");
   const [customVariables, setCustomVariables] = useState<Variable[]>([]);
+  const [promptVariables, setPromptVariables] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
+
+  const detectedVars = useMemo(() => extractPromptVariables(systemPrompt, greeting), [systemPrompt, greeting]);
+
+  // Filter out standard vars (first_name, last_name, company, phone_number) from detected
+  const extraVars = useMemo(() => 
+    detectedVars.filter(v => !['first_name', 'last_name', 'company', 'phone_number'].includes(v.toLowerCase().replace(/[\s.]/g, '_'))),
+    [detectedVars]
+  );
+
+  useEffect(() => {
+    // Reset prompt variables when dialog opens
+    if (open) {
+      const initial: Record<string, string> = {};
+      extraVars.forEach(v => { initial[v] = ''; });
+      setPromptVariables(initial);
+    }
+  }, [open, extraVars]);
 
   const addCustomVariable = () => {
     setCustomVariables([...customVariables, { key: "", value: "" }]);
