@@ -256,6 +256,7 @@ export default function CreateAgent() {
         retry_delay_minutes: retryDelay.minutes,
         enable_recording: enableRecording,
         temperature: temperature[0],
+        uninterruptible_greeting: uninterruptibleGreeting,
       },
       schedule: {
         start_time: startTime,
@@ -391,6 +392,13 @@ export default function CreateAgent() {
                     </div>
                   </div>
                   <Textarea value={greeting} onChange={(e) => setGreeting(e.target.value)} placeholder="Hello {{first_name}}, this is..." className="min-h-[100px]" />
+                  <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/50">
+                    <div>
+                      <p className="font-medium text-foreground">Uninterruptible Greeting</p>
+                      <p className="text-sm text-muted-foreground">Initial message plays fully without being cut off by caller</p>
+                    </div>
+                    <Switch checked={uninterruptibleGreeting} onCheckedChange={setUninterruptibleGreeting} />
+                  </div>
                 </div>
               </div>
             </div>
