@@ -76,7 +76,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let greetingInProgress = true; // Protect initial greeting from interruption
   let activeResponseId: string | null = null; // Track current response to discard stale audio
-  let lastAssistantItemId: string | null = null; // For Twilio mark-based sync
+  let sessionConfigured = false;
+  let pendingInitialResponse = false;
 
   // Connect to OpenAI Realtime API with agent-specific config
   const connectToOpenAI = async () => {
@@ -92,6 +93,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     let voice = "alloy";
     let agentConfig = null;
     let agentTools: string[] = [];
+    let agentTemperature = 0.6;
 
     if (agentId && agentId !== "default") {
       agentConfig = await fetchAgentConfig(agentId);
@@ -116,11 +118,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (agentConfig.settings) {
         const settings = agentConfig.settings as Record<string, unknown>;
         maxCallDurationMinutes = (settings.max_call_duration as number) || 0;
-      }
-      // Read per-agent temperature (default 0.6)
-      var agentTemperature = 0.6;
-      if (agentConfig.settings) {
-        const settings = agentConfig.settings as Record<string, unknown>;
         if (typeof settings.temperature === "number") {
           agentTemperature = settings.temperature;
         }
@@ -148,12 +145,65 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
     const url = `${OPENAI_REALTIME_URL}?model=${config.openai.realtimeModel}`;
 
+    sessionConfigured = false;
+    pendingInitialResponse = false;
+    activeResponseId = null;
+
     openaiWs = new WebSocket(url, {
       headers: {
         Authorization: `Bearer ${config.openai.apiKey}`,
         "OpenAI-Beta": "realtime=v1",
       },
     });
+
+    const enableTurnDetection = () => {
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+      openaiWs.send(JSON.stringify({
+        type: "session.update",
+        session: {
+          turn_detection: {
+            type: "server_vad",
+            threshold: 0.5,
+            prefix_padding_ms: 400,
+            silence_duration_ms: 700,
+          },
+        },
+      }));
+    };
+
+    const startInitialResponse = () => {
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !sessionConfigured || !pendingInitialResponse) {
+        return;
+      }
+
+      pendingInitialResponse = false;
+      console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || "(none)"}"`);
+
+      const responseCreate: any = { type: "response.create" };
+      if (greeting) {
+        responseCreate.response = {
+          instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`,
+        };
+      }
+      openaiWs.send(JSON.stringify(responseCreate));
+
+      if (maxCallDurationMinutes > 0 && !callDurationTimer) {
+        const maxMs = maxCallDurationMinutes * 60 * 1000;
+        console.log(`[MediaStream] Max call duration: ${maxCallDurationMinutes}m (callId=${callId})`);
+        callDurationTimer = setTimeout(() => {
+          console.log(`[MediaStream] Max call duration reached, hanging up (callId=${callId})`);
+          transcriptLines.push(`[System]: Call ended — max duration (${maxCallDurationMinutes}m) reached`);
+          hangUpCall();
+        }, maxMs);
+      }
+
+      // If greeting is interruptible, enable VAD immediately
+      if (!greetingInProgress) {
+        enableTurnDetection();
+        console.log(`[MediaStream] VAD enabled immediately (interruptible greeting) (callId=${callId})`);
+      }
+      // Otherwise VAD will be enabled after the greeting response completes (response.done event)
+    };
 
     openaiWs.on("open", () => {
       console.log(`[MediaStream] Connected to OpenAI Realtime (callId=${callId}, voice=${voice})`);
@@ -225,48 +275,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         sessionUpdate.session.tools = tools;
       }
 
+      pendingInitialResponse = true;
       openaiWs!.send(JSON.stringify(sessionUpdate));
-
-      // Trigger greeting
-      setTimeout(() => {
-        console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || '(none)'}"`);
-
-        const responseCreate: any = { type: "response.create" };
-        if (greeting) {
-          responseCreate.response = {
-            instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`,
-          };
-        }
-        openaiWs!.send(JSON.stringify(responseCreate));
-
-        // Set max call duration timer
-        if (maxCallDurationMinutes > 0) {
-          const maxMs = maxCallDurationMinutes * 60 * 1000;
-          console.log(`[MediaStream] Max call duration: ${maxCallDurationMinutes}m (callId=${callId})`);
-          callDurationTimer = setTimeout(() => {
-            console.log(`[MediaStream] Max call duration reached, hanging up (callId=${callId})`);
-            transcriptLines.push(`[System]: Call ended — max duration (${maxCallDurationMinutes}m) reached`);
-            hangUpCall();
-          }, maxMs);
-        }
-
-        // If greeting is interruptible, enable VAD immediately
-        if (!greetingInProgress) {
-          openaiWs!.send(JSON.stringify({
-            type: "session.update",
-            session: {
-              turn_detection: {
-                type: "server_vad",
-                threshold: 0.5,
-                prefix_padding_ms: 400,
-                silence_duration_ms: 700,
-              },
-            },
-          }));
-          console.log(`[MediaStream] VAD enabled immediately (interruptible greeting) (callId=${callId})`);
-        }
-        // Otherwise VAD will be enabled after the greeting response completes (response.done event)
-      }, 400);
     });
 
     openaiWs.on("message", (data) => {
@@ -279,16 +289,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "session.updated":
-            console.log(`[MediaStream] OpenAI session configured (callId=${callId})`);
+            if (!sessionConfigured) {
+              sessionConfigured = true;
+              console.log(`[MediaStream] OpenAI session configured (callId=${callId})`);
+              startInitialResponse();
+            } else {
+              console.log(`[MediaStream] OpenAI session updated (callId=${callId})`);
+            }
             break;
 
           case "response.created":
             activeResponseId = event.response?.id || null;
             break;
 
-          case "response.audio.delta":
-            // Only forward audio from the currently active response (discard stale/cancelled audio)
-            if (event.response_id && activeResponseId && event.response_id !== activeResponseId) {
+          case "response.audio.delta": {
+            const responseId = event.response_id || null;
+            if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
             }
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
@@ -297,14 +313,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 streamSid,
                 media: { payload: event.delta },
               }));
-              // Send a mark after each audio chunk for Twilio sync
-              twilioWs.send(JSON.stringify({
-                event: "mark",
-                streamSid,
-                mark: { name: `audio-${Date.now()}` },
-              }));
             }
             break;
+          }
 
           case "response.audio_transcript.done":
             console.log(`[MediaStream] AI said (callId=${callId}): ${event.transcript}`);
@@ -352,21 +363,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
 
           case "response.done":
+            activeResponseId = null;
             // Greeting finished — enable VAD and allow interruptions
             if (greetingInProgress) {
               greetingInProgress = false;
               console.log(`[MediaStream] Greeting complete, enabling VAD (callId=${callId})`);
-              openaiWs!.send(JSON.stringify({
-                type: "session.update",
-                session: {
-                  turn_detection: {
-                    type: "server_vad",
-                    threshold: 0.5,
-                    prefix_padding_ms: 400,
-                    silence_duration_ms: 700,
-                  },
-                },
-              }));
+              enableTurnDetection();
             }
             break;
 
@@ -477,7 +479,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           break;
 
         case "media":
-          if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+          if (openaiWs && openaiWs.readyState === WebSocket.OPEN && sessionConfigured) {
             openaiWs.send(JSON.stringify({
               type: "input_audio_buffer.append",
               audio: msg.media.payload,
