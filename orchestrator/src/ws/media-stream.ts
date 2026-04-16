@@ -84,7 +84,54 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
   let antiBargeinEnabled = false;
-  let aiIsSpeaking = false; // Track whether AI is currently outputting audio
+  let aiIsSpeaking = false; // Track whether AI is currently outputting audio or Twilio is still playing it
+  let responsePlaybackMarkName: string | null = null;
+  let responseHasAudio = false;
+  let responseAudioDone = false;
+  let responseDoneReceived = false;
+
+  const resetResponseState = () => {
+    activeResponseId = null;
+    responsePlaybackMarkName = null;
+    responseHasAudio = false;
+    responseAudioDone = false;
+    responseDoneReceived = false;
+  };
+
+  const enableTurnDetection = () => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    openaiWs.send(JSON.stringify({
+      type: "session.update",
+      session: {
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 400,
+          silence_duration_ms: 700,
+        },
+      },
+    }));
+  };
+
+  const maybeCompleteAiTurn = (source: string) => {
+    if (!responseDoneReceived) return;
+    if (responseHasAudio && !responseAudioDone) return;
+    if (responsePlaybackMarkName) return;
+
+    const completedResponseId = activeResponseId;
+    resetResponseState();
+    ignoreAudioUntilNextResponse = false;
+    aiIsSpeaking = false;
+
+    if (greetingInProgress) {
+      greetingInProgress = false;
+      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD (callId=${callId}, responseId=${completedResponseId})`);
+      enableTurnDetection();
+      return;
+    }
+
+    console.log(`[MediaStream] AI playback complete via ${source} (callId=${callId}, responseId=${completedResponseId})`);
+  };
 
   // Connect to OpenAI Realtime API with agent-specific config
   const connectToOpenAI = async () => {
@@ -173,7 +220,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
     sessionConfigured = false;
     pendingInitialResponse = false;
-    activeResponseId = null;
+    resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
     if (initialResponseFallbackTimer) {
@@ -187,21 +234,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         "OpenAI-Beta": "realtime=v1",
       },
     });
-
-    const enableTurnDetection = () => {
-      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-      openaiWs.send(JSON.stringify({
-        type: "session.update",
-        session: {
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.5,
-            prefix_padding_ms: 400,
-            silence_duration_ms: 700,
-          },
-        },
-      }));
-    };
 
     const maybeStartInitialResponse = () => {
       if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !pendingInitialResponse) {
@@ -224,7 +256,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }
       openaiWs.send(JSON.stringify(responseCreate));
 
-      // Mark AI as speaking for the greeting
+      // Treat the initial response as speaking immediately so anti-barge-in stays active until playback is confirmed done.
       aiIsSpeaking = true;
 
       if (maxCallDurationMinutes > 0 && !callDurationTimer) {
@@ -237,7 +269,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         }, maxMs);
       }
 
-      // Don't enable VAD until greeting is done — it will be enabled in response.done
+      // Don't enable VAD until Twilio confirms the greeting has actually finished playing.
       if (!greetingInProgress) {
         enableTurnDetection();
         console.log(`[MediaStream] VAD enabled immediately (interruptible greeting) (callId=${callId})`);
@@ -302,7 +334,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           input_audio_transcription: {
             model: "whisper-1",
           },
-          // Start with VAD disabled — we enable it after greeting or immediately if no greeting
+          // Start with VAD disabled — we enable it after the greeting playback is fully complete,
+          // or immediately if greetings are allowed to be interruptible.
           turn_detection: null,
         },
       };
@@ -345,18 +378,23 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.created":
             activeResponseId = event.response?.id || null;
+            responsePlaybackMarkName = null;
+            responseHasAudio = false;
+            responseAudioDone = false;
+            responseDoneReceived = false;
             ignoreAudioUntilNextResponse = false;
-            aiIsSpeaking = true; // AI starts generating a response
+            aiIsSpeaking = true; // Keep this true until Twilio confirms playback completion.
             break;
 
           case "response.audio.delta": {
-            const responseId = event.response_id || null;
+            const responseId = event.response_id || activeResponseId || null;
             if (ignoreAudioUntilNextResponse) {
               break;
             }
-            if (responseId && activeResponseId && responseId !== activeResponseId) {
+            if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
             }
+            responseHasAudio = true;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({
                 event: "media",
@@ -410,21 +448,42 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
-          case "response.audio.done":
-            // Audio stream for this response is complete — AI finished speaking this part
-            // Don't clear aiIsSpeaking yet; wait for response.done for full completion
-            break;
+          case "response.audio.done": {
+            const responseId = event.response_id || activeResponseId || null;
+            if (!activeResponseId || !responseId || responseId !== activeResponseId) {
+              break;
+            }
 
-          case "response.done":
-            activeResponseId = null;
-            ignoreAudioUntilNextResponse = false;
-            aiIsSpeaking = false; // AI finished speaking
-            if (greetingInProgress) {
-              greetingInProgress = false;
-              console.log(`[MediaStream] Greeting complete, enabling VAD (callId=${callId})`);
-              enableTurnDetection();
+            responseAudioDone = true;
+
+            if (!responseHasAudio) {
+              maybeCompleteAiTurn("response.audio.done(no-audio)");
+              break;
+            }
+
+            if (!responsePlaybackMarkName && streamSid && twilioWs.readyState === WebSocket.OPEN) {
+              responsePlaybackMarkName = `response-playback:${responseId}:${Date.now()}`;
+              console.log(`[MediaStream] Response audio complete, waiting for Twilio playback mark (callId=${callId}, responseId=${responseId}, mark=${responsePlaybackMarkName})`);
+              twilioWs.send(JSON.stringify({
+                event: "mark",
+                streamSid,
+                mark: { name: responsePlaybackMarkName },
+              }));
             }
             break;
+          }
+
+          case "response.done": {
+            const responseId = event.response?.id || activeResponseId || null;
+            if (!activeResponseId || !responseId || responseId !== activeResponseId) {
+              break;
+            }
+
+            responseDoneReceived = true;
+            console.log(`[MediaStream] OpenAI response done received, waiting for playback completion if needed (callId=${callId}, responseId=${responseId})`);
+            maybeCompleteAiTurn("response.done");
+            break;
+          }
 
           case "input_audio_buffer.speech_started":
             // If greeting is in progress, completely ignore user speech and clear any buffered audio
@@ -439,8 +498,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
               break;
             }
-            console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId})`);
-            activeResponseId = null;
+            console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId}, responseId=${activeResponseId})`);
+            resetResponseState();
             ignoreAudioUntilNextResponse = true;
             aiIsSpeaking = false;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
@@ -570,6 +629,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }));
           }
           break;
+
+        case "mark": {
+          const markName = msg.mark?.name || "";
+          if (markName && responsePlaybackMarkName && markName === responsePlaybackMarkName) {
+            console.log(`[MediaStream] Twilio playback mark received (callId=${callId}, mark=${markName})`);
+            responsePlaybackMarkName = null;
+            maybeCompleteAiTurn("twilio.mark");
+          }
+          break;
+        }
 
         case "stop":
           console.log(`[MediaStream] Twilio stream stopped (callId=${callId})`);
