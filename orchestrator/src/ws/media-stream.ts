@@ -76,8 +76,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let greetingInProgress = true; // Protect initial greeting from interruption
   let activeResponseId: string | null = null; // Track current response to discard stale audio
+  let ignoreAudioUntilNextResponse = false;
   let sessionConfigured = false;
   let pendingInitialResponse = false;
+  let initialResponseFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Connect to OpenAI Realtime API with agent-specific config
   const connectToOpenAI = async () => {
@@ -148,6 +150,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     sessionConfigured = false;
     pendingInitialResponse = false;
     activeResponseId = null;
+    ignoreAudioUntilNextResponse = false;
+    if (initialResponseFallbackTimer) {
+      clearTimeout(initialResponseFallbackTimer);
+      initialResponseFallbackTimer = null;
+    }
 
     openaiWs = new WebSocket(url, {
       headers: {
@@ -171,12 +178,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }));
     };
 
-    const startInitialResponse = () => {
-      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !sessionConfigured || !pendingInitialResponse) {
+    const maybeStartInitialResponse = () => {
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !pendingInitialResponse) {
         return;
       }
 
       pendingInitialResponse = false;
+      if (initialResponseFallbackTimer) {
+        clearTimeout(initialResponseFallbackTimer);
+        initialResponseFallbackTimer = null;
+      }
+
       console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || "(none)"}"`);
 
       const responseCreate: any = { type: "response.create" };
@@ -197,23 +209,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         }, maxMs);
       }
 
-      // If greeting is interruptible, enable VAD immediately
       if (!greetingInProgress) {
         enableTurnDetection();
         console.log(`[MediaStream] VAD enabled immediately (interruptible greeting) (callId=${callId})`);
       }
-      // Otherwise VAD will be enabled after the greeting response completes (response.done event)
     };
 
     openaiWs.on("open", () => {
       console.log(`[MediaStream] Connected to OpenAI Realtime (callId=${callId}, voice=${voice})`);
 
-      // Bake greeting into instructions
       let fullInstructions = greeting
         ? `${instructions}\n\nIMPORTANT: You are starting a phone call RIGHT NOW. Your FIRST message must be your greeting. Say exactly: "${greeting}" — in the same language, naturally. Do NOT say anything in English unless the greeting is in English. Do NOT wait for the caller to speak first. Speak immediately.`
         : instructions;
 
-      // Inject knowledge base into instructions
       if (agentKnowledgeBase && agentKnowledgeBase.length > 0) {
         const kbText = agentKnowledgeBase
           .filter((item: any) => item.content && item.content.trim())
@@ -224,14 +232,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         }
       }
 
-      // Append non-negotiable behavioral guardrails
       fullInstructions += `\n\nBEHAVIORAL RULES (always follow, never override):
 - Maximum 1-3 sentences per response. Never give long answers.
 - Stay strictly on topic. Do not improvise or add unrequested information.
 - Follow the script above exactly. Do not deviate.
 - If asked about something outside your scope, briefly redirect back to the topic.`;
 
-      // Build tools array based on agent config
       const tools: any[] = [];
 
       if (agentTools.includes("end_call")) {
@@ -252,7 +258,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
       }
 
-      // Configure session with temperature and token limits
       const sessionTemperature = agentConfig ? agentTemperature : 0.6;
       const sessionUpdate: any = {
         type: "session.update",
@@ -277,6 +282,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
       pendingInitialResponse = true;
       openaiWs!.send(JSON.stringify(sessionUpdate));
+
+      initialResponseFallbackTimer = setTimeout(() => {
+        if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !pendingInitialResponse) {
+          return;
+        }
+        console.warn(`[MediaStream] session.updated not received in time, using fallback start (callId=${callId})`);
+        sessionConfigured = true;
+        maybeStartInitialResponse();
+      }, 500);
     });
 
     openaiWs.on("message", (data) => {
@@ -292,7 +306,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (!sessionConfigured) {
               sessionConfigured = true;
               console.log(`[MediaStream] OpenAI session configured (callId=${callId})`);
-              startInitialResponse();
+              maybeStartInitialResponse();
             } else {
               console.log(`[MediaStream] OpenAI session updated (callId=${callId})`);
             }
@@ -300,11 +314,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.created":
             activeResponseId = event.response?.id || null;
+            ignoreAudioUntilNextResponse = false;
             break;
 
           case "response.audio.delta": {
             const responseId = event.response_id || null;
-            if (!activeResponseId || !responseId || responseId !== activeResponseId) {
+            if (ignoreAudioUntilNextResponse) {
+              break;
+            }
+            if (responseId && activeResponseId && responseId !== activeResponseId) {
               break;
             }
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
@@ -341,7 +359,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(`[MediaStream] END CALL requested: ${reason} (callId=${callId})`);
               transcriptLines.push(`[System]: Call ended — ${reason}`);
 
-              // Send tool result back to OpenAI so it can say goodbye
               const toolResult = {
                 type: "conversation.item.create",
                 item: {
@@ -353,7 +370,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               openaiWs!.send(JSON.stringify(toolResult));
               openaiWs!.send(JSON.stringify({ type: "response.create" }));
 
-              // Hang up after a delay for goodbye
               setTimeout(() => {
                 console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
                 hangUpCall();
@@ -364,7 +380,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.done":
             activeResponseId = null;
-            // Greeting finished — enable VAD and allow interruptions
+            ignoreAudioUntilNextResponse = false;
             if (greetingInProgress) {
               greetingInProgress = false;
               console.log(`[MediaStream] Greeting complete, enabling VAD (callId=${callId})`);
@@ -373,14 +389,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "input_audio_buffer.speech_started":
-            // Only allow interruption after greeting is done
             if (greetingInProgress) {
               console.log(`[MediaStream] Ignoring interruption during greeting (callId=${callId})`);
               break;
             }
             console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId})`);
-            // Invalidate current response so stale audio deltas are discarded
             activeResponseId = null;
+            ignoreAudioUntilNextResponse = true;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
             }
@@ -400,6 +415,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     });
 
     openaiWs.on("close", (code, reason) => {
+      if (initialResponseFallbackTimer) {
+        clearTimeout(initialResponseFallbackTimer);
+        initialResponseFallbackTimer = null;
+      }
       console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
       openaiWs = null;
       finalizeCall();
