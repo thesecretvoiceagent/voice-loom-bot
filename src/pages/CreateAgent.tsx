@@ -195,6 +195,7 @@ export default function CreateAgent() {
         });
         setEnableRecording(agent.settings.enable_recording ?? true);
         setTemperature([(agent.settings as any).temperature ?? 0.6]);
+        setUninterruptibleGreeting((agent.settings as any).uninterruptible_greeting ?? true);
       }
       if (agent.schedule) {
         setStartTime(agent.schedule.start_time || "09:00");
