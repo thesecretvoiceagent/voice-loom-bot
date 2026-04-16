@@ -240,6 +240,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           antiBargeinEnabled = true;
           console.log(`[MediaStream] Anti-barge-in enabled (callId=${callId})`);
         }
+        // Read post-call SMS settings
+        if (settings.post_call_sms_enabled === true && typeof settings.post_call_sms_template === "string") {
+          postCallSmsTemplate = settings.post_call_sms_template;
+          console.log(`[MediaStream] Post-call SMS enabled (callId=${callId})`);
+        }
       }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
