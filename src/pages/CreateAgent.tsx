@@ -151,6 +151,7 @@ export default function CreateAgent() {
   const [concurrentCalls, setConcurrentCalls] = useState(3);
   const [retryDelay, setRetryDelay] = useState({ hours: 0, minutes: 5 });
   const [enableRecording, setEnableRecording] = useState(true);
+  const [temperature, setTemperature] = useState([0.6]);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("17:00");
   const [timezone, setTimezone] = useState("Europe/Tallinn");
