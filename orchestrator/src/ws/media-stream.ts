@@ -282,12 +282,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(`[MediaStream] OpenAI session configured (callId=${callId})`);
             break;
 
+          case "response.created":
+            activeResponseId = event.response?.id || null;
+            break;
+
           case "response.audio.delta":
+            // Only forward audio from the currently active response (discard stale/cancelled audio)
+            if (event.response_id && activeResponseId && event.response_id !== activeResponseId) {
+              break;
+            }
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({
                 event: "media",
                 streamSid,
                 media: { payload: event.delta },
+              }));
+              // Send a mark after each audio chunk for Twilio sync
+              twilioWs.send(JSON.stringify({
+                event: "mark",
+                streamSid,
+                mark: { name: `audio-${Date.now()}` },
               }));
             }
             break;
