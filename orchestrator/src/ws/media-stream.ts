@@ -190,6 +190,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let smsMessages: SmsMessage[] = [];
   const smsSentNames = new Set<string>();
   let inboundSmsChannel: RealtimeChannel | null = null;
+  let locationConfirmChannel: RealtimeChannel | null = null;
   let resolvedAgentIdRef: string | null = null;
   let substituteVarsRef: (text: string) => string = (t) => t;
   let maxCallDurationMinutes: number = 0;
@@ -409,6 +410,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         return match;
       });
     };
+
+    // Inject location confirmation link variable so SMS templates can use {{location_link}}.
+    // Token = HMAC-SHA256(callId, LOCATION_TOKEN_SECRET) — verified server-side on /api/location/confirm.
+    const azureStaticBase = (process.env.AZURE_STATIC_BASE_URL || "").replace(/\/+$/, "");
+    const tokenSecret = process.env.LOCATION_TOKEN_SECRET || "";
+    if (callId && azureStaticBase && tokenSecret) {
+      try {
+        const crypto = await import("crypto");
+        const locToken = crypto.createHmac("sha256", tokenSecret).update(callId).digest("hex");
+        callVariables.location_link = `${azureStaticBase}/index.html?caseId=${encodeURIComponent(callId)}&token=${locToken}`;
+      } catch (err) {
+        console.error(`[MediaStream] Failed to build location_link:`, err);
+      }
+    }
 
     if (Object.keys(callVariables).length > 0) {
       instructions = substituteVars(instructions);
