@@ -293,6 +293,7 @@ export default function CreateAgent() {
         trigger: m.trigger === "after" ? "after" : "during",
         order: idx,
       })),
+    };
     console.log("[CreateAgent] Saving settings:", settingsPayload);
 
     const agentData = {
