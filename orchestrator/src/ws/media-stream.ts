@@ -702,27 +702,38 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (fnName === "send_sms") {
               let args: any = {};
               try { args = JSON.parse(event.arguments || "{}"); } catch {}
+              const requestedName = typeof args.template_name === "string" ? args.template_name.trim() : "";
               const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
-              const rawBody = (typeof args.message === "string" && args.message.trim()) ? args.message : smsTemplate;
-              const body = substituteVarsRef(rawBody || "");
+
+              // Look up the configured during-call template by exact name.
+              // We NEVER use AI-supplied content — only the verbatim configured template.
+              const tpl = smsMessages.find(
+                (m) => m.trigger === "during" && m.name === requestedName,
+              );
+
               let result: { ok: boolean; sid?: string; error?: string };
+              let bodyForLog = "";
               if (!recipient) {
                 result = { ok: false, error: "No recipient phone number available for this call" };
-              } else if (!body) {
-                result = { ok: false, error: "No SMS body configured" };
+              } else if (!requestedName) {
+                result = { ok: false, error: "template_name is required" };
+              } else if (!tpl) {
+                const allowed = smsMessages.filter((m) => m.trigger === "during").map((m) => m.name).join(", ");
+                result = { ok: false, error: `Unknown template_name "${requestedName}". Allowed: ${allowed || "(none)"}` };
               } else {
-                result = await sendSms(recipient, body);
-                if (result.ok) smsSentDuringCall = true;
+                bodyForLog = substituteVarsRef(tpl.content);
+                result = await sendSms(recipient, bodyForLog);
+                if (result.ok) smsSentNames.add(tpl.name);
               }
-              console.log(`[MediaStream] send_sms → ${recipient} ok=${result.ok} sid=${result.sid || "-"} err=${result.error || "-"} (callId=${callId})`);
-              transcriptLines.push(`[System]: send_sms(to=${recipient}, body="${(body || "").slice(0, 80)}...") → ${result.ok ? "sent " + result.sid : "failed: " + result.error}`);
+              console.log(`[MediaStream] send_sms template="${requestedName}" → ${recipient} ok=${result.ok} sid=${result.sid || "-"} err=${result.error || "-"} (callId=${callId})`);
+              transcriptLines.push(`[System]: send_sms(template="${requestedName}", to=${recipient}, body="${(bodyForLog || "").slice(0, 80)}...") → ${result.ok ? "sent " + result.sid : "failed: " + result.error}`);
               openaiWs!.send(JSON.stringify({
                 type: "conversation.item.create",
                 item: {
                   type: "function_call_output",
                   call_id: event.call_id,
                   output: JSON.stringify(result.ok
-                    ? { success: true, message: "SMS sent successfully. Briefly confirm to the caller in their language." }
+                    ? { success: true, message: `SMS template "${requestedName}" sent. Briefly confirm to the caller in their language.` }
                     : { success: false, error: result.error }),
                 },
               }));
