@@ -167,12 +167,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       agentConfig = await fetchAgentConfig(agentId);
     }
     if (!agentConfig && calledNumber) {
-      console.log(`[MediaStream] No agent by ID, trying phone lookup: ${calledNumber} (callId=${callId})`);
-      agentConfig = await fetchAgentByPhoneNumber(calledNumber);
+      console.log(`[MediaStream] No agent by ID, trying phone lookup: ${calledNumber} dir=${callDirection} (callId=${callId})`);
+      agentConfig = await fetchAgentByPhoneNumber(calledNumber, callDirection);
     }
     if (!agentConfig) {
-      console.log(`[MediaStream] No agent found, falling back to first active agent (callId=${callId})`);
-      agentConfig = await fetchFirstActiveAgent();
+      console.log(`[MediaStream] No agent found, falling back to first active agent dir=${callDirection} (callId=${callId})`);
+      agentConfig = await fetchFirstActiveAgent(callDirection);
     }
 
     if (agentConfig) {
