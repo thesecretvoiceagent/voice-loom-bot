@@ -297,18 +297,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
 
     // Substitute template variables (e.g. {{first_name}}, {{caller_name}})
+    const substituteVars = (text: string): string => {
+      if (!text) return text;
+      return text.replace(/\{\{([^}]+)\}\}/g, (match, varName) => {
+        const trimmed = varName.trim();
+        if (callVariables[trimmed] !== undefined) return callVariables[trimmed];
+        return match;
+      });
+    };
+
     if (Object.keys(callVariables).length > 0) {
-      const substituteVars = (text: string): string => {
-        return text.replace(/\{\{([^}]+)\}\}/g, (match, varName) => {
-          const trimmed = varName.trim();
-          if (callVariables[trimmed] !== undefined) return callVariables[trimmed];
-          return match; // Leave unmatched variables as-is
-        });
-      };
       instructions = substituteVars(instructions);
       greeting = substituteVars(greeting);
       console.log(`[MediaStream] Substituted ${Object.keys(callVariables).length} variables into prompt (callId=${callId})`);
     }
+    // Make substitute available outside this scope for SMS sending
+    substituteVarsRef = substituteVars;
 
     // Write initial call record to DB
     callStartTime = new Date();
