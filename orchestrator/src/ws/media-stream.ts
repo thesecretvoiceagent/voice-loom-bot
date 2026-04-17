@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { createClient, SupabaseClient, RealtimeChannel } from "@supabase/supabase-js";
 import { config } from "../config.js";
 import {
   fetchAgentConfig,
@@ -7,6 +8,52 @@ import {
   upsertCall,
   updateCall,
 } from "../supabase.js";
+
+// Singleton supabase client for realtime subscriptions (uses anon key — RLS allows authenticated SELECT,
+// but for realtime on sms_messages we'll publish to anon role via the table's REPLICA IDENTITY FULL setup).
+let supabaseRealtime: SupabaseClient | null = null;
+function getSupabaseRealtime(): SupabaseClient | null {
+  if (supabaseRealtime) return supabaseRealtime;
+  if (!config.supabase.url || !config.supabase.anonKey) return null;
+  supabaseRealtime = createClient(config.supabase.url.replace(/\/+$/, ""), config.supabase.anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  return supabaseRealtime;
+}
+
+// Persist an SMS row to the database via the call-write edge function pattern.
+// Uses a direct REST insert with anon key (RLS allows anon INSERT on sms_messages).
+async function persistSmsMessage(row: {
+  call_id: string | null;
+  agent_id: string | null;
+  template_name: string | null;
+  direction: "inbound" | "outbound";
+  from_number: string;
+  to_number: string;
+  body: string;
+  twilio_sid: string | null;
+  status: string;
+}): Promise<void> {
+  if (!config.supabase.url || !config.supabase.anonKey) return;
+  try {
+    const url = `${config.supabase.url.replace(/\/+$/, "")}/rest/v1/sms_messages`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        apikey: config.supabase.anonKey,
+        Authorization: `Bearer ${config.supabase.anonKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify(row),
+    });
+    if (!res.ok) {
+      console.error(`[persistSmsMessage] HTTP ${res.status}`, await res.text());
+    }
+  } catch (err) {
+    console.error(`[persistSmsMessage] error:`, err);
+  }
+}
 
 // Post-call analysis via edge function
 async function runPostCallAnalysis(callId: string, transcript: string, analysisPrompt: string) {
@@ -139,9 +186,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callStartTime: Date | null = null;
   let agentAnalysisPrompt: string = "";
   let agentKnowledgeBase: any[] = [];
-  type SmsMessage = { id?: string; name: string; content: string; trigger: "during" | "after"; order?: number };
+  type SmsMessage = { id?: string; name: string; description?: string; content: string; trigger: "during" | "after"; order?: number };
   let smsMessages: SmsMessage[] = [];
   const smsSentNames = new Set<string>();
+  let inboundSmsChannel: RealtimeChannel | null = null;
+  let resolvedAgentIdRef: string | null = null;
   let substituteVarsRef: (text: string) => string = (t) => t;
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -274,6 +323,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             .map((m, idx): SmsMessage => ({
               id: m.id,
               name: (m.name || `sms_${idx + 1}`).toString().trim(),
+              description: typeof m.description === "string" ? m.description.trim() : "",
               content: m.content,
               trigger: m.trigger === "after" ? "after" : "during",
               order: typeof m.order === "number" ? m.order : idx,
@@ -283,10 +333,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           const legacyDuring = (settings as any).sms_during_call === true;
           const legacyAfter = (settings as any).sms_after_call === true;
           if (legacyDuring) {
-            smsMessages.push({ name: "default", content: (settings as any).sms_template, trigger: "during", order: 0 });
+            smsMessages.push({ name: "default", description: "", content: (settings as any).sms_template, trigger: "during", order: 0 });
           }
           if (legacyAfter) {
-            smsMessages.push({ name: "default", content: (settings as any).sms_template, trigger: "after", order: 1 });
+            smsMessages.push({ name: "default", description: "", content: (settings as any).sms_template, trigger: "after", order: 1 });
           }
         }
       }
@@ -340,6 +390,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       (agentId && agentId !== "default" && agentId) ||
       (agentConfig && (agentConfig as any).id) ||
       null;
+    resolvedAgentIdRef = resolvedAgentId;
     callStartTime = new Date();
     upsertCall(callId, {
       twilio_call_sid: callSid || null,
@@ -352,6 +403,54 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       direction: callDirection,
       started_at: callStartTime.toISOString(),
     });
+
+    // Subscribe to inbound SMS replies for THIS call.
+    // When the customer texts back during the call, inject the reply as a system message
+    // into the OpenAI Realtime session so the AI can read it back / acknowledge it.
+    if (callId) {
+      const sb = getSupabaseRealtime();
+      if (sb) {
+        try {
+          inboundSmsChannel = sb
+            .channel(`inbound-sms-${callId}`)
+            .on(
+              "postgres_changes",
+              {
+                event: "INSERT",
+                schema: "public",
+                table: "sms_messages",
+                filter: `call_id=eq.${callId}`,
+              },
+              (payload: any) => {
+                const row = payload?.new;
+                if (!row || row.direction !== "inbound") return;
+                const replyBody = (row.body || "").toString().slice(0, 800);
+                const fromNum = row.from_number || "the customer";
+                console.log(`[MediaStream] Inbound SMS received (callId=${callId}, from=${fromNum}): "${replyBody.slice(0, 80)}"`);
+                transcriptLines.push(`[SMS from ${fromNum}]: ${replyBody}`);
+
+                if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+                  const sysMsg = `📱 Customer replied via SMS (from ${fromNum}): "${replyBody}". Acknowledge what they sent in the conversation right now — for example, read any phone number or address back to confirm it. Speak in the same language the call is being conducted in.`;
+                  openaiWs.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "message",
+                      role: "system",
+                      content: [{ type: "input_text", text: sysMsg }],
+                    },
+                  }));
+                  openaiWs.send(JSON.stringify({ type: "response.create" }));
+                }
+              },
+            )
+            .subscribe((status: string) => {
+              console.log(`[MediaStream] Inbound SMS channel status (callId=${callId}): ${status}`);
+            });
+        } catch (err) {
+          console.error(`[MediaStream] Failed to subscribe to inbound SMS:`, err);
+        }
+      }
+    }
 
     const url = `${OPENAI_REALTIME_URL}?model=${config.openai.realtimeModel}`;
 
@@ -437,24 +536,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - If asked about something outside your scope, briefly redirect back to the topic.
 - ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
 
-      // Inject SMS catalog so the AI knows which named SMSes are available and what they say.
+      // Inject SMS catalog so the AI knows which named SMSes are available, when to use them, and what they say.
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
       const afterSmsList = smsMessages.filter((m) => m.trigger === "after");
       if (duringSmsList.length > 0 || afterSmsList.length > 0) {
-        let smsBlock = `\n\nAVAILABLE SMS TEMPLATES — These are the ONLY SMSes you can send. Each has a fixed name and EXACT text. You may NOT change the text. To send one, call the send_sms tool with template_name set to the exact name below.`;
+        let smsBlock = `\n\nAVAILABLE SMS TEMPLATES — These are the ONLY SMSes you can send. Each has a fixed name and EXACT text. You may NOT change the text. To send one, call the send_sms tool with template_name set to the exact name below. Pick the template whose "When to use" matches the current moment in the conversation.`;
         if (duringSmsList.length > 0) {
           smsBlock += `\n\nDuring-call SMSes (you choose when/whether to send each):`;
           duringSmsList.forEach((m, i) => {
-            smsBlock += `\n${i + 1}. name="${m.name}" — content: "${m.content}"`;
+            const whenToUse = m.description?.trim() ? m.description.trim() : "(no guidance — only send if obviously appropriate)";
+            smsBlock += `\n${i + 1}. name="${m.name}"\n   When to use: ${whenToUse}\n   Content (sent verbatim): "${m.content}"`;
           });
         }
         if (afterSmsList.length > 0) {
           smsBlock += `\n\nAfter-call SMSes (sent automatically when the call ends, in this order — do NOT send them yourself):`;
           afterSmsList.forEach((m, i) => {
-            smsBlock += `\n${i + 1}. name="${m.name}" — content: "${m.content}"`;
+            const whenToUse = m.description?.trim() ? m.description.trim() : "(automatic post-call)";
+            smsBlock += `\n${i + 1}. name="${m.name}"\n   Purpose: ${whenToUse}\n   Content: "${m.content}"`;
           });
         }
-        smsBlock += `\n\nRules: Pick the SMS whose purpose matches the moment. Never invent a new SMS. Never paraphrase. If none fit, do not send anything.`;
+        smsBlock += `\n\nRules:\n- Pick the SMS whose "When to use" matches the moment.\n- Never invent a new SMS. Never paraphrase the content.\n- If none fit, do not send anything.\n- After the customer replies via SMS, you will receive a system message starting with "📱 Customer replied via SMS:". Acknowledge what they sent (e.g. confirm a number back to them) in the conversation.`;
         fullInstructions += smsBlock;
       }
 
@@ -723,7 +824,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               } else {
                 bodyForLog = substituteVarsRef(tpl.content);
                 result = await sendSms(recipient, bodyForLog);
-                if (result.ok) smsSentNames.add(tpl.name);
+                if (result.ok) {
+                  smsSentNames.add(tpl.name);
+                  // Persist outbound SMS so we can later correlate inbound replies to this call.
+                  persistSmsMessage({
+                    call_id: callId || null,
+                    agent_id: resolvedAgentId,
+                    template_name: tpl.name,
+                    direction: "outbound",
+                    from_number: config.twilio.fromNumber || "",
+                    to_number: recipient,
+                    body: bodyForLog,
+                    twilio_sid: result.sid || null,
+                    status: "sent",
+                  }).catch(() => {});
+                }
               }
               console.log(`[MediaStream] send_sms template="${requestedName}" → ${recipient} ok=${result.ok} sid=${result.sid || "-"} err=${result.error || "-"} (callId=${callId})`);
               transcriptLines.push(`[System]: send_sms(template="${requestedName}", to=${recipient}, body="${(bodyForLog || "").slice(0, 80)}...") → ${result.ok ? "sent " + result.sid : "failed: " + result.error}`);
@@ -865,6 +980,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
 
+    // Stop listening for inbound SMS replies for this call
+    if (inboundSmsChannel) {
+      try {
+        inboundSmsChannel.unsubscribe();
+      } catch {}
+      inboundSmsChannel = null;
+    }
+
     const endTime = new Date();
     const durationSeconds = callStartTime
       ? Math.round((endTime.getTime() - callStartTime.getTime()) / 1000)
@@ -904,7 +1027,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             const body = substituteVarsRef(m.content);
             const r = await sendSms(recipient, body);
             console.log(`[MediaStream] Post-call SMS "${m.name}" → ${recipient} ok=${r.ok} sid=${r.sid || "-"} err=${r.error || "-"} (callId=${callId})`);
-            if (r.ok) smsSentNames.add(m.name);
+            if (r.ok) {
+              smsSentNames.add(m.name);
+              persistSmsMessage({
+                call_id: callId || null,
+                agent_id: resolvedAgentIdRef,
+                template_name: m.name,
+                direction: "outbound",
+                from_number: config.twilio.fromNumber || "",
+                to_number: recipient,
+                body,
+                twilio_sid: r.sid || null,
+                status: "sent",
+              }).catch(() => {});
+            }
           }
         })().catch((err) => console.error(`[MediaStream] Post-call SMS loop error:`, err));
       }
