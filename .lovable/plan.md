@@ -1,103 +1,80 @@
 
-The user asks two things:
+The user wants the full end-to-end flow in the plan, not just the static page. So plan now covers: (1) static page artifact, (2) Railway endpoint spec, (3) Supabase columns, (4) SMS link wiring, (5) bot reads back the address.
 
-1. **How does the AI know which SMS to send when?** — explain the current mechanism and improve it.
-2. **AI reads SMS replies** — when a customer texts back (e.g. with a callback number or a what3words location), the AI should be able to read that reply mid-call and use it (e.g. read the number back to confirm).
+Two values to confirm before building (asked last round, no answer):
+- Azure Maps key — use the one pasted in chat? (rotate it after)
+- Railway base URL — use `https://voice-loom-bot-production.up.railway.app`?
 
-Let me check current state of orchestrator/media-stream and CreateAgent SMS section to design properly.
+I'll proceed assuming yes to both unless they say otherwise.
 
-Key observations from earlier context:
-- Each SMS template has: `name`, `content`, `trigger` (during/after), `order`.
-- Orchestrator injects an "AVAILABLE SMS TEMPLATES" block into the system prompt and exposes `send_sms({template_name})` tool.
-- After-call SMSes are sent in order automatically at hangup.
+# Plan — RescueBoy location confirmation, end-to-end
 
-So question (1) answer = combination of:
-- The **template name** + **trigger** is what tells the AI which one to use.
-- "During call" templates require explicit AI trigger via `send_sms` (chooses by name).
-- "After call" templates fire automatically in `order` at hangup.
+## 1. Static page (artifact, NOT in this React app)
+Generate to `/mnt/documents/rescueboy-location/` + zipped bundle.
 
-To make it actually work reliably, the prompt injection needs to also include each template's **purpose/when-to-use** description so the AI picks the right one. Currently we only inject name + content. I'll add a `description` (when-to-use) field to each SMS template.
+**Files**: `index.html`, `app.js`, `styles.css`
+- Mobile-first, Estonian (`lang="et"`), Azure Maps Web SDK v3 via CDN
+- Reads `?caseId=…&token=…` from URL (error if missing)
+- Auth: `authOptions: { authType: 'subscriptionKey', subscriptionKey: '<AZURE_MAPS_KEY>' }`
+- On load: ask geolocation → if granted, center on user; if denied, default to Tallinn `[24.7536, 59.4370]`
+- Draggable `HtmlMarker`; tap map to reposition
+- Big bottom button **"Kinnita asukoht"**
+- Helper text: *"Liigutage vajadusel nööpnõela ja vajutage kinnita."*
+- POST `{caseId, token, lat, lon}` → Railway endpoint
+- Success: hide map, show *"Asukoht kinnitatud"* + returned address
+- Error: inline Estonian message, re-enable button
 
-For (2), inbound SMS reading:
-- Need a Twilio inbound SMS webhook → edge function that stores incoming SMS in a new `sms_messages` table linked to `call_id` (matched by from/to phone within recent call window).
-- Orchestrator polls / subscribes to new SMS for the active call and injects the reply text into the realtime AI session as a system message ("📱 Customer replied via SMS: 'My number is 555-1234'").
-- Configure Twilio number's "A Message Comes In" webhook to point at this new edge function.
+## 2. Railway endpoint (spec for orchestrator — implement in `orchestrator/src/routes/`)
 
-# Plan
+**`POST /api/location/confirm`**
+- Validate body with Zod: `caseId` (string), `token` (string), `lat` (number -90..90), `lon` (number -180..180)
+- Verify token (HMAC of `caseId` with shared secret, or DB lookup — TBD)
+- Reverse-geocode:
+  `GET https://atlas.microsoft.com/search/address/reverse/json?api-version=1.0&query={lat},{lon}&subscription-key={AZURE_MAPS_KEY}&language=et-EE`
+- Extract `addresses[0].address.freeformAddress`
+- Update Supabase `calls` row where `id = caseId`:
+  - `location_confirmed = true`
+  - `location_lat`, `location_lon`, `location_address`, `location_confirmed_at = now()`
+- Respond: `{ ok: true, address, lat, lon }`
+- CORS: allow Azure static site origin
+- Add `AZURE_MAPS_KEY` to Railway env
 
-## 1. How AI picks the right SMS (explainer + improvement)
+## 3. Supabase migration
+Add columns to `public.calls`:
+- `location_confirmed boolean default false`
+- `location_lat double precision`
+- `location_lon double precision`
+- `location_address text`
+- `location_confirmed_at timestamptz`
 
-**Today**: AI sees a list of SMS templates by `name` + `content`. To send one mid-call it calls `send_sms({template_name: "location_link"})`. After-call SMSes fire automatically in their `order`.
+## 4. SMS link wiring (orchestrator `media-stream.ts`)
+When AI sends a "location request" SMS template, append the link:
+`https://<azure-storage-endpoint>/index.html?caseId=<call_id>&token=<signed_token>`
+- Generate `token` = HMAC-SHA256(`call_id`, `LOCATION_TOKEN_SECRET`)
+- Replace `{{location_link}}` placeholder in SMS template body
 
-**Improvement**: Add a **"When to use"** field (description) to each SMS template so the AI knows *when* to trigger which template — not just *what's in it*.
+## 5. Bot reads address back (orchestrator `media-stream.ts`)
+- On call start, subscribe via Supabase realtime to `calls` row updates where `id = currentCallId`
+- When `location_confirmed` flips to true, inject system message into OpenAI Realtime WS:
+  > "📍 Klient kinnitas asukoha: <location_address>. Kinnita see talle vestluses tagasi."
+- Trigger `response.create` so AI speaks it
 
-### UI changes (`src/pages/CreateAgent.tsx`)
-- Add `description` field to each SMS card (textarea, e.g. *"Send when customer asks for location confirmation link"*).
-- Migrate existing entries (default `description: ""`).
+## 6. Deployment steps (told to user, not auto-done)
+1. Upload `index.html`, `app.js`, `styles.css` to Azure Storage `$web` container
+2. Note the Primary endpoint (e.g. `https://rescueboy.z6.web.core.windows.net`)
+3. Restrict Azure Maps key by referrer → that endpoint only
+4. Add Railway env vars: `AZURE_MAPS_KEY`, `LOCATION_TOKEN_SECRET`, `AZURE_STATIC_BASE_URL`
+5. Redeploy orchestrator
 
-### Orchestrator changes (`orchestrator/src/ws/media-stream.ts`)
-- Inject `description` into the system prompt block:
-  ```
-  AVAILABLE SMS TEMPLATES:
-  - location_link (trigger: during call) — When to use: customer needs the location form link
-    Content: "Kinnitage oma asukoht: https://what3words.com/..."
-  - thanks (trigger: after call, order 1) — When to use: automatic thank-you
-  ```
-- Tool description for `send_sms` updated to instruct: "Pick `template_name` based on the 'When to use' guidance."
+## Files touched
+- **Artifact** (generated, not in repo): `/mnt/documents/rescueboy-location/{index.html,app.js,styles.css}` + `.zip`
+- **Migration**: add 5 location columns to `calls`
+- **`orchestrator/src/routes/location.ts`** (new) — `POST /api/location/confirm`
+- **`orchestrator/src/index.ts`** — mount route
+- **`orchestrator/src/ws/media-stream.ts`** — token generation, link templating, realtime subscription, AI injection
+- **`orchestrator/.env.example`** + `infra/env/orchestrator.env.example` — add 3 new vars
 
-## 2. AI reads incoming SMS replies
-
-```text
-Customer ──SMS──▶ Twilio ──webhook──▶ edge fn `twilio-sms-inbound`
-                                            │
-                                            ├─ insert into sms_messages (direction=inbound)
-                                            │
-                                            └─ Postgres realtime ──▶ orchestrator
-                                                                          │
-                                                                          ▼
-                                                          inject as system msg into
-                                                          OpenAI Realtime session
-                                                          ("📱 Customer replied: ...")
-```
-
-### Database (migration)
-New table `sms_messages`:
-- `id`, `call_id` (nullable FK to calls), `agent_id`, `template_name` (nullable, only for outbound), `direction` ('inbound' | 'outbound'), `from_number`, `to_number`, `body`, `twilio_sid`, `status`, `created_at`.
-- Enable realtime publication on this table.
-- RLS: authenticated can SELECT; anon/service can INSERT/UPDATE.
-
-### Outbound SMS persistence (`orchestrator/src/ws/media-stream.ts`)
-- After successfully sending an SMS via Twilio, insert a row into `sms_messages` with `direction='outbound'`, link to `call_id`.
-
-### New edge function `supabase/functions/twilio-sms-inbound/index.ts`
-- Receives Twilio SMS webhook (form-urlencoded: `From`, `To`, `Body`, `MessageSid`).
-- Looks up the most recent **active** call where `from_number = From` (within last 30 min).
-- Inserts row into `sms_messages` with `direction='inbound'`, `call_id`, `body`.
-- Returns empty TwiML (no auto-reply).
-- `verify_jwt = false` in `supabase/config.toml`.
-
-### Orchestrator subscription (`orchestrator/src/ws/media-stream.ts`)
-- On call start, subscribe via Supabase realtime to `sms_messages` rows where `call_id = currentCallId` AND `direction='inbound'`.
-- On new inbound SMS:
-  - Send a `conversation.item.create` system message into the OpenAI Realtime WS:
-    > "📱 Customer just replied via SMS: 'They wrote: <body>'. Acknowledge what they sent and confirm it back to them in the conversation."
-  - Trigger `response.create` to make the AI speak immediately.
-- Unsubscribe at call end.
-
-### User setup (post-deploy instructions)
-- In Twilio console → phone number → **Messaging** → "A Message Comes In" → set to:
-  `https://dtctqwoesbvntdpeekgv.supabase.co/functions/v1/twilio-sms-inbound` (POST).
-
-## 3. Optional: SMS log on call detail page (not in this round unless you ask)
-
-## Files to touch
-- migration: create `sms_messages` table + realtime + RLS
-- `supabase/functions/twilio-sms-inbound/index.ts` (new)
-- `supabase/config.toml` (function block, `verify_jwt = false`)
-- `orchestrator/src/ws/media-stream.ts` (description in prompt, persist outbound, subscribe to inbound)
-- `src/pages/CreateAgent.tsx` (add `description` field per SMS)
-
-## Twilio webhook URL you'll need to set
-`https://dtctqwoesbvntdpeekgv.supabase.co/functions/v1/twilio-sms-inbound`
-
-Approve and I'll build it.
+## Confirm before I build
+- Azure Maps key = the one from chat? (and you'll rotate it after)
+- Railway base URL = `https://voice-loom-bot-production.up.railway.app`?
+- Token strategy = HMAC of call_id (stateless, simple) vs DB lookup (revocable)?
