@@ -557,10 +557,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 hangUpCall();
               }, 8000); // Give more time for goodbye message to complete
             }
+
+            if (fnName === "lookup_vehicle") {
+              let args: any = {};
+              try { args = JSON.parse(event.arguments || "{}"); } catch {}
+              const vehicle = await crmLookup({
+                phone_number: args.phone_number,
+                reg_no: args.reg_no,
+              });
+              const output = vehicle
+                ? { found: true, vehicle }
+                : { found: false, message: "No vehicle found in CRM for the given details." };
+              openaiWs!.send(JSON.stringify({
+                type: "conversation.item.create",
+                item: {
+                  type: "function_call_output",
+                  call_id: event.call_id,
+                  output: JSON.stringify(output),
+                },
+              }));
+              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
+            }
             break;
           }
-
-          case "response.audio.done": {
             const responseId = event.response_id || activeResponseId || null;
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
