@@ -332,7 +332,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
       }
 
-      const sessionTemperature = agentConfig ? agentTemperature : 0.6;
+      // Clamp temperature to OpenAI Realtime's valid range [0.6, 1.2] — values outside
+      // this range can cause the model to emit malformed audio (heard as static/clicks).
+      const rawTemp = agentConfig ? agentTemperature : 0.6;
+      const sessionTemperature = Math.min(1.2, Math.max(0.6, rawTemp));
       const sessionUpdate: any = {
         type: "session.update",
         session: {
@@ -407,12 +410,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
             responseHasAudio = true;
-            if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-              twilioWs.send(JSON.stringify({
-                event: "media",
-                streamSid,
-                media: { payload: event.delta },
-              }));
+            if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
+              // OpenAI sends large audio chunks (~200ms). Twilio Media Streams plays smoothest
+              // when each `media` event carries ~20ms of ulaw audio (160 bytes @ 8kHz).
+              // Splitting prevents underruns/overruns that are heard as static/clicks.
+              try {
+                const raw = Buffer.from(event.delta, "base64");
+                const FRAME = 160; // 20ms @ 8kHz mu-law
+                for (let offset = 0; offset < raw.length; offset += FRAME) {
+                  const chunk = raw.subarray(offset, Math.min(offset + FRAME, raw.length));
+                  twilioWs.send(JSON.stringify({
+                    event: "media",
+                    streamSid,
+                    media: { payload: chunk.toString("base64") },
+                  }));
+                }
+              } catch (e) {
+                // Fallback: forward as-is if buffer ops fail
+                twilioWs.send(JSON.stringify({
+                  event: "media",
+                  streamSid,
+                  media: { payload: event.delta },
+                }));
+              }
             }
             break;
           }
