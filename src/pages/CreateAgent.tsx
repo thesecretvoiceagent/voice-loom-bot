@@ -161,7 +161,7 @@ export default function CreateAgent() {
   const [timezone, setTimezone] = useState("Europe/Tallinn");
   const [knowledgeItems, setKnowledgeItems] = useState<Array<{ id: string; name: string; content: string }>>([]);
   const [knowledgeText, setKnowledgeText] = useState("");
-  type SmsMessage = { id: string; name: string; content: string; trigger: "during" | "after" };
+  type SmsMessage = { id: string; name: string; description: string; content: string; trigger: "during" | "after" };
   const [smsMessages, setSmsMessages] = useState<SmsMessage[]>([]);
 
   const isInbound = type === "inbound";
@@ -204,7 +204,16 @@ export default function CreateAgent() {
         setAntiBargein((agent.settings as any).anti_barge_in ?? false);
         const rawSettings = agent.settings as any;
         if (Array.isArray(rawSettings.sms_messages)) {
-          setSmsMessages(rawSettings.sms_messages);
+          // Ensure every loaded SMS has a description field (migration for older entries)
+          setSmsMessages(
+            rawSettings.sms_messages.map((m: any) => ({
+              id: m.id || crypto.randomUUID(),
+              name: m.name || "",
+              description: typeof m.description === "string" ? m.description : "",
+              content: m.content || "",
+              trigger: m.trigger === "after" ? "after" : "during",
+            })),
+          );
         } else if (rawSettings.sms_template) {
           // Backward-compat: migrate single template + flags into the new array.
           const migrated: SmsMessage[] = [];
@@ -212,6 +221,7 @@ export default function CreateAgent() {
             migrated.push({
               id: crypto.randomUUID(),
               name: "Default (during call)",
+              description: "",
               content: rawSettings.sms_template,
               trigger: "during",
             });
@@ -220,6 +230,7 @@ export default function CreateAgent() {
             migrated.push({
               id: crypto.randomUUID(),
               name: "Default (after call)",
+              description: "",
               content: rawSettings.sms_template,
               trigger: "after",
             });
@@ -228,6 +239,7 @@ export default function CreateAgent() {
             migrated.push({
               id: crypto.randomUUID(),
               name: "Default",
+              description: "",
               content: rawSettings.sms_template,
               trigger: "during",
             });
@@ -290,6 +302,7 @@ export default function CreateAgent() {
       sms_messages: smsMessages.map((m, idx) => ({
         id: m.id,
         name: (m.name || `SMS ${idx + 1}`).trim(),
+        description: (m.description || "").trim(),
         content: m.content || "",
         trigger: m.trigger === "after" ? "after" : "during",
         order: idx,
@@ -557,6 +570,7 @@ export default function CreateAgent() {
                           {
                             id: crypto.randomUUID(),
                             name: `sms_${prev.length + 1}`,
+                            description: "",
                             content: "",
                             trigger: "during",
                           },
@@ -648,6 +662,16 @@ export default function CreateAgent() {
                               <Trash2 className="h-4 w-4" />
                             </Button>
                           </div>
+                          <Input
+                            placeholder="When to use this SMS (e.g. 'Customer asks for the location confirmation link')"
+                            value={sms.description}
+                            onChange={(e) =>
+                              setSmsMessages((prev) =>
+                                prev.map((m, i) => (i === index ? { ...m, description: e.target.value } : m)),
+                              )
+                            }
+                            className="text-sm"
+                          />
                           <Textarea
                             placeholder="Exact SMS text. Will be sent verbatim — only {{variables}} are substituted."
                             value={sms.content}
