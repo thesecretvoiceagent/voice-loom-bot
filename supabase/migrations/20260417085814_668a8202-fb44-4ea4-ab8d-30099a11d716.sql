@@ -1,0 +1,1 @@
+UPDATE public.agents SET tools = ARRAY['end_call','lookup_vehicle'] WHERE id = '00def519-9dd5-402e-bb36-bbb4a865dbc6';
