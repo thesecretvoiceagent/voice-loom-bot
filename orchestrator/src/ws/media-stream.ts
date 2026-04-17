@@ -70,6 +70,44 @@ async function crmLookup(params: { phone_number?: string; reg_no?: string; descr
   }
 }
 
+// Send SMS via Twilio REST API. Returns true on success.
+async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: string; error?: string }> {
+  if (!config.twilio.isConfigured) {
+    return { ok: false, error: "Twilio not configured" };
+  }
+  if (!to || !body) {
+    return { ok: false, error: "Missing 'to' or 'body'" };
+  }
+  if (!config.twilio.fromNumber) {
+    return { ok: false, error: "TWILIO_FROM_NUMBER not configured" };
+  }
+  try {
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${config.twilio.accountSid}/Messages.json`;
+    const authHeader = Buffer.from(`${config.twilio.accountSid}:${config.twilio.authToken}`).toString("base64");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${authHeader}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        To: to,
+        From: config.twilio.fromNumber,
+        Body: body.slice(0, 1600),
+      }).toString(),
+    });
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      console.error(`[sendSms] HTTP ${res.status}`, data);
+      return { ok: false, error: data?.message || `HTTP ${res.status}` };
+    }
+    return { ok: true, sid: data?.sid };
+  } catch (err: any) {
+    console.error(`[sendSms] error:`, err);
+    return { ok: false, error: err?.message || "send failed" };
+  }
+}
+
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
 const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
