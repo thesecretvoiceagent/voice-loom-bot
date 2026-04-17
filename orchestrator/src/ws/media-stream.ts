@@ -271,7 +271,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         if (Array.isArray((settings as any).sms_messages)) {
           smsMessages = ((settings as any).sms_messages as any[])
             .filter((m) => m && typeof m.content === "string" && m.content.trim())
-            .map((m, idx) => ({
+            .map((m, idx): SmsMessage => ({
               id: m.id,
               name: (m.name || `sms_${idx + 1}`).toString().trim(),
               content: m.content,
