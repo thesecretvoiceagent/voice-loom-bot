@@ -190,6 +190,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let smsMessages: SmsMessage[] = [];
   const smsSentNames = new Set<string>();
   let inboundSmsChannel: RealtimeChannel | null = null;
+  let resolvedAgentIdRef: string | null = null;
   let substituteVarsRef: (text: string) => string = (t) => t;
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -389,6 +390,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       (agentId && agentId !== "default" && agentId) ||
       (agentConfig && (agentConfig as any).id) ||
       null;
+    resolvedAgentIdRef = resolvedAgentId;
     callStartTime = new Date();
     upsertCall(callId, {
       twilio_call_sid: callSid || null,
