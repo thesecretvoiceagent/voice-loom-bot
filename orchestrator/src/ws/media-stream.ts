@@ -266,10 +266,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           antiBargeinEnabled = true;
           console.log(`[MediaStream] Anti-barge-in enabled (callId=${callId})`);
         }
-        // SMS settings
-        if (typeof settings.sms_template === "string") smsTemplate = settings.sms_template;
-        smsDuringCall = settings.sms_during_call === true && !!smsTemplate;
-        smsAfterCall = settings.sms_after_call === true && !!smsTemplate;
+        // SMS settings — new schema: array of named templates with explicit triggers.
+        // Backward-compat: if `sms_messages` is missing but `sms_template` exists, migrate inline.
+        if (Array.isArray((settings as any).sms_messages)) {
+          smsMessages = ((settings as any).sms_messages as any[])
+            .filter((m) => m && typeof m.content === "string" && m.content.trim())
+            .map((m, idx) => ({
+              id: m.id,
+              name: (m.name || `sms_${idx + 1}`).toString().trim(),
+              content: m.content,
+              trigger: m.trigger === "after" ? "after" : "during",
+              order: typeof m.order === "number" ? m.order : idx,
+            }))
+            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        } else if (typeof (settings as any).sms_template === "string" && (settings as any).sms_template.trim()) {
+          const legacyDuring = (settings as any).sms_during_call === true;
+          const legacyAfter = (settings as any).sms_after_call === true;
+          if (legacyDuring) {
+            smsMessages.push({ name: "default", content: (settings as any).sms_template, trigger: "during", order: 0 });
+          }
+          if (legacyAfter) {
+            smsMessages.push({ name: "default", content: (settings as any).sms_template, trigger: "after", order: 1 });
+          }
+        }
       }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
