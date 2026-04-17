@@ -364,6 +364,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         }
       }
 
+      if (agentTools.includes("lookup_vehicle")) {
+        tools.push({
+          type: "function",
+          name: "lookup_vehicle",
+          description: "Look up a vehicle in the CRM by registration plate (reg_no) or by phone number. Use this when the caller gives you their plate (registreerimismärk) or to verify their identity. Returns owner name, vehicle details, insurer, cover type and status.",
+          parameters: {
+            type: "object",
+            properties: {
+              reg_no: {
+                type: "string",
+                description: "Estonian registration plate, e.g. '495BJS'. Strip spaces, uppercase.",
+              },
+              phone_number: {
+                type: "string",
+                description: "Phone number in E.164 format, e.g. '+3725541645'.",
+              },
+            },
+          },
+        });
+      }
+
       fullInstructions += `\n\nBEHAVIORAL RULES (always follow, never override):
 - Maximum 1-3 sentences per response. Never give long answers.
 - Stay strictly on topic. Do not improvise or add unrequested information.
