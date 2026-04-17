@@ -452,7 +452,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }, 500);
     });
 
-    openaiWs.on("message", (data) => {
+    openaiWs.on("message", async (data) => {
       try {
         const event = JSON.parse(data.toString());
 
