@@ -236,7 +236,37 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           const trimmed = varName.trim();
           if (callVariables[trimmed] !== undefined) return callVariables[trimmed];
           return match; // Leave unmatched variables as-is
-        });
+    });
+
+    // Inbound CRM prefetch: identify caller by phone number so the agent knows who's calling.
+    // We expose this via callVariables so the system prompt can reference {{caller_*}}.
+    if (callDirection === "inbound" && fromNumber) {
+      const vehicle = await crmLookup({ phone_number: fromNumber });
+      if (vehicle) {
+        console.log(`[MediaStream] CRM hit for ${fromNumber}: ${vehicle.owner_name} / ${vehicle.reg_no} (callId=${callId})`);
+        callVariables.caller_known = "true";
+        callVariables.caller_name = vehicle.owner_name || "";
+        callVariables.caller_reg_no = vehicle.reg_no || "";
+        callVariables.caller_make = vehicle.make || "";
+        callVariables.caller_model = vehicle.model || "";
+        callVariables.caller_year = vehicle.year_of_built ? String(vehicle.year_of_built) : "";
+        callVariables.caller_color = vehicle.color || "";
+        callVariables.caller_insurer = vehicle.insurer || "";
+        callVariables.caller_cover_type = vehicle.cover_type || "";
+        callVariables.caller_cover_status = vehicle.cover_status || "";
+        // Also re-run variable substitution since callVariables changed AFTER initial pass.
+        const sub = (text: string) =>
+          text.replace(/\{\{([^}]+)\}\}/g, (m, v) => {
+            const t = v.trim();
+            return callVariables[t] !== undefined ? callVariables[t] : m;
+          });
+        instructions = sub(instructions);
+        greeting = sub(greeting);
+      } else {
+        console.log(`[MediaStream] CRM miss for ${fromNumber} (callId=${callId})`);
+        callVariables.caller_known = "false";
+      }
+    }
       };
       instructions = substituteVars(instructions);
       greeting = substituteVars(greeting);
