@@ -139,6 +139,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callStartTime: Date | null = null;
   let agentAnalysisPrompt: string = "";
   let agentKnowledgeBase: any[] = [];
+  let smsTemplate: string = "";
+  let smsDuringCall: boolean = false;
+  let smsAfterCall: boolean = false;
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let greetingInProgress = true; // Protect initial greeting from interruption
@@ -262,6 +265,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           antiBargeinEnabled = true;
           console.log(`[MediaStream] Anti-barge-in enabled (callId=${callId})`);
         }
+        // SMS settings
+        if (typeof settings.sms_template === "string") smsTemplate = settings.sms_template;
+        smsDuringCall = settings.sms_during_call === true && !!smsTemplate;
+        smsAfterCall = settings.sms_after_call === true && !!smsTemplate;
       }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
