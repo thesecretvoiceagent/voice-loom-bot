@@ -1,83 +1,103 @@
 
+The user asks two things:
 
-# Fix AI Voice Agent Behavior — Stop Rambling, Stay On Script
+1. **How does the AI know which SMS to send when?** — explain the current mechanism and improve it.
+2. **AI reads SMS replies** — when a customer texts back (e.g. with a callback number or a what3words location), the AI should be able to read that reply mid-call and use it (e.g. read the number back to confirm).
 
-## Problem
-The OpenAI Realtime session has **no temperature control** and the instructions don't enforce brevity or script adherence. The AI rambles, goes off-topic, and gives long responses instead of staying focused.
+Let me check current state of orchestrator/media-stream and CreateAgent SMS section to design properly.
 
-## Root Cause
-In `orchestrator/src/ws/media-stream.ts`, the `session.update` config sent to OpenAI Realtime has:
-- No `temperature` setting (defaults to ~0.8 which encourages creativity)
-- No `max_response_output_tokens` limit
-- Default instructions are vague ("Be concise and conversational")
-- No explicit constraints against rambling or going off-script
+Key observations from earlier context:
+- Each SMS template has: `name`, `content`, `trigger` (during/after), `order`.
+- Orchestrator injects an "AVAILABLE SMS TEMPLATES" block into the system prompt and exposes `send_sms({template_name})` tool.
+- After-call SMSes are sent in order automatically at hangup.
 
-## Plan
+So question (1) answer = combination of:
+- The **template name** + **trigger** is what tells the AI which one to use.
+- "During call" templates require explicit AI trigger via `send_sms` (chooses by name).
+- "After call" templates fire automatically in `order` at hangup.
 
-### 1. Add temperature + token limits to OpenAI Realtime session config
-**File:** `orchestrator/src/ws/media-stream.ts`
+To make it actually work reliably, the prompt injection needs to also include each template's **purpose/when-to-use** description so the AI picks the right one. Currently we only inject name + content. I'll add a `description` (when-to-use) field to each SMS template.
 
-In the `session.update` payload (around line 179), add:
-- `temperature: 0.6` — reduces randomness, keeps AI focused
-- `max_response_output_tokens: 150` — hard cap on response length (~2-3 sentences spoken)
+For (2), inbound SMS reading:
+- Need a Twilio inbound SMS webhook → edge function that stores incoming SMS in a new `sms_messages` table linked to `call_id` (matched by from/to phone within recent call window).
+- Orchestrator polls / subscribes to new SMS for the active call and injects the reply text into the realtime AI session as a system message ("📱 Customer replied via SMS: 'My number is 555-1234'").
+- Configure Twilio number's "A Message Comes In" webhook to point at this new edge function.
 
-These are supported by the OpenAI Realtime API session config.
+# Plan
 
-### 2. Harden the default instructions
-**File:** `orchestrator/src/ws/media-stream.ts`
+## 1. How AI picks the right SMS (explainer + improvement)
 
-Replace the vague `DEFAULT_INSTRUCTIONS` (line 49) with strict behavioral rules:
+**Today**: AI sees a list of SMS templates by `name` + `content`. To send one mid-call it calls `send_sms({template_name: "location_link"})`. After-call SMSes fire automatically in their `order`.
+
+**Improvement**: Add a **"When to use"** field (description) to each SMS template so the AI knows *when* to trigger which template — not just *what's in it*.
+
+### UI changes (`src/pages/CreateAgent.tsx`)
+- Add `description` field to each SMS card (textarea, e.g. *"Send when customer asks for location confirmation link"*).
+- Migrate existing entries (default `description: ""`).
+
+### Orchestrator changes (`orchestrator/src/ws/media-stream.ts`)
+- Inject `description` into the system prompt block:
+  ```
+  AVAILABLE SMS TEMPLATES:
+  - location_link (trigger: during call) — When to use: customer needs the location form link
+    Content: "Kinnitage oma asukoht: https://what3words.com/..."
+  - thanks (trigger: after call, order 1) — When to use: automatic thank-you
+  ```
+- Tool description for `send_sms` updated to instruct: "Pick `template_name` based on the 'When to use' guidance."
+
+## 2. AI reads incoming SMS replies
+
+```text
+Customer ──SMS──▶ Twilio ──webhook──▶ edge fn `twilio-sms-inbound`
+                                            │
+                                            ├─ insert into sms_messages (direction=inbound)
+                                            │
+                                            └─ Postgres realtime ──▶ orchestrator
+                                                                          │
+                                                                          ▼
+                                                          inject as system msg into
+                                                          OpenAI Realtime session
+                                                          ("📱 Customer replied: ...")
 ```
-You are a professional AI phone agent. Follow these rules strictly:
-1. NEVER go off-topic. Only discuss what your instructions cover.
-2. Keep every response to 1-3 short sentences maximum.
-3. Do NOT elaborate unless explicitly asked.
-4. Do NOT make up information not in your instructions or knowledge base.
-5. If unsure, say you'll follow up — don't guess.
-6. Stay in character at all times. Follow the script exactly.
-```
 
-### 3. Inject behavioral guardrails into every agent's system prompt
-**File:** `orchestrator/src/ws/media-stream.ts`
+### Database (migration)
+New table `sms_messages`:
+- `id`, `call_id` (nullable FK to calls), `agent_id`, `template_name` (nullable, only for outbound), `direction` ('inbound' | 'outbound'), `from_number`, `to_number`, `body`, `twilio_sid`, `status`, `created_at`.
+- Enable realtime publication on this table.
+- RLS: authenticated can SELECT; anon/service can INSERT/UPDATE.
 
-When building `fullInstructions` from the agent's `system_prompt`, append a non-negotiable footer:
-```
-BEHAVIORAL RULES (always follow):
-- Maximum 1-3 sentences per response.
-- Stay strictly on topic. Do not improvise or add unrequested information.
-- Follow the script above exactly. Do not deviate.
-```
+### Outbound SMS persistence (`orchestrator/src/ws/media-stream.ts`)
+- After successfully sending an SMS via Twilio, insert a row into `sms_messages` with `direction='outbound'`, link to `call_id`.
 
-This ensures even if a user writes a loose system prompt, the AI still behaves.
+### New edge function `supabase/functions/twilio-sms-inbound/index.ts`
+- Receives Twilio SMS webhook (form-urlencoded: `From`, `To`, `Body`, `MessageSid`).
+- Looks up the most recent **active** call where `from_number = From` (within last 30 min).
+- Inserts row into `sms_messages` with `direction='inbound'`, `call_id`, `body`.
+- Returns empty TwiML (no auto-reply).
+- `verify_jwt = false` in `supabase/config.toml`.
 
-### 4. Make temperature configurable per agent
-**File:** `src/pages/CreateAgent.tsx` (Settings tab)
+### Orchestrator subscription (`orchestrator/src/ws/media-stream.ts`)
+- On call start, subscribe via Supabase realtime to `sms_messages` rows where `call_id = currentCallId` AND `direction='inbound'`.
+- On new inbound SMS:
+  - Send a `conversation.item.create` system message into the OpenAI Realtime WS:
+    > "📱 Customer just replied via SMS: 'They wrote: <body>'. Acknowledge what they sent and confirm it back to them in the conversation."
+  - Trigger `response.create` to make the AI speak immediately.
+- Unsubscribe at call end.
 
-Add a "Temperature" slider (0.1–1.0, default 0.6) in the agent settings tab, stored in `settings.temperature`. The orchestrator reads this and applies it to the session config.
+### User setup (post-deploy instructions)
+- In Twilio console → phone number → **Messaging** → "A Message Comes In" → set to:
+  `https://dtctqwoesbvntdpeekgv.supabase.co/functions/v1/twilio-sms-inbound` (POST).
 
-**File:** `orchestrator/src/ws/media-stream.ts`
+## 3. Optional: SMS log on call detail page (not in this round unless you ask)
 
-Read `settings.temperature` from agent config and use it in the session update, falling back to 0.6.
+## Files to touch
+- migration: create `sms_messages` table + realtime + RLS
+- `supabase/functions/twilio-sms-inbound/index.ts` (new)
+- `supabase/config.toml` (function block, `verify_jwt = false`)
+- `orchestrator/src/ws/media-stream.ts` (description in prompt, persist outbound, subscribe to inbound)
+- `src/pages/CreateAgent.tsx` (add `description` field per SMS)
 
-### 5. Tighten VAD (Voice Activity Detection) settings
-**File:** `orchestrator/src/ws/media-stream.ts`
+## Twilio webhook URL you'll need to set
+`https://dtctqwoesbvntdpeekgv.supabase.co/functions/v1/twilio-sms-inbound`
 
-Current VAD config (line 228):
-- `threshold: 0.5` — fine
-- `silence_duration_ms: 500` — too short, causes AI to jump in too fast
-
-Change to:
-- `silence_duration_ms: 700` — gives caller more time to finish speaking
-- `prefix_padding_ms: 400` — slightly more context captured
-
----
-
-## Files Changed
-| File | Change |
-|------|--------|
-| `orchestrator/src/ws/media-stream.ts` | Add temperature, token limits, strict instructions, read per-agent temperature |
-| `src/pages/CreateAgent.tsx` | Add Temperature slider in Settings tab |
-
-## No database changes needed
-Temperature is stored in the existing `settings` JSONB column on the `agents` table.
-
+Approve and I'll build it.
