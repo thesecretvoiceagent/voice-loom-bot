@@ -410,12 +410,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
             responseHasAudio = true;
-            if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-              twilioWs.send(JSON.stringify({
-                event: "media",
-                streamSid,
-                media: { payload: event.delta },
-              }));
+            if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
+              // OpenAI sends large audio chunks (~200ms). Twilio Media Streams plays smoothest
+              // when each `media` event carries ~20ms of ulaw audio (160 bytes @ 8kHz).
+              // Splitting prevents underruns/overruns that are heard as static/clicks.
+              try {
+                const raw = Buffer.from(event.delta, "base64");
+                const FRAME = 160; // 20ms @ 8kHz mu-law
+                for (let offset = 0; offset < raw.length; offset += FRAME) {
+                  const chunk = raw.subarray(offset, Math.min(offset + FRAME, raw.length));
+                  twilioWs.send(JSON.stringify({
+                    event: "media",
+                    streamSid,
+                    media: { payload: chunk.toString("base64") },
+                  }));
+                }
+              } catch (e) {
+                // Fallback: forward as-is if buffer ops fail
+                twilioWs.send(JSON.stringify({
+                  event: "media",
+                  streamSid,
+                  media: { payload: event.delta },
+                }));
+              }
             }
             break;
           }
