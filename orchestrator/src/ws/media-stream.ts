@@ -404,6 +404,54 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       started_at: callStartTime.toISOString(),
     });
 
+    // Subscribe to inbound SMS replies for THIS call.
+    // When the customer texts back during the call, inject the reply as a system message
+    // into the OpenAI Realtime session so the AI can read it back / acknowledge it.
+    if (callId) {
+      const sb = getSupabaseRealtime();
+      if (sb) {
+        try {
+          inboundSmsChannel = sb
+            .channel(`inbound-sms-${callId}`)
+            .on(
+              "postgres_changes",
+              {
+                event: "INSERT",
+                schema: "public",
+                table: "sms_messages",
+                filter: `call_id=eq.${callId}`,
+              },
+              (payload: any) => {
+                const row = payload?.new;
+                if (!row || row.direction !== "inbound") return;
+                const replyBody = (row.body || "").toString().slice(0, 800);
+                const fromNum = row.from_number || "the customer";
+                console.log(`[MediaStream] Inbound SMS received (callId=${callId}, from=${fromNum}): "${replyBody.slice(0, 80)}"`);
+                transcriptLines.push(`[SMS from ${fromNum}]: ${replyBody}`);
+
+                if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+                  const sysMsg = `📱 Customer replied via SMS (from ${fromNum}): "${replyBody}". Acknowledge what they sent in the conversation right now — for example, read any phone number or address back to confirm it. Speak in the same language the call is being conducted in.`;
+                  openaiWs.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "message",
+                      role: "system",
+                      content: [{ type: "input_text", text: sysMsg }],
+                    },
+                  }));
+                  openaiWs.send(JSON.stringify({ type: "response.create" }));
+                }
+              },
+            )
+            .subscribe((status: string) => {
+              console.log(`[MediaStream] Inbound SMS channel status (callId=${callId}): ${status}`);
+            });
+        } catch (err) {
+          console.error(`[MediaStream] Failed to subscribe to inbound SMS:`, err);
+        }
+      }
+    }
+
     const url = `${OPENAI_REALTIME_URL}?model=${config.openai.realtimeModel}`;
 
     sessionConfigured = false;
