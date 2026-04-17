@@ -10,12 +10,15 @@ export const twilioWebhookRouter = Router();
  */
 twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
   const correlationId = crypto.randomUUID();
+  // Detect inbound vs outbound: outbound calls include callId in query (set by /api/calls/start)
+  const isInbound = !req.query.callId;
   const callId = (req.query.callId as string) || crypto.randomUUID();
-  const agentId = (req.query.agentId as string) || "default";
+  const agentId = (req.query.agentId as string) || "";
   const campaignId = (req.query.campaignId as string) || "";
   const variables = (req.query.variables as string) || "";
+  const direction = isInbound ? "inbound" : "outbound";
 
-  console.log(`[${correlationId}] POST /twilio/voice callId=${callId} agentId=${agentId} campaignId=${campaignId} variables=${variables ? 'yes' : 'no'}`);
+  console.log(`[${correlationId}] POST /twilio/voice direction=${direction} callId=${callId} agentId=${agentId || "(resolve-by-number)"} campaignId=${campaignId} variables=${variables ? 'yes' : 'no'}`);
   console.log(`[${correlationId}] CallSid=${req.body?.CallSid} From=${req.body?.From} To=${req.body?.To}`);
 
   if (!config.openai.isConfigured) {
@@ -30,6 +33,7 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
   const wsBase = config.publicWsBaseUrl || config.publicBaseUrl.replace("https://", "wss://");
   const streamUrl = `${wsBase}/twilio/stream`;
   const calledNumber = req.body?.To || "";
+  const fromNumber = req.body?.From || "";
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -40,6 +44,8 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
       <Parameter name="campaignId" value="${campaignId}"/>
       <Parameter name="callSid" value="${req.body?.CallSid || ""}"/>
       <Parameter name="calledNumber" value="${calledNumber}"/>
+      <Parameter name="fromNumber" value="${fromNumber}"/>
+      <Parameter name="direction" value="${direction}"/>
       <Parameter name="variables" value="${variables.replace(/"/g, '&quot;')}"/>
     </Stream>
   </Connect>
