@@ -635,6 +635,59 @@ export type Database = {
         }
         Relationships: []
       }
+      sms_messages: {
+        Row: {
+          agent_id: string | null
+          body: string
+          call_id: string | null
+          created_at: string
+          direction: string
+          from_number: string
+          id: string
+          status: string | null
+          template_name: string | null
+          to_number: string
+          twilio_sid: string | null
+          updated_at: string
+        }
+        Insert: {
+          agent_id?: string | null
+          body: string
+          call_id?: string | null
+          created_at?: string
+          direction: string
+          from_number: string
+          id?: string
+          status?: string | null
+          template_name?: string | null
+          to_number: string
+          twilio_sid?: string | null
+          updated_at?: string
+        }
+        Update: {
+          agent_id?: string | null
+          body?: string
+          call_id?: string | null
+          created_at?: string
+          direction?: string
+          from_number?: string
+          id?: string
+          status?: string | null
+          template_name?: string | null
+          to_number?: string
+          twilio_sid?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sms_messages_call_id_fkey"
+            columns: ["call_id"]
+            isOneToOne: false
+            referencedRelation: "calls"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       user_roles: {
         Row: {
           created_at: string
