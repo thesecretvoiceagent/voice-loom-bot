@@ -827,6 +827,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (transcript && agentAnalysisPrompt) {
       runPostCallAnalysis(callId, transcript, agentAnalysisPrompt);
     }
+
+    // Post-call SMS (skip if already sent mid-call to avoid duplicates)
+    if (smsAfterCall && smsTemplate && !smsSentDuringCall) {
+      const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
+      if (recipient) {
+        const body = substituteVarsRef(smsTemplate);
+        sendSms(recipient, body).then((r) => {
+          console.log(`[MediaStream] Post-call SMS → ${recipient} ok=${r.ok} sid=${r.sid || "-"} err=${r.error || "-"} (callId=${callId})`);
+        });
+      } else {
+        console.warn(`[MediaStream] Post-call SMS skipped: no recipient (callId=${callId})`);
+      }
+    }
   };
 
   // Handle messages from Twilio
