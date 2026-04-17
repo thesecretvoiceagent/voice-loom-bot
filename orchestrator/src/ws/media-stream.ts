@@ -437,6 +437,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - If asked about something outside your scope, briefly redirect back to the topic.
 - ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
 
+      // Inject SMS catalog so the AI knows which named SMSes are available and what they say.
+      const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
+      const afterSmsList = smsMessages.filter((m) => m.trigger === "after");
+      if (duringSmsList.length > 0 || afterSmsList.length > 0) {
+        let smsBlock = `\n\nAVAILABLE SMS TEMPLATES — These are the ONLY SMSes you can send. Each has a fixed name and EXACT text. You may NOT change the text. To send one, call the send_sms tool with template_name set to the exact name below.`;
+        if (duringSmsList.length > 0) {
+          smsBlock += `\n\nDuring-call SMSes (you choose when/whether to send each):`;
+          duringSmsList.forEach((m, i) => {
+            smsBlock += `\n${i + 1}. name="${m.name}" — content: "${m.content}"`;
+          });
+        }
+        if (afterSmsList.length > 0) {
+          smsBlock += `\n\nAfter-call SMSes (sent automatically when the call ends, in this order — do NOT send them yourself):`;
+          afterSmsList.forEach((m, i) => {
+            smsBlock += `\n${i + 1}. name="${m.name}" — content: "${m.content}"`;
+          });
+        }
+        smsBlock += `\n\nRules: Pick the SMS whose purpose matches the moment. Never invent a new SMS. Never paraphrase. If none fit, do not send anything.`;
+        fullInstructions += smsBlock;
+      }
+
       const tools: any[] = [];
 
       if (agentTools.includes("end_call")) {
