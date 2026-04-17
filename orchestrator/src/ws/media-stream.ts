@@ -1012,6 +1012,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         initialResponseFallbackTimer = null;
       }
       clearMarkFallback();
+      clearTurnDetectionEnableTimer();
       console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
       openaiWs = null;
       finalizeCall();
@@ -1045,6 +1046,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const finalizeCall = () => {
     if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
+    clearTurnDetectionEnableTimer();
 
     // Stop listening for inbound SMS replies for this call
     if (inboundSmsChannel) {
@@ -1150,6 +1152,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         case "media":
           // Don't forward audio to OpenAI during greeting (prevents VAD triggering)
           if (greetingInProgress) {
+            break;
+          }
+          // Short cooldown after AI speech finishes — prevents the model from hearing its
+          // own just-played audio (echo loop) and re-triggering the same response.
+          if (Date.now() < inboundAudioCooldownUntil) {
             break;
           }
           // Don't forward audio when anti-barge-in is active and AI is speaking
