@@ -303,6 +303,66 @@ export type Database = {
           },
         ]
       }
+      crm_vehicles: {
+        Row: {
+          body_type: string | null
+          color: string | null
+          cover_status: string | null
+          cover_type: string | null
+          created_at: string
+          drivetrain: string | null
+          engine_type: string | null
+          gearbox: string | null
+          id: string
+          insurer: string | null
+          make: string | null
+          model: string | null
+          owner_name: string | null
+          phone_number: string | null
+          reg_no: string
+          updated_at: string
+          year_of_built: number | null
+        }
+        Insert: {
+          body_type?: string | null
+          color?: string | null
+          cover_status?: string | null
+          cover_type?: string | null
+          created_at?: string
+          drivetrain?: string | null
+          engine_type?: string | null
+          gearbox?: string | null
+          id?: string
+          insurer?: string | null
+          make?: string | null
+          model?: string | null
+          owner_name?: string | null
+          phone_number?: string | null
+          reg_no: string
+          updated_at?: string
+          year_of_built?: number | null
+        }
+        Update: {
+          body_type?: string | null
+          color?: string | null
+          cover_status?: string | null
+          cover_type?: string | null
+          created_at?: string
+          drivetrain?: string | null
+          engine_type?: string | null
+          gearbox?: string | null
+          id?: string
+          insurer?: string | null
+          make?: string | null
+          model?: string | null
+          owner_name?: string | null
+          phone_number?: string | null
+          reg_no?: string
+          updated_at?: string
+          year_of_built?: number | null
+        }
+        Relationships: []
+      }
       feature_flags: {
         Row: {
           enabled: boolean

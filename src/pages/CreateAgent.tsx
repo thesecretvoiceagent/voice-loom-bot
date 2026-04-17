@@ -47,6 +47,7 @@ const tabs = [
 
 const aiTools = [
   { id: "end_call", label: "End Call", icon: PhoneCall },
+  { id: "lookup_vehicle", label: "CRM: Lookup Vehicle", icon: Database },
   { id: "calendar_update", label: "Google Calendar Update", icon: CalendarDays },
   { id: "calendar_view", label: "Google Calendar View", icon: Calendar },
   { id: "calendar_delete", label: "Google Calendar Delete", icon: CalendarDays },

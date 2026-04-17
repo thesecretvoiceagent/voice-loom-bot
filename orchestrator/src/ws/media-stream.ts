@@ -44,6 +44,32 @@ async function runPostCallAnalysis(callId: string, transcript: string, analysisP
   }
 }
 
+// CRM lookup via edge function — used by inbound bot to identify caller / look up vehicle by reg_no
+async function crmLookup(params: { phone_number?: string; reg_no?: string }): Promise<any | null> {
+  if (!config.supabase.url || !config.supabase.anonKey) return null;
+  try {
+    const url = `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/crm-lookup`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.supabase.anonKey}`,
+        apikey: config.supabase.anonKey,
+      },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+      console.error(`[crmLookup] HTTP ${res.status} ${await res.text()}`);
+      return null;
+    }
+    const data = await res.json();
+    return data?.vehicle || null;
+  } catch (err) {
+    console.error(`[crmLookup] error:`, err);
+    return null;
+  }
+}
+
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
 const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
@@ -203,7 +229,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
 
-    // Substitute template variables (e.g. {{first_name}}, {{custom_data.debt_amount}})
+    // Inbound CRM prefetch: identify caller by phone number so the agent knows who's calling.
+    // Exposed via callVariables so the system prompt can reference {{caller_name}}, {{caller_reg_no}}, etc.
+    if (callDirection === "inbound" && fromNumber) {
+      const vehicle = await crmLookup({ phone_number: fromNumber });
+      if (vehicle) {
+        console.log(`[MediaStream] CRM hit for ${fromNumber}: ${vehicle.owner_name} / ${vehicle.reg_no} (callId=${callId})`);
+        callVariables.caller_known = "true";
+        callVariables.caller_name = vehicle.owner_name || "";
+        callVariables.caller_reg_no = vehicle.reg_no || "";
+        callVariables.caller_make = vehicle.make || "";
+        callVariables.caller_model = vehicle.model || "";
+        callVariables.caller_year = vehicle.year_of_built ? String(vehicle.year_of_built) : "";
+        callVariables.caller_color = vehicle.color || "";
+        callVariables.caller_insurer = vehicle.insurer || "";
+        callVariables.caller_cover_type = vehicle.cover_type || "";
+        callVariables.caller_cover_status = vehicle.cover_status || "";
+      } else {
+        console.log(`[MediaStream] CRM miss for ${fromNumber} (callId=${callId})`);
+        callVariables.caller_known = "false";
+      }
+    }
+
+    // Substitute template variables (e.g. {{first_name}}, {{caller_name}})
     if (Object.keys(callVariables).length > 0) {
       const substituteVars = (text: string): string => {
         return text.replace(/\{\{([^}]+)\}\}/g, (match, varName) => {
@@ -335,6 +383,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
       }
 
+      if (agentTools.includes("lookup_vehicle")) {
+        tools.push({
+          type: "function",
+          name: "lookup_vehicle",
+          description: "Look up a vehicle in the CRM by registration plate (reg_no) or by phone number. Use when the caller gives you their plate (registreerimismärk) or to verify identity. Returns owner name, vehicle details, insurer, cover type and status. If no match, returns null.",
+          parameters: {
+            type: "object",
+            properties: {
+              reg_no: {
+                type: "string",
+                description: "Estonian registration plate, e.g. '495BJS'. Strip spaces, uppercase.",
+              },
+              phone_number: {
+                type: "string",
+                description: "Phone number in E.164 format, e.g. '+3725541645'.",
+              },
+            },
+          },
+        });
+      }
+
       // Clamp temperature to OpenAI Realtime's valid range [0.6, 1.2] — values outside
       // this range can cause the model to emit malformed audio (heard as static/clicks).
       const rawTemp = agentConfig ? agentTemperature : 0.6;
@@ -375,7 +444,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }, 500);
     });
 
-    openaiWs.on("message", (data) => {
+    openaiWs.on("message", async (data) => {
       try {
         const event = JSON.parse(data.toString());
 
@@ -479,6 +548,28 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
                 hangUpCall();
               }, 8000); // Give more time for goodbye message to complete
+            }
+
+            if (fnName === "lookup_vehicle") {
+              let args: any = {};
+              try { args = JSON.parse(event.arguments || "{}"); } catch {}
+              const vehicle = await crmLookup({
+                phone_number: args.phone_number,
+                reg_no: args.reg_no,
+              });
+              const output = vehicle
+                ? { found: true, vehicle }
+                : { found: false, message: "No vehicle found in CRM for the given details." };
+              openaiWs!.send(JSON.stringify({
+                type: "conversation.item.create",
+                item: {
+                  type: "function_call_output",
+                  call_id: event.call_id,
+                  output: JSON.stringify(output),
+                },
+              }));
+              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
             }
             break;
           }
