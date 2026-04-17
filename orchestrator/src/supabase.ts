@@ -65,13 +65,18 @@ export async function fetchAgentConfig(agentId: string): Promise<AgentConfig | n
   return data?.agent || null;
 }
 
-export async function fetchAgentByPhoneNumber(phoneNumber: string): Promise<AgentConfig | null> {
-  const data = await callEdgeFunction("agent-config", { phone_number: phoneNumber });
+export async function fetchAgentByPhoneNumber(
+  phoneNumber: string,
+  direction?: "inbound" | "outbound"
+): Promise<AgentConfig | null> {
+  const data = await callEdgeFunction("agent-config", { phone_number: phoneNumber, direction });
   return data?.agent || null;
 }
 
-export async function fetchFirstActiveAgent(): Promise<AgentConfig | null> {
-  const data = await callEdgeFunction("agent-config", { fallback_first: true });
+export async function fetchFirstActiveAgent(
+  direction?: "inbound" | "outbound"
+): Promise<AgentConfig | null> {
+  const data = await callEdgeFunction("agent-config", { fallback_first: true, direction });
   return data?.agent || null;
 }
 
