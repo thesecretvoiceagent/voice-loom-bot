@@ -64,6 +64,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callId: string = "";
   let agentId: string = "";
   let calledNumber: string = "";
+  let fromNumber: string = "";
+  let callDirection: "inbound" | "outbound" = "outbound";
   let callSid: string = "";
   let campaignId: string = "";
   let callVariables: Record<string, string> = {};
@@ -216,12 +218,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     callStartTime = new Date();
     upsertCall(callId, {
       twilio_call_sid: callSid || null,
-      agent_id: agentId !== "default" ? agentId : null,
+      agent_id: agentId && agentId !== "default" ? agentId : null,
       campaign_id: campaignId || null,
-      to_number: calledNumber || "unknown",
-      from_number: config.twilio.fromNumber || null,
+      // For inbound: caller is From, our number is To. For outbound: callee is To.
+      to_number: callDirection === "inbound" ? (calledNumber || "unknown") : (calledNumber || "unknown"),
+      from_number: callDirection === "inbound" ? (fromNumber || null) : (config.twilio.fromNumber || null),
       status: "in-progress",
-      direction: "outbound",
+      direction: callDirection,
       started_at: callStartTime.toISOString(),
     });
 
@@ -617,6 +620,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           callId = msg.start.customParameters?.callId || "";
           agentId = msg.start.customParameters?.agentId || "";
           calledNumber = msg.start.customParameters?.calledNumber || "";
+          fromNumber = msg.start.customParameters?.fromNumber || "";
+          callDirection = (msg.start.customParameters?.direction === "inbound" ? "inbound" : "outbound");
           callSid = msg.start.customParameters?.callSid || "";
           campaignId = msg.start.customParameters?.campaignId || "";
           // Parse call variables
