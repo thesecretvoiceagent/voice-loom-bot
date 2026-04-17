@@ -391,6 +391,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
       }
 
+      if (agentTools.includes("lookup_vehicle")) {
+        tools.push({
+          type: "function",
+          name: "lookup_vehicle",
+          description: "Look up a vehicle in the CRM by registration plate (reg_no) or by phone number. Use when the caller gives you their plate (registreerimismärk) or to verify identity. Returns owner name, vehicle details, insurer, cover type and status. If no match, returns null.",
+          parameters: {
+            type: "object",
+            properties: {
+              reg_no: {
+                type: "string",
+                description: "Estonian registration plate, e.g. '495BJS'. Strip spaces, uppercase.",
+              },
+              phone_number: {
+                type: "string",
+                description: "Phone number in E.164 format, e.g. '+3725541645'.",
+              },
+            },
+          },
+        });
+      }
+
       // Clamp temperature to OpenAI Realtime's valid range [0.6, 1.2] — values outside
       // this range can cause the model to emit malformed audio (heard as static/clicks).
       const rawTemp = agentConfig ? agentTemperature : 0.6;
