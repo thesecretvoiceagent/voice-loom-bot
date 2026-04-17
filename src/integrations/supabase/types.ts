@@ -195,6 +195,11 @@ export type Database = {
           ended_at: string | null
           from_number: string | null
           id: string
+          location_address: string | null
+          location_confirmed: boolean
+          location_confirmed_at: string | null
+          location_lat: number | null
+          location_lon: number | null
           metadata: Json | null
           recording_url: string | null
           started_at: string | null
@@ -215,6 +220,11 @@ export type Database = {
           ended_at?: string | null
           from_number?: string | null
           id?: string
+          location_address?: string | null
+          location_confirmed?: boolean
+          location_confirmed_at?: string | null
+          location_lat?: number | null
+          location_lon?: number | null
           metadata?: Json | null
           recording_url?: string | null
           started_at?: string | null
@@ -235,6 +245,11 @@ export type Database = {
           ended_at?: string | null
           from_number?: string | null
           id?: string
+          location_address?: string | null
+          location_confirmed?: boolean
+          location_confirmed_at?: string | null
+          location_lat?: number | null
+          location_lon?: number | null
           metadata?: Json | null
           recording_url?: string | null
           started_at?: string | null
