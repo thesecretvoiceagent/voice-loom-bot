@@ -247,6 +247,23 @@ export default function CreateAgent() {
 
     setSaving(true);
 
+    const settingsPayload = {
+      max_ring_time: maxRingTime[0],
+      max_call_duration: maxCallDuration[0],
+      max_retries: maxRetries,
+      concurrent_calls: concurrentCalls,
+      retry_delay_hours: retryDelay.hours,
+      retry_delay_minutes: retryDelay.minutes,
+      enable_recording: enableRecording,
+      temperature: temperature[0],
+      uninterruptible_greeting: uninterruptibleGreeting,
+      anti_barge_in: antiBargein,
+      sms_template: smsTemplate ?? "",
+      sms_during_call: !!smsDuringCall,
+      sms_after_call: !!smsAfterCall,
+    };
+    console.log("[CreateAgent] Saving settings:", settingsPayload);
+
     const agentData = {
       name: agentName,
       type: type || "outbound",
@@ -256,21 +273,7 @@ export default function CreateAgent() {
       voice: selectedVoice,
       phone_number: phoneNumbers.find((p) => p.id === selectedPhone)?.number || "",
       tools: selectedTools,
-      settings: {
-        max_ring_time: maxRingTime[0],
-        max_call_duration: maxCallDuration[0],
-        max_retries: maxRetries,
-        concurrent_calls: concurrentCalls,
-        retry_delay_hours: retryDelay.hours,
-        retry_delay_minutes: retryDelay.minutes,
-        enable_recording: enableRecording,
-        temperature: temperature[0],
-        uninterruptible_greeting: uninterruptibleGreeting,
-        anti_barge_in: antiBargein,
-        sms_template: smsTemplate,
-        sms_during_call: smsDuringCall,
-        sms_after_call: smsAfterCall,
-      },
+      settings: settingsPayload,
       schedule: {
         start_time: startTime,
         end_time: endTime,
