@@ -527,38 +527,134 @@ export default function CreateAgent() {
                   </div>
                   <Textarea value={analysisPrompt} onChange={(e) => setAnalysisPrompt(e.target.value)} placeholder="Analyze this call transcript..." className="min-h-[100px]" />
 
-                  {/* SMS Follow-up */}
+                  {/* SMS */}
                   <div className="space-y-3 pt-4 border-t border-border">
-                    <div>
-                      <h4 className="font-semibold text-foreground">SMS Follow-up</h4>
-                      <p className="text-sm text-muted-foreground">
-                        Send an SMS to the caller. Use {"{{caller_name}}"}, {"{{caller_reg_no}}"}, {"{{first_name}}"} and other variables.
-                      </p>
-                    </div>
-                    <Textarea
-                      value={smsTemplate}
-                      onChange={(e) => setSmsTemplate(e.target.value)}
-                      placeholder="Tere {{caller_name}}, täname kõne eest! Lisainfo: ..."
-                      className="min-h-[80px]"
-                      maxLength={1600}
-                    />
-                    <div className="text-xs text-muted-foreground text-right">{smsTemplate.length}/1600</div>
-
-                    <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                    <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="font-medium text-foreground text-sm">Send SMS during call</p>
-                        <p className="text-xs text-muted-foreground">AI can trigger send_sms tool mid-conversation when relevant</p>
+                        <h4 className="font-semibold text-foreground">SMS</h4>
+                        <p className="text-sm text-muted-foreground">
+                          Configure exact SMS texts. The AI sends them verbatim — never rewrites the content. Use{" "}
+                          {"{{caller_name}}"}, {"{{caller_reg_no}}"}, {"{{first_name}}"} for variable substitution.
+                          Order matters: AI references SMSes by <strong>name</strong>, and after-call SMSes are sent in this order.
+                        </p>
                       </div>
-                      <Switch checked={smsDuringCall} onCheckedChange={setSmsDuringCall} />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          setSmsMessages((prev) => [
+                            ...prev,
+                            {
+                              id: crypto.randomUUID(),
+                              name: `sms_${prev.length + 1}`,
+                              content: "",
+                              trigger: "during",
+                            },
+                          ])
+                        }
+                        className="gap-1 shrink-0"
+                      >
+                        <Plus className="h-3 w-3" />
+                        Add SMS
+                      </Button>
                     </div>
 
-                    <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
-                      <div>
-                        <p className="font-medium text-foreground text-sm">Send SMS after call ends</p>
-                        <p className="text-xs text-muted-foreground">Automatically send the template once the call completes</p>
+                    {smsMessages.length === 0 ? (
+                      <p className="text-sm text-muted-foreground italic">No SMS templates configured.</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {smsMessages.map((sms, index) => (
+                          <div key={sms.id} className="space-y-2 p-3 rounded-lg border border-border bg-secondary/30">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-mono text-muted-foreground shrink-0">#{index + 1}</span>
+                              <Input
+                                placeholder="SMS name (e.g. 'location_link', 'payment_reminder')"
+                                value={sms.name}
+                                onChange={(e) =>
+                                  setSmsMessages((prev) =>
+                                    prev.map((m, i) => (i === index ? { ...m, name: e.target.value } : m)),
+                                  )
+                                }
+                                className="flex-1 font-mono text-sm"
+                              />
+                              <select
+                                value={sms.trigger}
+                                onChange={(e) =>
+                                  setSmsMessages((prev) =>
+                                    prev.map((m, i) =>
+                                      i === index ? { ...m, trigger: e.target.value as "during" | "after" } : m,
+                                    ),
+                                  )
+                                }
+                                className="h-10 rounded-lg border border-border/50 bg-secondary/30 px-2 text-sm"
+                              >
+                                <option value="during">During call (AI triggers)</option>
+                                <option value="after">After call (auto)</option>
+                              </select>
+                              <div className="flex flex-col gap-0.5">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-5 w-7"
+                                  disabled={index === 0}
+                                  onClick={() =>
+                                    setSmsMessages((prev) => {
+                                      const next = [...prev];
+                                      [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                                      return next;
+                                    })
+                                  }
+                                  title="Move up"
+                                >
+                                  ↑
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-5 w-7"
+                                  disabled={index === smsMessages.length - 1}
+                                  onClick={() =>
+                                    setSmsMessages((prev) => {
+                                      const next = [...prev];
+                                      [next[index + 1], next[index]] = [next[index], next[index + 1]];
+                                      return next;
+                                    })
+                                  }
+                                  title="Move down"
+                                >
+                                  ↓
+                                </Button>
+                              </div>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setSmsMessages((prev) => prev.filter((_, i) => i !== index))}
+                                className="shrink-0 text-destructive hover:text-destructive"
+                                title="Delete"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                            <Textarea
+                              placeholder="Exact SMS text. Will be sent verbatim — only {{variables}} are substituted."
+                              value={sms.content}
+                              onChange={(e) =>
+                                setSmsMessages((prev) =>
+                                  prev.map((m, i) => (i === index ? { ...m, content: e.target.value } : m)),
+                                )
+                              }
+                              className="min-h-[70px]"
+                              maxLength={1600}
+                            />
+                            <div className="text-xs text-muted-foreground text-right">{sms.content.length}/1600</div>
+                          </div>
+                        ))}
                       </div>
-                      <Switch checked={smsAfterCall} onCheckedChange={setSmsAfterCall} />
-                    </div>
+                    )}
                   </div>
                 </div>
               </div>
