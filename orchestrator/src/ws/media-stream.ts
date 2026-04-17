@@ -332,7 +332,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
       }
 
-      const sessionTemperature = agentConfig ? agentTemperature : 0.6;
+      // Clamp temperature to OpenAI Realtime's valid range [0.6, 1.2] — values outside
+      // this range can cause the model to emit malformed audio (heard as static/clicks).
+      const rawTemp = agentConfig ? agentTemperature : 0.6;
+      const sessionTemperature = Math.min(1.2, Math.max(0.6, rawTemp));
       const sessionUpdate: any = {
         type: "session.update",
         session: {
