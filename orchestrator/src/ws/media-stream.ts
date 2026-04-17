@@ -453,6 +453,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
       }
 
+      if (smsDuringCall) {
+        const recipientHint = callDirection === "inbound"
+          ? "the caller's number is the From number of this call"
+          : "the called number is the To number of this call";
+        tools.push({
+          type: "function",
+          name: "send_sms",
+          description: `Send a follow-up SMS text message to the other party RIGHT NOW during the call. Use this when the conversation calls for it (e.g. confirming details, sending a link, or as agreed). The recipient is the other party on this call (${recipientHint}); you do NOT need to pass a phone number. The 'message' parameter is optional — if omitted, the agent's pre-configured SMS template is used (recommended). After calling, briefly confirm to the caller in their language that the SMS has been sent.`,
+          parameters: {
+            type: "object",
+            properties: {
+              message: {
+                type: "string",
+                description: "Optional override for the SMS text. If omitted, the configured template is sent. Keep under 1600 chars.",
+              },
+            },
+          },
+        });
+      }
+
       // Clamp temperature to OpenAI Realtime's valid range [0.6, 1.2] — values outside
       // this range can cause the model to emit malformed audio (heard as static/clicks).
       const rawTemp = agentConfig ? agentTemperature : 0.6;
