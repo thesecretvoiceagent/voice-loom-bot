@@ -139,10 +139,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callStartTime: Date | null = null;
   let agentAnalysisPrompt: string = "";
   let agentKnowledgeBase: any[] = [];
-  let smsTemplate: string = "";
-  let smsDuringCall: boolean = false;
-  let smsAfterCall: boolean = false;
-  let smsSentDuringCall = false;
+  type SmsMessage = { id?: string; name: string; content: string; trigger: "during" | "after"; order?: number };
+  let smsMessages: SmsMessage[] = [];
+  const smsSentNames = new Set<string>();
   let substituteVarsRef: (text: string) => string = (t) => t;
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -267,10 +266,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           antiBargeinEnabled = true;
           console.log(`[MediaStream] Anti-barge-in enabled (callId=${callId})`);
         }
-        // SMS settings
-        if (typeof settings.sms_template === "string") smsTemplate = settings.sms_template;
-        smsDuringCall = settings.sms_during_call === true && !!smsTemplate;
-        smsAfterCall = settings.sms_after_call === true && !!smsTemplate;
+        // SMS settings — new schema: array of named templates with explicit triggers.
+        // Backward-compat: if `sms_messages` is missing but `sms_template` exists, migrate inline.
+        if (Array.isArray((settings as any).sms_messages)) {
+          smsMessages = ((settings as any).sms_messages as any[])
+            .filter((m) => m && typeof m.content === "string" && m.content.trim())
+            .map((m, idx): SmsMessage => ({
+              id: m.id,
+              name: (m.name || `sms_${idx + 1}`).toString().trim(),
+              content: m.content,
+              trigger: m.trigger === "after" ? "after" : "during",
+              order: typeof m.order === "number" ? m.order : idx,
+            }))
+            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        } else if (typeof (settings as any).sms_template === "string" && (settings as any).sms_template.trim()) {
+          const legacyDuring = (settings as any).sms_during_call === true;
+          const legacyAfter = (settings as any).sms_after_call === true;
+          if (legacyDuring) {
+            smsMessages.push({ name: "default", content: (settings as any).sms_template, trigger: "during", order: 0 });
+          }
+          if (legacyAfter) {
+            smsMessages.push({ name: "default", content: (settings as any).sms_template, trigger: "after", order: 1 });
+          }
+        }
       }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
@@ -419,6 +437,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - If asked about something outside your scope, briefly redirect back to the topic.
 - ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
 
+      // Inject SMS catalog so the AI knows which named SMSes are available and what they say.
+      const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
+      const afterSmsList = smsMessages.filter((m) => m.trigger === "after");
+      if (duringSmsList.length > 0 || afterSmsList.length > 0) {
+        let smsBlock = `\n\nAVAILABLE SMS TEMPLATES — These are the ONLY SMSes you can send. Each has a fixed name and EXACT text. You may NOT change the text. To send one, call the send_sms tool with template_name set to the exact name below.`;
+        if (duringSmsList.length > 0) {
+          smsBlock += `\n\nDuring-call SMSes (you choose when/whether to send each):`;
+          duringSmsList.forEach((m, i) => {
+            smsBlock += `\n${i + 1}. name="${m.name}" — content: "${m.content}"`;
+          });
+        }
+        if (afterSmsList.length > 0) {
+          smsBlock += `\n\nAfter-call SMSes (sent automatically when the call ends, in this order — do NOT send them yourself):`;
+          afterSmsList.forEach((m, i) => {
+            smsBlock += `\n${i + 1}. name="${m.name}" — content: "${m.content}"`;
+          });
+        }
+        smsBlock += `\n\nRules: Pick the SMS whose purpose matches the moment. Never invent a new SMS. Never paraphrase. If none fit, do not send anything.`;
+        fullInstructions += smsBlock;
+      }
+
       const tools: any[] = [];
 
       if (agentTools.includes("end_call")) {
@@ -464,22 +503,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
       }
 
-      if (smsDuringCall) {
+      if (duringSmsList.length > 0) {
         const recipientHint = callDirection === "inbound"
           ? "the caller's number is the From number of this call"
           : "the called number is the To number of this call";
+        const allowedNames = duringSmsList.map((m) => `"${m.name}"`).join(", ");
         tools.push({
           type: "function",
           name: "send_sms",
-          description: `Send a follow-up SMS text message to the other party RIGHT NOW during the call. Use this when the conversation calls for it (e.g. confirming details, sending a link, or as agreed). The recipient is the other party on this call (${recipientHint}); you do NOT need to pass a phone number. The 'message' parameter is optional — if omitted, the agent's pre-configured SMS template is used (recommended). After calling, briefly confirm to the caller in their language that the SMS has been sent.`,
+          description: `Send one of the pre-configured SMS templates to the other party RIGHT NOW. The recipient is the other party on this call (${recipientHint}) — you do NOT pass a phone number. You also do NOT write the message yourself: pick one of the configured templates by its EXACT name (see AVAILABLE SMS TEMPLATES in your instructions). The server sends the template text VERBATIM. Allowed template_name values: ${allowedNames}. After it sends, briefly confirm to the caller in their language.`,
           parameters: {
             type: "object",
             properties: {
-              message: {
+              template_name: {
                 type: "string",
-                description: "Optional override for the SMS text. If omitted, the configured template is sent. Keep under 1600 chars.",
+                enum: duringSmsList.map((m) => m.name),
+                description: "Exact name of the configured SMS template to send. Must match one of the names listed in AVAILABLE SMS TEMPLATES.",
               },
             },
+            required: ["template_name"],
           },
         });
       }
@@ -660,27 +702,38 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (fnName === "send_sms") {
               let args: any = {};
               try { args = JSON.parse(event.arguments || "{}"); } catch {}
+              const requestedName = typeof args.template_name === "string" ? args.template_name.trim() : "";
               const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
-              const rawBody = (typeof args.message === "string" && args.message.trim()) ? args.message : smsTemplate;
-              const body = substituteVarsRef(rawBody || "");
+
+              // Look up the configured during-call template by exact name.
+              // We NEVER use AI-supplied content — only the verbatim configured template.
+              const tpl = smsMessages.find(
+                (m) => m.trigger === "during" && m.name === requestedName,
+              );
+
               let result: { ok: boolean; sid?: string; error?: string };
+              let bodyForLog = "";
               if (!recipient) {
                 result = { ok: false, error: "No recipient phone number available for this call" };
-              } else if (!body) {
-                result = { ok: false, error: "No SMS body configured" };
+              } else if (!requestedName) {
+                result = { ok: false, error: "template_name is required" };
+              } else if (!tpl) {
+                const allowed = smsMessages.filter((m) => m.trigger === "during").map((m) => m.name).join(", ");
+                result = { ok: false, error: `Unknown template_name "${requestedName}". Allowed: ${allowed || "(none)"}` };
               } else {
-                result = await sendSms(recipient, body);
-                if (result.ok) smsSentDuringCall = true;
+                bodyForLog = substituteVarsRef(tpl.content);
+                result = await sendSms(recipient, bodyForLog);
+                if (result.ok) smsSentNames.add(tpl.name);
               }
-              console.log(`[MediaStream] send_sms → ${recipient} ok=${result.ok} sid=${result.sid || "-"} err=${result.error || "-"} (callId=${callId})`);
-              transcriptLines.push(`[System]: send_sms(to=${recipient}, body="${(body || "").slice(0, 80)}...") → ${result.ok ? "sent " + result.sid : "failed: " + result.error}`);
+              console.log(`[MediaStream] send_sms template="${requestedName}" → ${recipient} ok=${result.ok} sid=${result.sid || "-"} err=${result.error || "-"} (callId=${callId})`);
+              transcriptLines.push(`[System]: send_sms(template="${requestedName}", to=${recipient}, body="${(bodyForLog || "").slice(0, 80)}...") → ${result.ok ? "sent " + result.sid : "failed: " + result.error}`);
               openaiWs!.send(JSON.stringify({
                 type: "conversation.item.create",
                 item: {
                   type: "function_call_output",
                   call_id: event.call_id,
                   output: JSON.stringify(result.ok
-                    ? { success: true, message: "SMS sent successfully. Briefly confirm to the caller in their language." }
+                    ? { success: true, message: `SMS template "${requestedName}" sent. Briefly confirm to the caller in their language.` }
                     : { success: false, error: result.error }),
                 },
               }));
@@ -833,16 +886,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       runPostCallAnalysis(callId, transcript, agentAnalysisPrompt);
     }
 
-    // Post-call SMS (skip if already sent mid-call to avoid duplicates)
-    if (smsAfterCall && smsTemplate && !smsSentDuringCall) {
+    // Post-call SMSes — send every "after" template in chronological (configured) order.
+    // Skip a template if its name was already sent mid-call (avoids duplicates).
+    const afterList = smsMessages.filter((m) => m.trigger === "after");
+    if (afterList.length > 0) {
       const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
-      if (recipient) {
-        const body = substituteVarsRef(smsTemplate);
-        sendSms(recipient, body).then((r) => {
-          console.log(`[MediaStream] Post-call SMS → ${recipient} ok=${r.ok} sid=${r.sid || "-"} err=${r.error || "-"} (callId=${callId})`);
-        });
-      } else {
+      if (!recipient) {
         console.warn(`[MediaStream] Post-call SMS skipped: no recipient (callId=${callId})`);
+      } else {
+        // Send sequentially so they arrive in configured order.
+        (async () => {
+          for (const m of afterList) {
+            if (smsSentNames.has(m.name)) {
+              console.log(`[MediaStream] Post-call SMS "${m.name}" skipped (already sent during call) (callId=${callId})`);
+              continue;
+            }
+            const body = substituteVarsRef(m.content);
+            const r = await sendSms(recipient, body);
+            console.log(`[MediaStream] Post-call SMS "${m.name}" → ${recipient} ok=${r.ok} sid=${r.sid || "-"} err=${r.error || "-"} (callId=${callId})`);
+            if (r.ok) smsSentNames.add(m.name);
+          }
+        })().catch((err) => console.error(`[MediaStream] Post-call SMS loop error:`, err));
       }
     }
   };
