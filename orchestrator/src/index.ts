@@ -6,6 +6,7 @@ import { config } from "./config.js";
 import { healthRouter } from "./routes/health.js";
 import { callsRouter } from "./routes/calls.js";
 import { twilioWebhookRouter } from "./routes/twilio-webhooks.js";
+import { locationRouter } from "./routes/location.js";
 import { handleTwilioMediaStream } from "./ws/media-stream.js";
 
 const app = express();
@@ -16,6 +17,7 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 app.use("/", healthRouter);
 app.use("/api/calls", callsRouter);
+app.use("/api/location", locationRouter);
 app.use("/twilio", twilioWebhookRouter);
 
 // Create HTTP server
