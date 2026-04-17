@@ -160,9 +160,8 @@ export default function CreateAgent() {
   const [timezone, setTimezone] = useState("Europe/Tallinn");
   const [knowledgeItems, setKnowledgeItems] = useState<Array<{ id: string; name: string; content: string }>>([]);
   const [knowledgeText, setKnowledgeText] = useState("");
-  const [smsTemplate, setSmsTemplate] = useState("");
-  const [smsDuringCall, setSmsDuringCall] = useState(false);
-  const [smsAfterCall, setSmsAfterCall] = useState(false);
+  type SmsMessage = { id: string; name: string; content: string; trigger: "during" | "after" };
+  const [smsMessages, setSmsMessages] = useState<SmsMessage[]>([]);
 
   const isInbound = type === "inbound";
 
