@@ -932,6 +932,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
 
+    // Stop listening for inbound SMS replies for this call
+    if (inboundSmsChannel) {
+      try {
+        inboundSmsChannel.unsubscribe();
+      } catch {}
+      inboundSmsChannel = null;
+    }
+
     const endTime = new Date();
     const durationSeconds = callStartTime
       ? Math.round((endTime.getTime() - callStartTime.getTime()) / 1000)
