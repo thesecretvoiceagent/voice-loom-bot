@@ -111,14 +111,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const enableTurnDetection = () => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    // Flush any audio that accumulated during greeting playback (echo, line noise)
+    // BEFORE enabling VAD, so it doesn't immediately fire a false speech_started.
+    openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: {
         turn_detection: {
           type: "server_vad",
-          threshold: 0.5,
-          prefix_padding_ms: 400,
-          silence_duration_ms: 700,
+          threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
+          prefix_padding_ms: 500,
+          silence_duration_ms: 900,   // Wait longer before considering speech ended
         },
       },
     }));
