@@ -190,6 +190,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let smsMessages: SmsMessage[] = [];
   const smsSentNames = new Set<string>();
   let inboundSmsChannel: RealtimeChannel | null = null;
+  let locationConfirmChannel: RealtimeChannel | null = null;
   let resolvedAgentIdRef: string | null = null;
   let substituteVarsRef: (text: string) => string = (t) => t;
   let maxCallDurationMinutes: number = 0;
@@ -410,6 +411,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       });
     };
 
+    // Inject location confirmation link variable so SMS templates can use {{location_link}}.
+    // Token = HMAC-SHA256(callId, LOCATION_TOKEN_SECRET) — verified server-side on /api/location/confirm.
+    const azureStaticBase = (process.env.AZURE_STATIC_BASE_URL || "").replace(/\/+$/, "");
+    const tokenSecret = process.env.LOCATION_TOKEN_SECRET || "";
+    if (callId && azureStaticBase && tokenSecret) {
+      try {
+        const crypto = await import("crypto");
+        const locToken = crypto.createHmac("sha256", tokenSecret).update(callId).digest("hex");
+        callVariables.location_link = `${azureStaticBase}/index.html?caseId=${encodeURIComponent(callId)}&token=${locToken}`;
+      } catch (err) {
+        console.error(`[MediaStream] Failed to build location_link:`, err);
+      }
+    }
+
     if (Object.keys(callVariables).length > 0) {
       instructions = substituteVars(instructions);
       greeting = substituteVars(greeting);
@@ -482,6 +497,52 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             });
         } catch (err) {
           console.error(`[MediaStream] Failed to subscribe to inbound SMS:`, err);
+        }
+
+        // Subscribe to location confirmation: when the customer confirms their pin
+        // on the static page, the orchestrator's /api/location/confirm endpoint sets
+        // location_confirmed=true on the calls row. Inject a system message so the AI
+        // reads the address back to the caller during the live conversation.
+        try {
+          locationConfirmChannel = sb
+            .channel(`call-location-${callId}`)
+            .on(
+              "postgres_changes",
+              {
+                event: "UPDATE",
+                schema: "public",
+                table: "calls",
+                filter: `id=eq.${callId}`,
+              },
+              (payload: any) => {
+                const row = payload?.new;
+                const prev = payload?.old;
+                if (!row) return;
+                const justConfirmed =
+                  row.location_confirmed === true && prev?.location_confirmed !== true;
+                if (!justConfirmed) return;
+                const addr = (row.location_address || "").toString().slice(0, 300);
+                console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
+                transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
+                if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+                  const sysMsg = `📍 Klient kinnitas oma asukoha SMS-i lingilt: "${addr}". Loe see talle vestluses kohe tagasi sama keeles, mida vestluses kasutate, ja küsi kinnitust. Ära paku midagi muud — ainult kinnita asukoht.`;
+                  openaiWs.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "message",
+                      role: "system",
+                      content: [{ type: "input_text", text: sysMsg }],
+                    },
+                  }));
+                  openaiWs.send(JSON.stringify({ type: "response.create" }));
+                }
+              },
+            )
+            .subscribe((status: string) => {
+              console.log(`[MediaStream] Location channel status (callId=${callId}): ${status}`);
+            });
+        } catch (err) {
+          console.error(`[MediaStream] Failed to subscribe to location updates:`, err);
         }
       }
     }
@@ -1054,6 +1115,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         inboundSmsChannel.unsubscribe();
       } catch {}
       inboundSmsChannel = null;
+    }
+    if (locationConfirmChannel) {
+      try {
+        locationConfirmChannel.unsubscribe();
+      } catch {}
+      locationConfirmChannel = null;
     }
 
     const endTime = new Date();
