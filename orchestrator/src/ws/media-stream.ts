@@ -651,6 +651,36 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               openaiWs!.send(JSON.stringify({ type: "response.create" }));
               transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
             }
+
+            if (fnName === "send_sms") {
+              let args: any = {};
+              try { args = JSON.parse(event.arguments || "{}"); } catch {}
+              const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
+              const rawBody = (typeof args.message === "string" && args.message.trim()) ? args.message : smsTemplate;
+              const body = substituteVarsRef(rawBody || "");
+              let result: { ok: boolean; sid?: string; error?: string };
+              if (!recipient) {
+                result = { ok: false, error: "No recipient phone number available for this call" };
+              } else if (!body) {
+                result = { ok: false, error: "No SMS body configured" };
+              } else {
+                result = await sendSms(recipient, body);
+                if (result.ok) smsSentDuringCall = true;
+              }
+              console.log(`[MediaStream] send_sms → ${recipient} ok=${result.ok} sid=${result.sid || "-"} err=${result.error || "-"} (callId=${callId})`);
+              transcriptLines.push(`[System]: send_sms(to=${recipient}, body="${(body || "").slice(0, 80)}...") → ${result.ok ? "sent " + result.sid : "failed: " + result.error}`);
+              openaiWs!.send(JSON.stringify({
+                type: "conversation.item.create",
+                item: {
+                  type: "function_call_output",
+                  call_id: event.call_id,
+                  output: JSON.stringify(result.ok
+                    ? { success: true, message: "SMS sent successfully. Briefly confirm to the caller in their language." }
+                    : { success: false, error: result.error }),
+                },
+              }));
+              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+            }
             break;
           }
 
