@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { createClient, SupabaseClient, RealtimeChannel } from "@supabase/supabase-js";
 import { config } from "../config.js";
 import {
   fetchAgentConfig,
@@ -7,6 +8,52 @@ import {
   upsertCall,
   updateCall,
 } from "../supabase.js";
+
+// Singleton supabase client for realtime subscriptions (uses anon key — RLS allows authenticated SELECT,
+// but for realtime on sms_messages we'll publish to anon role via the table's REPLICA IDENTITY FULL setup).
+let supabaseRealtime: SupabaseClient | null = null;
+function getSupabaseRealtime(): SupabaseClient | null {
+  if (supabaseRealtime) return supabaseRealtime;
+  if (!config.supabase.url || !config.supabase.anonKey) return null;
+  supabaseRealtime = createClient(config.supabase.url.replace(/\/+$/, ""), config.supabase.anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  return supabaseRealtime;
+}
+
+// Persist an SMS row to the database via the call-write edge function pattern.
+// Uses a direct REST insert with anon key (RLS allows anon INSERT on sms_messages).
+async function persistSmsMessage(row: {
+  call_id: string | null;
+  agent_id: string | null;
+  template_name: string | null;
+  direction: "inbound" | "outbound";
+  from_number: string;
+  to_number: string;
+  body: string;
+  twilio_sid: string | null;
+  status: string;
+}): Promise<void> {
+  if (!config.supabase.url || !config.supabase.anonKey) return;
+  try {
+    const url = `${config.supabase.url.replace(/\/+$/, "")}/rest/v1/sms_messages`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        apikey: config.supabase.anonKey,
+        Authorization: `Bearer ${config.supabase.anonKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify(row),
+    });
+    if (!res.ok) {
+      console.error(`[persistSmsMessage] HTTP ${res.status}`, await res.text());
+    }
+  } catch (err) {
+    console.error(`[persistSmsMessage] error:`, err);
+  }
+}
 
 // Post-call analysis via edge function
 async function runPostCallAnalysis(callId: string, transcript: string, analysisPrompt: string) {
@@ -139,9 +186,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callStartTime: Date | null = null;
   let agentAnalysisPrompt: string = "";
   let agentKnowledgeBase: any[] = [];
-  type SmsMessage = { id?: string; name: string; content: string; trigger: "during" | "after"; order?: number };
+  type SmsMessage = { id?: string; name: string; description?: string; content: string; trigger: "during" | "after"; order?: number };
   let smsMessages: SmsMessage[] = [];
   const smsSentNames = new Set<string>();
+  let inboundSmsChannel: RealtimeChannel | null = null;
   let substituteVarsRef: (text: string) => string = (t) => t;
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -274,6 +322,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             .map((m, idx): SmsMessage => ({
               id: m.id,
               name: (m.name || `sms_${idx + 1}`).toString().trim(),
+              description: typeof m.description === "string" ? m.description.trim() : "",
               content: m.content,
               trigger: m.trigger === "after" ? "after" : "during",
               order: typeof m.order === "number" ? m.order : idx,
@@ -283,10 +332,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           const legacyDuring = (settings as any).sms_during_call === true;
           const legacyAfter = (settings as any).sms_after_call === true;
           if (legacyDuring) {
-            smsMessages.push({ name: "default", content: (settings as any).sms_template, trigger: "during", order: 0 });
+            smsMessages.push({ name: "default", description: "", content: (settings as any).sms_template, trigger: "during", order: 0 });
           }
           if (legacyAfter) {
-            smsMessages.push({ name: "default", content: (settings as any).sms_template, trigger: "after", order: 1 });
+            smsMessages.push({ name: "default", description: "", content: (settings as any).sms_template, trigger: "after", order: 1 });
           }
         }
       }
