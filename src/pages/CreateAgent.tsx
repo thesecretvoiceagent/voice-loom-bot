@@ -285,11 +285,15 @@ export default function CreateAgent() {
 
     try {
       if (editId) {
-        const { error } = await supabase
+        const { data, error } = await supabase
           .from("agents")
           .update(agentData as any)
-          .eq("id", editId);
+          .eq("id", editId)
+          .select("id");
         if (error) throw error;
+        if (!data || data.length === 0) {
+          throw new Error("Update affected 0 rows — you may not have permission to edit this agent.");
+        }
         toast.success(`Agent updated · SMS: ${smsDuringCall ? "during" : "off"}/${smsAfterCall ? "after" : "off"}`);
       } else {
         const { error } = await supabase
