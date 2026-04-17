@@ -290,7 +290,7 @@ export default function CreateAgent() {
           .update(agentData as any)
           .eq("id", editId);
         if (error) throw error;
-        toast.success("Agent updated");
+        toast.success(`Agent updated · SMS: ${smsDuringCall ? "during" : "off"}/${smsAfterCall ? "after" : "off"}`);
       } else {
         const { error } = await supabase
           .from("agents")
