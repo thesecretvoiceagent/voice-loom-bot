@@ -518,7 +518,7 @@ export default function CreateAgent() {
                         <p className="font-medium text-foreground text-sm">Send SMS after call ends</p>
                         <p className="text-xs text-muted-foreground">Automatically send the template once the call completes</p>
                       </div>
-                      <Switch checked={smsAfterCall} onCheckedChange={setSmsAfterCall} disabled={!smsTemplate.trim()} />
+                      <Switch checked={smsAfterCall} onCheckedChange={setSmsAfterCall} />
                     </div>
                   </div>
                 </div>
