@@ -503,22 +503,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
       }
 
-      if (smsDuringCall) {
+      if (duringSmsList.length > 0) {
         const recipientHint = callDirection === "inbound"
           ? "the caller's number is the From number of this call"
           : "the called number is the To number of this call";
+        const allowedNames = duringSmsList.map((m) => `"${m.name}"`).join(", ");
         tools.push({
           type: "function",
           name: "send_sms",
-          description: `Send a follow-up SMS text message to the other party RIGHT NOW during the call. Use this when the conversation calls for it (e.g. confirming details, sending a link, or as agreed). The recipient is the other party on this call (${recipientHint}); you do NOT need to pass a phone number. The 'message' parameter is optional — if omitted, the agent's pre-configured SMS template is used (recommended). After calling, briefly confirm to the caller in their language that the SMS has been sent.`,
+          description: `Send one of the pre-configured SMS templates to the other party RIGHT NOW. The recipient is the other party on this call (${recipientHint}) — you do NOT pass a phone number. You also do NOT write the message yourself: pick one of the configured templates by its EXACT name (see AVAILABLE SMS TEMPLATES in your instructions). The server sends the template text VERBATIM. Allowed template_name values: ${allowedNames}. After it sends, briefly confirm to the caller in their language.`,
           parameters: {
             type: "object",
             properties: {
-              message: {
+              template_name: {
                 type: "string",
-                description: "Optional override for the SMS text. If omitted, the configured template is sent. Keep under 1600 chars.",
+                enum: duringSmsList.map((m) => m.name),
+                description: "Exact name of the configured SMS template to send. Must match one of the names listed in AVAILABLE SMS TEMPLATES.",
               },
             },
+            required: ["template_name"],
           },
         });
       }
