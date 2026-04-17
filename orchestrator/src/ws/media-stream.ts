@@ -584,11 +584,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
       console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || "(none)"}"`);
 
-      const responseCreate: any = { type: "response.create" };
+      // Initial greeting must NEVER be cut off mid-sentence — override the per-turn
+      // token cap (220) so the opener can run as long as it needs. Subsequent turns
+      // still inherit the session-level cap from session.update.
+      const responseCreate: any = {
+        type: "response.create",
+        response: {
+          max_output_tokens: "inf",
+        },
+      };
       if (greeting) {
-        responseCreate.response = {
-          instructions: `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`,
-        };
+        responseCreate.response.instructions = `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`;
       }
       openaiWs.send(JSON.stringify(responseCreate));
 
