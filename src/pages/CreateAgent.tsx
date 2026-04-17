@@ -510,7 +510,7 @@ export default function CreateAgent() {
                         <p className="font-medium text-foreground text-sm">Send SMS during call</p>
                         <p className="text-xs text-muted-foreground">AI can trigger send_sms tool mid-conversation when relevant</p>
                       </div>
-                      <Switch checked={smsDuringCall} onCheckedChange={setSmsDuringCall} disabled={!smsTemplate.trim()} />
+                      <Switch checked={smsDuringCall} onCheckedChange={setSmsDuringCall} />
                     </div>
 
                     <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
@@ -518,7 +518,7 @@ export default function CreateAgent() {
                         <p className="font-medium text-foreground text-sm">Send SMS after call ends</p>
                         <p className="text-xs text-muted-foreground">Automatically send the template once the call completes</p>
                       </div>
-                      <Switch checked={smsAfterCall} onCheckedChange={setSmsAfterCall} disabled={!smsTemplate.trim()} />
+                      <Switch checked={smsAfterCall} onCheckedChange={setSmsAfterCall} />
                     </div>
                   </div>
                 </div>
