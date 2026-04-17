@@ -70,6 +70,44 @@ async function crmLookup(params: { phone_number?: string; reg_no?: string; descr
   }
 }
 
+// Send SMS via Twilio REST API. Returns true on success.
+async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: string; error?: string }> {
+  if (!config.twilio.isConfigured) {
+    return { ok: false, error: "Twilio not configured" };
+  }
+  if (!to || !body) {
+    return { ok: false, error: "Missing 'to' or 'body'" };
+  }
+  if (!config.twilio.fromNumber) {
+    return { ok: false, error: "TWILIO_FROM_NUMBER not configured" };
+  }
+  try {
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${config.twilio.accountSid}/Messages.json`;
+    const authHeader = Buffer.from(`${config.twilio.accountSid}:${config.twilio.authToken}`).toString("base64");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${authHeader}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        To: to,
+        From: config.twilio.fromNumber,
+        Body: body.slice(0, 1600),
+      }).toString(),
+    });
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      console.error(`[sendSms] HTTP ${res.status}`, data);
+      return { ok: false, error: data?.message || `HTTP ${res.status}` };
+    }
+    return { ok: true, sid: data?.sid };
+  } catch (err: any) {
+    console.error(`[sendSms] error:`, err);
+    return { ok: false, error: err?.message || "send failed" };
+  }
+}
+
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
 const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
@@ -101,6 +139,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callStartTime: Date | null = null;
   let agentAnalysisPrompt: string = "";
   let agentKnowledgeBase: any[] = [];
+  let smsTemplate: string = "";
+  let smsDuringCall: boolean = false;
+  let smsAfterCall: boolean = false;
+  let smsSentDuringCall = false;
+  let substituteVarsRef: (text: string) => string = (t) => t;
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let greetingInProgress = true; // Protect initial greeting from interruption
@@ -224,6 +267,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           antiBargeinEnabled = true;
           console.log(`[MediaStream] Anti-barge-in enabled (callId=${callId})`);
         }
+        // SMS settings
+        if (typeof settings.sms_template === "string") smsTemplate = settings.sms_template;
+        smsDuringCall = settings.sms_during_call === true && !!smsTemplate;
+        smsAfterCall = settings.sms_after_call === true && !!smsTemplate;
       }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
@@ -252,18 +299,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
 
     // Substitute template variables (e.g. {{first_name}}, {{caller_name}})
+    const substituteVars = (text: string): string => {
+      if (!text) return text;
+      return text.replace(/\{\{([^}]+)\}\}/g, (match, varName) => {
+        const trimmed = varName.trim();
+        if (callVariables[trimmed] !== undefined) return callVariables[trimmed];
+        return match;
+      });
+    };
+
     if (Object.keys(callVariables).length > 0) {
-      const substituteVars = (text: string): string => {
-        return text.replace(/\{\{([^}]+)\}\}/g, (match, varName) => {
-          const trimmed = varName.trim();
-          if (callVariables[trimmed] !== undefined) return callVariables[trimmed];
-          return match; // Leave unmatched variables as-is
-        });
-      };
       instructions = substituteVars(instructions);
       greeting = substituteVars(greeting);
       console.log(`[MediaStream] Substituted ${Object.keys(callVariables).length} variables into prompt (callId=${callId})`);
     }
+    // Make substitute available outside this scope for SMS sending
+    substituteVarsRef = substituteVars;
 
     // Write initial call record to DB
     callStartTime = new Date();
@@ -402,6 +453,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               description: {
                 type: "string",
                 description: "Free-text vehicle description in any language (Estonian preferred), e.g. 'must BMW 535D 2006' or 'punane Saab 9-5'. Use when caller describes the car instead of giving the plate.",
+              },
+            },
+          },
+        });
+      }
+
+      if (smsDuringCall) {
+        const recipientHint = callDirection === "inbound"
+          ? "the caller's number is the From number of this call"
+          : "the called number is the To number of this call";
+        tools.push({
+          type: "function",
+          name: "send_sms",
+          description: `Send a follow-up SMS text message to the other party RIGHT NOW during the call. Use this when the conversation calls for it (e.g. confirming details, sending a link, or as agreed). The recipient is the other party on this call (${recipientHint}); you do NOT need to pass a phone number. The 'message' parameter is optional — if omitted, the agent's pre-configured SMS template is used (recommended). After calling, briefly confirm to the caller in their language that the SMS has been sent.`,
+          parameters: {
+            type: "object",
+            properties: {
+              message: {
+                type: "string",
+                description: "Optional override for the SMS text. If omitted, the configured template is sent. Keep under 1600 chars.",
               },
             },
           },
@@ -580,6 +651,36 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               openaiWs!.send(JSON.stringify({ type: "response.create" }));
               transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
             }
+
+            if (fnName === "send_sms") {
+              let args: any = {};
+              try { args = JSON.parse(event.arguments || "{}"); } catch {}
+              const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
+              const rawBody = (typeof args.message === "string" && args.message.trim()) ? args.message : smsTemplate;
+              const body = substituteVarsRef(rawBody || "");
+              let result: { ok: boolean; sid?: string; error?: string };
+              if (!recipient) {
+                result = { ok: false, error: "No recipient phone number available for this call" };
+              } else if (!body) {
+                result = { ok: false, error: "No SMS body configured" };
+              } else {
+                result = await sendSms(recipient, body);
+                if (result.ok) smsSentDuringCall = true;
+              }
+              console.log(`[MediaStream] send_sms → ${recipient} ok=${result.ok} sid=${result.sid || "-"} err=${result.error || "-"} (callId=${callId})`);
+              transcriptLines.push(`[System]: send_sms(to=${recipient}, body="${(body || "").slice(0, 80)}...") → ${result.ok ? "sent " + result.sid : "failed: " + result.error}`);
+              openaiWs!.send(JSON.stringify({
+                type: "conversation.item.create",
+                item: {
+                  type: "function_call_output",
+                  call_id: event.call_id,
+                  output: JSON.stringify(result.ok
+                    ? { success: true, message: "SMS sent successfully. Briefly confirm to the caller in their language." }
+                    : { success: false, error: result.error }),
+                },
+              }));
+              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+            }
             break;
           }
 
@@ -725,6 +826,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // Run post-call analysis if we have a transcript and analysis prompt
     if (transcript && agentAnalysisPrompt) {
       runPostCallAnalysis(callId, transcript, agentAnalysisPrompt);
+    }
+
+    // Post-call SMS (skip if already sent mid-call to avoid duplicates)
+    if (smsAfterCall && smsTemplate && !smsSentDuringCall) {
+      const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
+      if (recipient) {
+        const body = substituteVarsRef(smsTemplate);
+        sendSms(recipient, body).then((r) => {
+          console.log(`[MediaStream] Post-call SMS → ${recipient} ok=${r.ok} sid=${r.sid || "-"} err=${r.error || "-"} (callId=${callId})`);
+        });
+      } else {
+        console.warn(`[MediaStream] Post-call SMS skipped: no recipient (callId=${callId})`);
+      }
     }
   };
 
