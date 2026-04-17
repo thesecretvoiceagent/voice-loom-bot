@@ -200,6 +200,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let sessionConfigured = false;
   let pendingInitialResponse = false;
   let initialResponseFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let inboundAudioCooldownUntil = 0;
+  let turnDetectionEnableTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastAssistantTranscript = "";
+  let repeatedAssistantTranscriptCount = 0;
+  let pendingRecoveryCooldownMs = 0;
 
   // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
   let antiBargeinEnabled = false;
@@ -215,6 +220,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       clearTimeout(markFallbackTimer);
       markFallbackTimer = null;
     }
+  };
+
+  const clearTurnDetectionEnableTimer = () => {
+    if (turnDetectionEnableTimer) {
+      clearTimeout(turnDetectionEnableTimer);
+      turnDetectionEnableTimer = null;
+    }
+  };
+
+  const normalizeTranscript = (txt: string) =>
+    txt
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim();
+
+  const startInboundAudioCooldown = (ms: number, reason: string) => {
+    inboundAudioCooldownUntil = Math.max(inboundAudioCooldownUntil, Date.now() + ms);
+    if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+      openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+    }
+    console.log(`[MediaStream] Inbound audio cooldown ${ms}ms after ${reason} (callId=${callId})`);
   };
 
   const resetResponseState = () => {
@@ -250,14 +276,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (responsePlaybackMarkName) return;
 
     const completedResponseId = activeResponseId;
+    const recoveryCooldownMs = pendingRecoveryCooldownMs || 1200;
+    pendingRecoveryCooldownMs = 0;
+
     resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
+    startInboundAudioCooldown(recoveryCooldownMs, source);
 
     if (greetingInProgress) {
       greetingInProgress = false;
-      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD (callId=${callId}, responseId=${completedResponseId})`);
-      enableTurnDetection();
+      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after cooldown (callId=${callId}, responseId=${completedResponseId})`);
+      clearTurnDetectionEnableTimer();
+      turnDetectionEnableTimer = setTimeout(() => {
+        turnDetectionEnableTimer = null;
+        enableTurnDetection();
+      }, recoveryCooldownMs);
       return;
     }
 
@@ -459,6 +493,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
+    inboundAudioCooldownUntil = 0;
+    lastAssistantTranscript = "";
+    repeatedAssistantTranscriptCount = 0;
+    pendingRecoveryCooldownMs = 0;
+    clearTurnDetectionEnableTimer();
     if (initialResponseFallbackTimer) {
       clearTimeout(initialResponseFallbackTimer);
       initialResponseFallbackTimer = null;
@@ -515,9 +554,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     openaiWs.on("open", () => {
       console.log(`[MediaStream] Connected to OpenAI Realtime (callId=${callId}, voice=${voice})`);
 
-      let fullInstructions = greeting
-        ? `${instructions}\n\nIMPORTANT: You are starting a phone call RIGHT NOW. Your FIRST message must be your greeting. Say exactly: "${greeting}" — in the same language, naturally. Do NOT say anything in English unless the greeting is in English. Do NOT wait for the caller to speak first. Speak immediately.`
-        : instructions;
+      // Note: do NOT bake "your first message MUST be the greeting" into the long-lived
+      // session instructions — that text persists for the whole call and can cause the
+      // model to keep re-greeting / repeating the same opener in a loop. The greeting is
+      // injected ONCE via the initial response.create instructions instead.
+      let fullInstructions = instructions;
 
       if (agentKnowledgeBase && agentKnowledgeBase.length > 0) {
         const kbText = agentKnowledgeBase
@@ -638,7 +679,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           instructions: fullInstructions,
           voice,
           temperature: sessionTemperature,
-          max_response_output_tokens: "inf",
+          // Cap each turn so the model can't ramble or loop on the same sentence forever.
+          max_response_output_tokens: 220,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
@@ -736,14 +778,38 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
-          case "response.audio_transcript.done":
-            console.log(`[MediaStream] AI said (callId=${callId}): ${event.transcript}`);
-            transcriptLines.push(`[Agent]: ${event.transcript}`);
+          case "response.audio_transcript.done": {
+            const assistantTranscript = (event.transcript || "").toString();
+            console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
+            transcriptLines.push(`[Agent]: ${assistantTranscript}`);
+
+            // Detect the model repeating itself (echo loop). If it says effectively the
+            // same line twice in a row without the user speaking in between, extend the
+            // post-speech cooldown so its own audio can't keep re-triggering it.
+            const normalizedAssistantTranscript = normalizeTranscript(assistantTranscript);
+            if (normalizedAssistantTranscript) {
+              if (normalizedAssistantTranscript === lastAssistantTranscript) {
+                repeatedAssistantTranscriptCount += 1;
+              } else {
+                lastAssistantTranscript = normalizedAssistantTranscript;
+                repeatedAssistantTranscriptCount = 1;
+              }
+
+              if (repeatedAssistantTranscriptCount >= 2) {
+                pendingRecoveryCooldownMs = Math.max(pendingRecoveryCooldownMs, 2500);
+                console.warn(`[MediaStream] Detected repeated assistant line x${repeatedAssistantTranscriptCount}, extending echo recovery cooldown (callId=${callId})`);
+              }
+            }
             break;
+          }
 
           case "conversation.item.input_audio_transcription.completed":
             console.log(`[MediaStream] User said (callId=${callId}): ${event.transcript}`);
             transcriptLines.push(`[User]: ${event.transcript}`);
+            // Real user speech resets the repeat counter.
+            lastAssistantTranscript = "";
+            repeatedAssistantTranscriptCount = 0;
+            pendingRecoveryCooldownMs = 0;
             break;
 
           case "response.function_call_arguments.done": {
@@ -946,6 +1012,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         initialResponseFallbackTimer = null;
       }
       clearMarkFallback();
+      clearTurnDetectionEnableTimer();
       console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
       openaiWs = null;
       finalizeCall();
@@ -979,6 +1046,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const finalizeCall = () => {
     if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
+    clearTurnDetectionEnableTimer();
 
     // Stop listening for inbound SMS replies for this call
     if (inboundSmsChannel) {
@@ -1084,6 +1152,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         case "media":
           // Don't forward audio to OpenAI during greeting (prevents VAD triggering)
           if (greetingInProgress) {
+            break;
+          }
+          // Short cooldown after AI speech finishes — prevents the model from hearing its
+          // own just-played audio (echo loop) and re-triggering the same response.
+          if (Date.now() < inboundAudioCooldownUntil) {
             break;
           }
           // Don't forward audio when anti-barge-in is active and AI is speaking
