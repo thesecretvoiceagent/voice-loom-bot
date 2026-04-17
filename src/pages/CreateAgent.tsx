@@ -487,6 +487,40 @@ export default function CreateAgent() {
                     <p className="text-sm text-muted-foreground">Instructions for analyzing call transcripts</p>
                   </div>
                   <Textarea value={analysisPrompt} onChange={(e) => setAnalysisPrompt(e.target.value)} placeholder="Analyze this call transcript..." className="min-h-[100px]" />
+
+                  {/* SMS Follow-up */}
+                  <div className="space-y-3 pt-4 border-t border-border">
+                    <div>
+                      <h4 className="font-semibold text-foreground">SMS Follow-up</h4>
+                      <p className="text-sm text-muted-foreground">
+                        Send an SMS to the caller. Use {"{{caller_name}}"}, {"{{caller_reg_no}}"}, {"{{first_name}}"} and other variables.
+                      </p>
+                    </div>
+                    <Textarea
+                      value={smsTemplate}
+                      onChange={(e) => setSmsTemplate(e.target.value)}
+                      placeholder="Tere {{caller_name}}, täname kõne eest! Lisainfo: ..."
+                      className="min-h-[80px]"
+                      maxLength={1600}
+                    />
+                    <div className="text-xs text-muted-foreground text-right">{smsTemplate.length}/1600</div>
+
+                    <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                      <div>
+                        <p className="font-medium text-foreground text-sm">Send SMS during call</p>
+                        <p className="text-xs text-muted-foreground">AI can trigger send_sms tool mid-conversation when relevant</p>
+                      </div>
+                      <Switch checked={smsDuringCall} onCheckedChange={setSmsDuringCall} disabled={!smsTemplate.trim()} />
+                    </div>
+
+                    <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                      <div>
+                        <p className="font-medium text-foreground text-sm">Send SMS after call ends</p>
+                        <p className="text-xs text-muted-foreground">Automatically send the template once the call completes</p>
+                      </div>
+                      <Switch checked={smsAfterCall} onCheckedChange={setSmsAfterCall} disabled={!smsTemplate.trim()} />
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
