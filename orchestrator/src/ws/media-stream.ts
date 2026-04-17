@@ -45,7 +45,7 @@ async function runPostCallAnalysis(callId: string, transcript: string, analysisP
 }
 
 // CRM lookup via edge function — used by inbound bot to identify caller / look up vehicle by reg_no
-async function crmLookup(params: { phone_number?: string; reg_no?: string }): Promise<any | null> {
+async function crmLookup(params: { phone_number?: string; reg_no?: string; description?: string }): Promise<any | null> {
   if (!config.supabase.url || !config.supabase.anonKey) return null;
   try {
     const url = `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/crm-lookup`;
@@ -387,17 +387,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "lookup_vehicle",
-          description: "Look up a vehicle in the CRM by registration plate (reg_no) or by phone number. Use when the caller gives you their plate (registreerimismärk) or to verify identity. Returns owner name, vehicle details, insurer, cover type and status. If no match, returns null.",
+          description: "Look up a vehicle in the CRM. ALWAYS call this immediately when the caller mentions ANY identifying detail — a registration plate (registreerimismärk like 484DLC), a phone number, OR a description of the car (make/model/color/year, e.g. 'must BMW 535D 2006'). Use the description field as a fallback when you cannot make out the plate clearly. Returns owner name, vehicle, insurer, cover type/status. If no match, returns found:false.",
           parameters: {
             type: "object",
             properties: {
               reg_no: {
                 type: "string",
-                description: "Estonian registration plate, e.g. '495BJS'. Strip spaces, uppercase.",
+                description: "Estonian registration plate, e.g. '495BJS'. Strip spaces, uppercase. Pass even if you are not 100% sure — server does fuzzy matching.",
               },
               phone_number: {
                 type: "string",
                 description: "Phone number in E.164 format, e.g. '+3725541645'.",
+              },
+              description: {
+                type: "string",
+                description: "Free-text vehicle description in any language (Estonian preferred), e.g. 'must BMW 535D 2006' or 'punane Saab 9-5'. Use when caller describes the car instead of giving the plate.",
               },
             },
           },
@@ -420,6 +424,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
             model: "whisper-1",
+            // Lock STT to Estonian — most callers speak ET. Mixed-language whisper
+            // mangles plates like 484DLC → 484DLT, which breaks CRM lookups.
+            language: "et",
+            prompt: "Eesti keelne kõne. Auto registreerimismärgid on kujul kolm numbrit ja kolm tähte, näiteks 484DLC, 495BJS, 606BSB, 130XMS.",
           },
           // Start with VAD disabled — we enable it after the greeting playback is fully complete,
           // or immediately if greetings are allowed to be interruptible.
@@ -556,6 +564,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               const vehicle = await crmLookup({
                 phone_number: args.phone_number,
                 reg_no: args.reg_no,
+                description: args.description,
               });
               const output = vehicle
                 ? { found: true, vehicle }
