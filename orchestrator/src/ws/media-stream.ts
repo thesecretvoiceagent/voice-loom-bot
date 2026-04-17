@@ -44,6 +44,32 @@ async function runPostCallAnalysis(callId: string, transcript: string, analysisP
   }
 }
 
+// CRM lookup via edge function — used by inbound bot to identify caller / look up vehicle by reg_no
+async function crmLookup(params: { phone_number?: string; reg_no?: string }): Promise<any | null> {
+  if (!config.supabase.url || !config.supabase.anonKey) return null;
+  try {
+    const url = `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/crm-lookup`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.supabase.anonKey}`,
+        apikey: config.supabase.anonKey,
+      },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+      console.error(`[crmLookup] HTTP ${res.status} ${await res.text()}`);
+      return null;
+    }
+    const data = await res.json();
+    return data?.vehicle || null;
+  } catch (err) {
+    console.error(`[crmLookup] error:`, err);
+    return null;
+  }
+}
+
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
 const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
