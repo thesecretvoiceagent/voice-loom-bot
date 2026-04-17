@@ -139,10 +139,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callStartTime: Date | null = null;
   let agentAnalysisPrompt: string = "";
   let agentKnowledgeBase: any[] = [];
-  let smsTemplate: string = "";
-  let smsDuringCall: boolean = false;
-  let smsAfterCall: boolean = false;
-  let smsSentDuringCall = false;
+  type SmsMessage = { id?: string; name: string; content: string; trigger: "during" | "after"; order?: number };
+  let smsMessages: SmsMessage[] = [];
+  const smsSentNames = new Set<string>();
   let substituteVarsRef: (text: string) => string = (t) => t;
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
