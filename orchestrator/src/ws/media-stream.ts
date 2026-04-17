@@ -886,16 +886,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       runPostCallAnalysis(callId, transcript, agentAnalysisPrompt);
     }
 
-    // Post-call SMS (skip if already sent mid-call to avoid duplicates)
-    if (smsAfterCall && smsTemplate && !smsSentDuringCall) {
+    // Post-call SMSes — send every "after" template in chronological (configured) order.
+    // Skip a template if its name was already sent mid-call (avoids duplicates).
+    const afterList = smsMessages.filter((m) => m.trigger === "after");
+    if (afterList.length > 0) {
       const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
-      if (recipient) {
-        const body = substituteVarsRef(smsTemplate);
-        sendSms(recipient, body).then((r) => {
-          console.log(`[MediaStream] Post-call SMS → ${recipient} ok=${r.ok} sid=${r.sid || "-"} err=${r.error || "-"} (callId=${callId})`);
-        });
-      } else {
+      if (!recipient) {
         console.warn(`[MediaStream] Post-call SMS skipped: no recipient (callId=${callId})`);
+      } else {
+        // Send sequentially so they arrive in configured order.
+        (async () => {
+          for (const m of afterList) {
+            if (smsSentNames.has(m.name)) {
+              console.log(`[MediaStream] Post-call SMS "${m.name}" skipped (already sent during call) (callId=${callId})`);
+              continue;
+            }
+            const body = substituteVarsRef(m.content);
+            const r = await sendSms(recipient, body);
+            console.log(`[MediaStream] Post-call SMS "${m.name}" → ${recipient} ok=${r.ok} sid=${r.sid || "-"} err=${r.error || "-"} (callId=${callId})`);
+            if (r.ok) smsSentNames.add(m.name);
+          }
+        })().catch((err) => console.error(`[MediaStream] Post-call SMS loop error:`, err));
       }
     }
   };
