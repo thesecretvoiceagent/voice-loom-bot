@@ -201,9 +201,38 @@ export default function CreateAgent() {
         setTemperature([(agent.settings as any).temperature ?? 0.6]);
         setUninterruptibleGreeting((agent.settings as any).uninterruptible_greeting ?? true);
         setAntiBargein((agent.settings as any).anti_barge_in ?? false);
-        setSmsTemplate((agent.settings as any).sms_template ?? "");
-        setSmsDuringCall((agent.settings as any).sms_during_call ?? false);
-        setSmsAfterCall((agent.settings as any).sms_after_call ?? false);
+        const rawSettings = agent.settings as any;
+        if (Array.isArray(rawSettings.sms_messages)) {
+          setSmsMessages(rawSettings.sms_messages);
+        } else if (rawSettings.sms_template) {
+          // Backward-compat: migrate single template + flags into the new array.
+          const migrated: SmsMessage[] = [];
+          if (rawSettings.sms_during_call) {
+            migrated.push({
+              id: crypto.randomUUID(),
+              name: "Default (during call)",
+              content: rawSettings.sms_template,
+              trigger: "during",
+            });
+          }
+          if (rawSettings.sms_after_call) {
+            migrated.push({
+              id: crypto.randomUUID(),
+              name: "Default (after call)",
+              content: rawSettings.sms_template,
+              trigger: "after",
+            });
+          }
+          if (migrated.length === 0) {
+            migrated.push({
+              id: crypto.randomUUID(),
+              name: "Default",
+              content: rawSettings.sms_template,
+              trigger: "during",
+            });
+          }
+          setSmsMessages(migrated);
+        }
       }
       if (agent.schedule) {
         setStartTime(agent.schedule.start_time || "09:00");
@@ -257,10 +286,13 @@ export default function CreateAgent() {
       temperature: temperature[0],
       uninterruptible_greeting: uninterruptibleGreeting,
       anti_barge_in: antiBargein,
-      sms_template: smsTemplate ?? "",
-      sms_during_call: !!smsDuringCall,
-      sms_after_call: !!smsAfterCall,
-    };
+      sms_messages: smsMessages.map((m, idx) => ({
+        id: m.id,
+        name: (m.name || `SMS ${idx + 1}`).trim(),
+        content: m.content || "",
+        trigger: m.trigger === "after" ? "after" : "during",
+        order: idx,
+      })),
     console.log("[CreateAgent] Saving settings:", settingsPayload);
 
     const agentData = {
