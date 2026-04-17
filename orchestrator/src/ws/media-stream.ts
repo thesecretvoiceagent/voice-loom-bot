@@ -581,6 +581,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             break;
           }
+
+          case "response.audio.done": {
             const responseId = event.response_id || activeResponseId || null;
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
