@@ -142,6 +142,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let smsTemplate: string = "";
   let smsDuringCall: boolean = false;
   let smsAfterCall: boolean = false;
+  let smsSentDuringCall = false;
+  let substituteVarsRef: (text: string) => string = (t) => t;
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let greetingInProgress = true; // Protect initial greeting from interruption
