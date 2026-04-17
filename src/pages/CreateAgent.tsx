@@ -340,7 +340,7 @@ export default function CreateAgent() {
         if (!data || data.length === 0) {
           throw new Error("Update affected 0 rows — you may not have permission to edit this agent.");
         }
-        toast.success(`Agent updated · SMS: ${smsDuringCall ? "during" : "off"}/${smsAfterCall ? "after" : "off"}`);
+        toast.success(`Agent updated · ${smsMessages.length} SMS template(s)`);
       } else {
         const { error } = await supabase
           .from("agents")
