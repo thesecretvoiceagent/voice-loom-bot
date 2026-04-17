@@ -317,10 +317,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     substituteVarsRef = substituteVars;
 
     // Write initial call record to DB
+    // Resolve agent_id from URL param OR from the agent we just looked up by phone number (inbound)
+    const resolvedAgentId =
+      (agentId && agentId !== "default" && agentId) ||
+      (agentConfig && (agentConfig as any).id) ||
+      null;
     callStartTime = new Date();
     upsertCall(callId, {
       twilio_call_sid: callSid || null,
-      agent_id: agentId && agentId !== "default" ? agentId : null,
+      agent_id: resolvedAgentId,
       campaign_id: campaignId || null,
       // For inbound: caller is From, our number is To. For outbound: callee is To.
       to_number: callDirection === "inbound" ? (calledNumber || "unknown") : (calledNumber || "unknown"),
