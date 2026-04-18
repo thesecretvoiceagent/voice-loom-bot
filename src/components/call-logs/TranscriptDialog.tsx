@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { FileText, Download, Bot, User } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { parseTranscript } from "@/lib/transcript-parser";
 
 interface TranscriptDialogProps {
   open: boolean;
@@ -19,37 +20,6 @@ interface TranscriptDialogProps {
     duration: string;
     transcript?: string;
   };
-}
-
-interface TranscriptTurn {
-  speaker: "agent" | "user";
-  text: string;
-}
-
-function parseTranscript(raw?: string): TranscriptTurn[] {
-  if (!raw) return [];
-  
-  // Try to parse structured transcript (JSON array)
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed;
-  } catch {
-    // Not JSON, try line-based parsing
-  }
-
-  // Parse line-based format: "[Agent]: ...", "Agent: ...", etc.
-  const lines = raw.split("\n").filter((l) => l.trim());
-  return lines.map((line) => {
-    // Match [Agent]: ..., [AI]: ..., Agent: ..., AI: ..., etc.
-    const agentMatch = line.match(/^\[?(AI|Agent|Bot|Assistant)\]?:\s*(.+)/i);
-    if (agentMatch) return { speaker: "agent" as const, text: agentMatch[2] };
-    const userMatch = line.match(/^\[?(User|Customer|Caller|Human)\]?:\s*(.+)/i);
-    if (userMatch) return { speaker: "user" as const, text: userMatch[2] };
-    // System messages
-    const systemMatch = line.match(/^\[?System\]?:\s*(.+)/i);
-    if (systemMatch) return { speaker: "agent" as const, text: `⚙️ ${systemMatch[1]}` };
-    return { speaker: "user" as const, text: line };
-  });
 }
 
 export function TranscriptDialog({ open, onOpenChange, callData }: TranscriptDialogProps) {
