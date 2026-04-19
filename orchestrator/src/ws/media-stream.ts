@@ -309,8 +309,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (responsePlaybackMarkName) return;
 
     if (greetingTokenLimitRaised) {
-      // Keep the larger response budget for the rest of the call.
-      // Lowering it immediately after the opener has proven unstable in this live bridge.
+      // Greeting playback finished. Safely lower the per-response cap to the configured value
+      // for the rest of the call — UNLESS the greeting itself hit the cap (truncated),
+      // because lowering it further would just clip subsequent answers too.
+      if (lastResponseFinishReason === "max_output_tokens") {
+        console.log(`[MediaStream] Greeting hit max_output_tokens — keeping budget at ${INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS} for safety (callId=${callId})`);
+      } else if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+        try {
+          openaiWs.send(JSON.stringify({
+            type: "session.update",
+            session: { max_response_output_tokens: configuredMaxResponseOutputTokens },
+          }));
+          console.log(`[MediaStream] Greeting done — lowered max_response_output_tokens to ${configuredMaxResponseOutputTokens} (callId=${callId})`);
+        } catch (err) {
+          console.warn(`[MediaStream] Failed to lower max_response_output_tokens:`, err);
+        }
+      }
       greetingTokenLimitRaised = false;
     }
 
