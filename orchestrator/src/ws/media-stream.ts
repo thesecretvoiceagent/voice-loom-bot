@@ -518,14 +518,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.warn(`[MediaStream] LOCATION_TOKEN_SECRET not set — cannot build location_link`);
     }
 
-    // Inject Google Form fallback link variable so SMS templates can use {{form_link}}.
-    // Form is prefilled with the caseId so Apps Script can post it back to Railway,
-    // which writes the form fields into the same calls row.
-    // GOOGLE_FORM_BASE_URL example: https://docs.google.com/forms/d/e/<FORM_ID>/viewform
-    // GOOGLE_FORM_CASE_ENTRY_ID example: entry.123456789  (the entry ID for the "Case ID" field)
+    // Inject form submission link variable so SMS templates can use {{form_link}}.
+    // The form page lets the customer enter their car registration number and a
+    // callback phone number. Submitted values land in the same `calls` row
+    // (form_registration_number, form_callback_phone_number, form_submitted_at)
+    // and are read back to the caller by the AI via the realtime UPDATE
+    // subscription further down. Same HMAC token + base URL as the location link.
+    if (callId && tokenSecret) {
+      try {
+        const crypto = await import("crypto");
+        const formToken = crypto.createHmac("sha256", tokenSecret).update(callId).digest("hex");
+        const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
+        const formPath = isLovableLike ? "/form" : "/form.html";
+        callVariables.form_link = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
+        console.log(`[MediaStream] form_link built: ${callVariables.form_link}`);
+      } catch (err) {
+        console.error(`[MediaStream] Failed to build form_link:`, err);
+      }
+    }
+
+    // Legacy Google Form fallback — only used if GOOGLE_FORM_BASE_URL is configured
+    // AND we couldn't build a Lovable form link above. Kept for backwards compat.
     const formBaseUrl = (process.env.GOOGLE_FORM_BASE_URL || "").replace(/\/+$/, "");
     const formCaseEntryId = process.env.GOOGLE_FORM_CASE_ENTRY_ID || "";
-    if (callId && formBaseUrl && formCaseEntryId) {
+    if (callId && formBaseUrl && formCaseEntryId && !callVariables.form_link) {
       try {
         const params = new URLSearchParams({
           usp: "pp_url",
@@ -533,7 +549,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
         callVariables.form_link = `${formBaseUrl}?${params.toString()}`;
       } catch (err) {
-        console.error(`[MediaStream] Failed to build form_link:`, err);
+        console.error(`[MediaStream] Failed to build google form_link:`, err);
       }
     }
 
