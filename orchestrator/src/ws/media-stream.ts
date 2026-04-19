@@ -587,9 +587,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       // Initial greeting must NEVER be cut off mid-sentence — override the per-turn
       // token cap (220) so the opener can run as long as it needs. Subsequent turns
       // still inherit the session-level cap from session.update.
+      // Initial greeting must NEVER be cut off mid-sentence — override the per-turn
+      // token cap (220) so the opener can run as long as it needs. Subsequent turns
+      // still inherit the session-level cap from session.update.
+      // Realtime beta (OpenAI-Beta: realtime=v1) uses `max_response_output_tokens`
+      // both at session and per-response level. "inf" = use the model's max.
       const responseCreate: any = {
         type: "response.create",
-        response: {},
+        response: {
+          max_response_output_tokens: "inf",
+        },
       };
       if (greeting) {
         responseCreate.response.instructions = `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`;
