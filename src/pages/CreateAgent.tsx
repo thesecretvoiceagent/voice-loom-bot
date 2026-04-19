@@ -32,6 +32,8 @@ import {
   Trash2,
   X,
   MessageSquareText,
+  MapPin,
+  ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -617,27 +619,48 @@ export default function CreateAgent() {
                         Order matters: AI references SMSes by <strong>name</strong>, and after-call SMSes are sent in this order.
                       </p>
                     </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setSmsMessages((prev) => [
-                          ...prev,
-                          {
-                            id: crypto.randomUUID(),
-                            name: `sms_${prev.length + 1}`,
-                            description: "",
-                            content: "",
-                            trigger: "during",
-                          },
-                        ])
-                      }
-                      className="gap-1 shrink-0"
-                    >
-                      <Plus className="h-3 w-3" />
-                      Add SMS
-                    </Button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          // Open the live location confirmation page in a new tab using the
+                          // current agent id as the caseId placeholder + a preview token.
+                          // Submission will fail (token is fake) — this is for visual review only.
+                          const previewCaseId = editId || "00000000-0000-0000-0000-000000000000";
+                          const url = `/location?caseId=${previewCaseId}&token=preview`;
+                          window.open(url, "_blank", "noopener,noreferrer");
+                        }}
+                        className="gap-1"
+                        title="Avab asukoha kinnitamise lehe uues vahekaardis (eelvaade)"
+                      >
+                        <MapPin className="h-3 w-3" />
+                        Ava asukoha leht
+                        <ExternalLink className="h-3 w-3 opacity-60" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          setSmsMessages((prev) => [
+                            ...prev,
+                            {
+                              id: crypto.randomUUID(),
+                              name: `sms_${prev.length + 1}`,
+                              description: "",
+                              content: "",
+                              trigger: "during",
+                            },
+                          ])
+                        }
+                        className="gap-1"
+                      >
+                        <Plus className="h-3 w-3" />
+                        Add SMS
+                      </Button>
+                    </div>
                   </div>
 
                   {smsMessages.length === 0 ? (
