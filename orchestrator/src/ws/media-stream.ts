@@ -379,6 +379,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         if (typeof settings.temperature === "number") {
           agentTemperature = settings.temperature;
         }
+        // Per-response token cap for normal turns (greeting still uses INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS)
+        const rawCap = (settings as any).response_token_cap;
+        if (typeof rawCap === "number" && Number.isFinite(rawCap) && rawCap >= 50 && rawCap <= 4096) {
+          configuredMaxResponseOutputTokens = Math.round(rawCap);
+        }
         // Read uninterruptible greeting setting (default true)
         if (settings.uninterruptible_greeting === false) {
           greetingInProgress = false; // Allow interruption from the start
