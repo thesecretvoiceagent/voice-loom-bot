@@ -95,6 +95,39 @@ async function reverseGeocode(lat: number, lng: number): Promise<string | null> 
   }
 }
 
+async function forwardGeocode(
+  query: string,
+): Promise<{ lat: number; lng: number; address: string } | null> {
+  const key = Deno.env.get("GOOGLE_MAPS_API_KEY") || "";
+  if (!key) return null;
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+    query,
+  )}&language=et&region=ee&key=${encodeURIComponent(key)}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error(`[location-confirm] forward geocode HTTP ${res.status}`);
+      return null;
+    }
+    const data = await res.json();
+    if (data?.status !== "OK") {
+      console.error(`[location-confirm] forward geocode status=${data?.status}`);
+      return null;
+    }
+    const first = data.results?.[0];
+    const loc = first?.geometry?.location;
+    if (!first || !loc) return null;
+    return {
+      lat: Number(loc.lat),
+      lng: Number(loc.lng),
+      address: first.formatted_address ?? query,
+    };
+  } catch (err) {
+    console.error("[location-confirm] forward geocode error:", err);
+    return null;
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -110,6 +143,23 @@ Deno.serve(async (req) => {
     body = await req.json();
   } catch {
     return jsonResponse({ ok: false, error: "Invalid JSON", correlation_id: correlationId }, 400);
+  }
+
+  // Mode: address search (no DB write, no token required)
+  // Used by the confirmation page's search input to suggest a location.
+  if (body.mode === "search") {
+    const q = typeof body.query === "string" ? body.query.trim() : "";
+    if (!q) {
+      return jsonResponse({ ok: false, error: "Missing query", correlation_id: correlationId }, 400);
+    }
+    const hit = await forwardGeocode(q);
+    if (!hit) {
+      return jsonResponse(
+        { ok: false, error: "Aadressi ei leitud", correlation_id: correlationId },
+        404,
+      );
+    }
+    return jsonResponse({ ok: true, ...hit, correlation_id: correlationId });
   }
 
   const caseIdRaw = body.caseId;
