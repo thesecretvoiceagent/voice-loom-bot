@@ -19,20 +19,9 @@ interface Widget {
 const existingWidgets: Widget[] = [
   {
     id: "45e0d969-5477-43d1-993c-7cb5f9bea17c",
-    phoneNumber: "+37256011298",
-    agentName: "BeyondCode AI Voice Agent",
-    active: true,
-  },
-];
-
-export default function WidgetsSettings() {
-  const [activeTab, setActiveTab] = useState<"create" | "manage">("manage");
-  const [selectedWidget, setSelectedWidget] = useState<Widget | null>(existingWidgets[0]);
-  const [copied, setCopied] = useState(false);
-
-  const [widgetConfig, setWidgetConfig] = useState({
-    name: "",
-    phoneNumber: "+37256011298",
+    phoneNumber: "+372 56101535",
+...
+    phoneNumber: "+372 56101535",
     brandColor: "#3b82f6",
     position: "bottom-right",
     greeting: "Need help? Call us for instant support!",

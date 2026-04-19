@@ -249,91 +249,9 @@ export default function ApiDocsSettings() {
     "campaign_id": "4a544b81-5548-4506-98e2-780986f5fcbe",
     "clients": [
       {
-        "phone_number": "+37256011298",
-        "first_name": "John",
-        "last_name": "Doe",
-        "custom_data": {
-          "email": "john.doe@example.com",
-          "company": "Example Company Ltd"
-        }
-      }
-    ]
-  }'`}
-                language="bash"
-              />
-            </div>
-
-            <div>
-              <h4 className="text-sm font-medium text-foreground mb-2">Status Codes</h4>
-              <div className="flex flex-wrap gap-2">
-                <div className="flex items-center gap-2">
-                  <StatusBadge code="200" text="" />
-                  <span className="text-sm text-muted-foreground">Success - All calls processed</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <StatusBadge code="400" text="" />
-                  <span className="text-sm text-muted-foreground">Bad Request - Check parameters</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <StatusBadge code="401" text="" />
-                  <span className="text-sm text-muted-foreground">Unauthorized - Check API key</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <StatusBadge code="402" text="" />
-                  <span className="text-sm text-muted-foreground">Insufficient subscription minutes</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <StatusBadge code="404" text="" />
-                  <span className="text-sm text-muted-foreground">Campaign not found</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <StatusBadge code="500" text="" />
-                  <span className="text-sm text-muted-foreground">Server error</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </Card>
-
-      {/* Schedule Single Call */}
-      <Card className="glass-card rounded-xl border-border/50">
-        <div className="p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-warning/10">
-              <Calendar className="h-5 w-5 text-warning" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-foreground">Schedule Single Outbound Call</h3>
-              <p className="text-sm text-muted-foreground">
-                Schedule a specific call from a campaign at an exact date and time
-              </p>
-            </div>
-          </div>
-
-          <div className="rounded-lg bg-warning/10 border border-warning/30 p-4 mb-4">
-            <p className="text-sm text-warning">
-              <span className="font-medium">Note:</span> scheduled_time must be in the future and conform to the campaign's schedule settings. The campaign's configured timezone is used for time interpretation.
-            </p>
-          </div>
-
-          <div className="space-y-4">
-            <div>
-              <h4 className="text-sm font-medium text-foreground mb-2">Endpoint</h4>
-              <CodeBlock 
-                code="POST https://api.beyondcode.ee/api/campaigns/schedule_call" 
-                language="endpoint" 
-              />
-            </div>
-
-            <div>
-              <h4 className="text-sm font-medium text-foreground mb-2">Request Body</h4>
-              <CodeBlock 
-                code={`{
-  "campaign_id": "4a544b81-5548-4506-98e2-780986f5fcbe",
-  "scheduled_time": "2025-10-02T14:40:00+03:00",
-  "clients": {
-    "phone_number": "+37256011298",
+        "phone_number": "+372 56101535",
+...
+    "phone_number": "+372 56101535",
     "first_name": "John",
     "last_name": "Doe",
     "custom_data": {

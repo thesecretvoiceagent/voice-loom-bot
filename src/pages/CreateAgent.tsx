@@ -67,7 +67,7 @@ const voices = [
 ];
 
 const phoneNumbers = [
-  { id: "1", label: "Mobile EST", number: "+37256011298" },
+  { id: "1", label: "Mobile EST", number: "+372 56101535" },
 ];
 
 const weekDays = [
