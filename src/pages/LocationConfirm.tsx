@@ -42,17 +42,36 @@ export default function LocationConfirm() {
   const [submit, setSubmit] = useState<SubmitState>({ kind: "idle" });
   const markerRef = useRef<L.Marker | null>(null);
 
-  // Initial geolocation
+  // Initial geolocation. We use a hard wall-clock fallback because some
+  // environments (e.g. iframes without `allow="geolocation"`, or browsers
+  // that silently swallow the permission prompt) never fire either callback,
+  // which would leave the user staring at "Laeme kaarti…" forever.
   useEffect(() => {
+    let settled = false;
+    const settle = (pos: [number, number]) => {
+      if (settled) return;
+      settled = true;
+      setPosition(pos);
+    };
+
+    const fallbackTimer = window.setTimeout(() => settle(TALLINN), 4000);
+
     if (!("geolocation" in navigator)) {
-      setPosition(TALLINN);
-      return;
+      settle(TALLINN);
+      return () => window.clearTimeout(fallbackTimer);
     }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => setPosition([pos.coords.latitude, pos.coords.longitude]),
-      () => setPosition(TALLINN),
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 },
-    );
+
+    try {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => settle([pos.coords.latitude, pos.coords.longitude]),
+        () => settle(TALLINN),
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 },
+      );
+    } catch {
+      settle(TALLINN);
+    }
+
+    return () => window.clearTimeout(fallbackTimer);
   }, []);
 
   const paramsValid = useMemo(() => {
