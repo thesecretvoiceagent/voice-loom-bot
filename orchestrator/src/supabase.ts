@@ -30,7 +30,7 @@ function getHeaders(): Record<string, string> {
   };
 }
 
-async function callEdgeFunction(funcName: string, body: Record<string, unknown>): Promise<any> {
+export async function callEdgeFunction(funcName: string, body: Record<string, unknown>): Promise<any> {
   if (!config.supabase.url || !config.supabase.anonKey) {
     console.warn(`[Supabase] Not configured, cannot call ${funcName}`);
     return null;

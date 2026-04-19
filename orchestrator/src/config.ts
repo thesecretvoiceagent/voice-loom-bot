@@ -37,4 +37,7 @@ export const config = {
   // Public URLs
   publicBaseUrl: process.env.PUBLIC_BASE_URL || "",
   publicWsBaseUrl: process.env.PUBLIC_WS_BASE_URL || "",
+
+  // Google Forms
+  googleFormWebhookSecret: process.env.GOOGLE_FORM_WEBHOOK_SECRET || "",
 };
