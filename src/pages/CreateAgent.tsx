@@ -520,6 +520,30 @@ export default function CreateAgent() {
                     </div>
                   </div>
                   <Textarea value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} placeholder="You are a helpful AI voice assistant..." className="min-h-[150px]" />
+                  <div className="p-4 rounded-lg bg-secondary/50 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium text-foreground">Response Token Cap</p>
+                        <p className="text-sm text-muted-foreground">
+                          Max tokens per AI response. Lower = shorter, snappier replies (less rambling). Higher = longer answers (risk of running long).
+                          The initial greeting always uses a larger budget regardless of this setting.
+                        </p>
+                      </div>
+                      <span className="text-lg font-semibold tabular-nums">{responseTokenCap[0]}</span>
+                    </div>
+                    <Slider
+                      value={responseTokenCap}
+                      onValueChange={setResponseTokenCap}
+                      min={80}
+                      max={1000}
+                      step={20}
+                    />
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>80 (very short)</span>
+                      <span>220 (default)</span>
+                      <span>1000 (long)</span>
+                    </div>
+                  </div>
                   <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/50">
                     <div>
                       <p className="font-medium text-foreground">Anti Barge-in</p>
