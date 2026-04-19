@@ -11,6 +11,12 @@ const phoneNumbers = [
     webhooks: true,
     iei: true,
   },
+  {
+    number: "+372 56101547",
+    friendlyName: "Mobile EST 2",
+    webhooks: true,
+    iei: true,
+  },
 ];
 
 export default function TwilioSettings() {
