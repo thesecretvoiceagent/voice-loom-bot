@@ -628,7 +628,7 @@ export default function CreateAgent() {
                           // Open the live location confirmation page in a new tab using the
                           // current agent id as the caseId placeholder + a preview token.
                           // Submission will fail (token is fake) — this is for visual review only.
-                          const previewCaseId = id || "00000000-0000-0000-0000-000000000000";
+                          const previewCaseId = editId || "00000000-0000-0000-0000-000000000000";
                           const url = `/location?caseId=${previewCaseId}&token=preview`;
                           window.open(url, "_blank", "noopener,noreferrer");
                         }}
