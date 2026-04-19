@@ -235,6 +235,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   // the first greeting a very large budget and then restore the normal cap.
   const INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS = 4096;
   let greetingTokenLimitRaised = false;
+  let configuredMaxResponseOutputTokens = DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS;
+  let lastResponseFinishReason: string | null = null;
+  let lastResponseOutputTokens: number | null = null;
 
   // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
   let antiBargeinEnabled = false;
