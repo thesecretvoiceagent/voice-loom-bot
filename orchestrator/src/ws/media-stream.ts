@@ -235,6 +235,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   // the first greeting a very large budget and then restore the normal cap.
   const INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS = 4096;
   let greetingTokenLimitRaised = false;
+  let configuredMaxResponseOutputTokens = DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS;
+  let lastResponseFinishReason: string | null = null;
+  let lastResponseOutputTokens: number | null = null;
 
   // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
   let antiBargeinEnabled = false;
@@ -306,8 +309,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (responsePlaybackMarkName) return;
 
     if (greetingTokenLimitRaised) {
-      // Keep the larger response budget for the rest of the call.
-      // Lowering it immediately after the opener has proven unstable in this live bridge.
+      // Greeting playback finished. Safely lower the per-response cap to the configured value
+      // for the rest of the call — UNLESS the greeting itself hit the cap (truncated),
+      // because lowering it further would just clip subsequent answers too.
+      if (lastResponseFinishReason === "max_output_tokens") {
+        console.log(`[MediaStream] Greeting hit max_output_tokens — keeping budget at ${INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS} for safety (callId=${callId})`);
+      } else if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+        try {
+          openaiWs.send(JSON.stringify({
+            type: "session.update",
+            session: { max_response_output_tokens: configuredMaxResponseOutputTokens },
+          }));
+          console.log(`[MediaStream] Greeting done — lowered max_response_output_tokens to ${configuredMaxResponseOutputTokens} (callId=${callId})`);
+        } catch (err) {
+          console.warn(`[MediaStream] Failed to lower max_response_output_tokens:`, err);
+        }
+      }
       greetingTokenLimitRaised = false;
     }
 
@@ -375,6 +392,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         maxCallDurationMinutes = (settings.max_call_duration as number) || 0;
         if (typeof settings.temperature === "number") {
           agentTemperature = settings.temperature;
+        }
+        // Per-response token cap for normal turns (greeting still uses INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS)
+        const rawCap = (settings as any).response_token_cap;
+        if (typeof rawCap === "number" && Number.isFinite(rawCap) && rawCap >= 50 && rawCap <= 4096) {
+          configuredMaxResponseOutputTokens = Math.round(rawCap);
         }
         // Read uninterruptible greeting setting (default true)
         if (settings.uninterruptible_greeting === false) {
@@ -781,7 +803,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           // Cap each turn so the model can't ramble or loop on the same sentence forever.
           max_response_output_tokens: greetingTokenLimitRaised
             ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS
-            : DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS,
+            : configuredMaxResponseOutputTokens,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
@@ -841,6 +863,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             responseDoneReceived = false;
             ignoreAudioUntilNextResponse = false;
             aiIsSpeaking = true; // Keep this true until Twilio confirms playback completion.
+            lastResponseFinishReason = null;
+            lastResponseOutputTokens = null;
             break;
 
           case "response.audio.delta": {
@@ -1070,8 +1094,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
 
+            const finishReason: string | null =
+              event.response?.status_details?.reason ||
+              event.response?.status_details?.type ||
+              event.response?.status ||
+              null;
+            const outputTokens: number | null =
+              typeof event.response?.usage?.output_tokens === "number"
+                ? event.response.usage.output_tokens
+                : null;
+            lastResponseFinishReason = finishReason;
+            lastResponseOutputTokens = outputTokens;
+
             responseDoneReceived = true;
-            console.log(`[MediaStream] OpenAI response done received, waiting for playback completion if needed (callId=${callId}, responseId=${responseId})`);
+            console.log(
+              `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens}`
+            );
             maybeCompleteAiTurn("response.done");
             break;
           }
