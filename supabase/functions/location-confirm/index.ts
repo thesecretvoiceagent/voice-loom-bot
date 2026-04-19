@@ -111,7 +111,9 @@ async function forwardGeocode(
     }
     const data = await res.json();
     if (data?.status !== "OK") {
-      console.error(`[location-confirm] forward geocode status=${data?.status}`);
+      console.error(
+        `[location-confirm] forward geocode status=${data?.status} error=${data?.error_message ?? ""}`,
+      );
       return null;
     }
     const first = data.results?.[0];
