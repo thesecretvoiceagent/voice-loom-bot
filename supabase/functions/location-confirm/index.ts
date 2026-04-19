@@ -68,28 +68,27 @@ async function verifyToken(caseId: string, token: string): Promise<boolean> {
 }
 
 async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
-  const key = Deno.env.get("AZURE_MAPS_KEY") || "";
+  const key = Deno.env.get("GOOGLE_MAPS_API_KEY") || "";
   if (!key) {
-    console.warn("[location-confirm] AZURE_MAPS_KEY not set — skipping reverse geocode");
+    console.warn("[location-confirm] GOOGLE_MAPS_API_KEY not set — skipping reverse geocode");
     return null;
   }
-  const url = `https://atlas.microsoft.com/search/address/reverse/json?api-version=1.0&query=${lat},${lng}&subscription-key=${encodeURIComponent(
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&language=et&key=${encodeURIComponent(
     key,
-  )}&language=et-EE`;
+  )}`;
   try {
     const res = await fetch(url);
     if (!res.ok) {
-      console.error(`[location-confirm] Azure HTTP ${res.status}: ${await res.text()}`);
+      console.error(`[location-confirm] Google HTTP ${res.status}: ${await res.text()}`);
       return null;
     }
     const data = await res.json();
-    const first = data?.addresses?.[0]?.address;
-    if (!first) return null;
-    return (
-      first.freeformAddress ||
-      [first.streetNameAndNumber, first.municipality, first.country].filter(Boolean).join(", ") ||
-      null
-    );
+    if (data?.status && data.status !== "OK") {
+      console.error(`[location-confirm] Google status=${data.status} error=${data.error_message ?? ""}`);
+      return null;
+    }
+    const first = data?.results?.[0];
+    return first?.formatted_address ?? null;
   } catch (err) {
     console.error("[location-confirm] reverse geocode error:", err);
     return null;
