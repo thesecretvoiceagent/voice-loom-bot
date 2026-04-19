@@ -1092,8 +1092,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
 
+            const finishReason: string | null =
+              event.response?.status_details?.reason ||
+              event.response?.status_details?.type ||
+              event.response?.status ||
+              null;
+            const outputTokens: number | null =
+              typeof event.response?.usage?.output_tokens === "number"
+                ? event.response.usage.output_tokens
+                : null;
+            lastResponseFinishReason = finishReason;
+            lastResponseOutputTokens = outputTokens;
+
             responseDoneReceived = true;
-            console.log(`[MediaStream] OpenAI response done received, waiting for playback completion if needed (callId=${callId}, responseId=${responseId})`);
+            console.log(
+              `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens}`
+            );
             maybeCompleteAiTurn("response.done");
             break;
           }
