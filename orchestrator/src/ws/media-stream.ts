@@ -473,13 +473,34 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // either by Railway /api/location/confirm OR by Lovable edge function `location-confirm`.
     // The MVP uses the Lovable-hosted page (LOCATION_PAGE_BASE_URL); switch to Azure
     // by changing that env var only — the page contract is identical.
-    const locationPageBase = (
+    // Resolve the location confirmation page base URL with sane fallbacks.
+    // The Railway env was historically set to a placeholder Azure host
+    // (`yoursite.z6.web.core.windows.net`) which does not resolve in DNS and
+    // breaks the SMS link in production. Detect obvious placeholder values and
+    // fall back to the Lovable-hosted page so the link is always usable.
+    const PLACEHOLDER_HOST_PATTERNS = [
+      /yoursite/i,
+      /example\.com/i,
+      /your-?domain/i,
+      /placeholder/i,
+    ];
+    const LOVABLE_FALLBACK = "https://voice-loom-bot.lovable.app";
+    let locationPageBase = (
       process.env.LOCATION_PAGE_BASE_URL ||
       process.env.AZURE_STATIC_BASE_URL ||
       ""
     ).replace(/\/+$/, "");
+    if (locationPageBase && PLACEHOLDER_HOST_PATTERNS.some((re) => re.test(locationPageBase))) {
+      console.warn(
+        `[MediaStream] LOCATION_PAGE_BASE_URL looks like a placeholder (${locationPageBase}), falling back to ${LOVABLE_FALLBACK}`,
+      );
+      locationPageBase = LOVABLE_FALLBACK;
+    }
+    if (!locationPageBase) {
+      locationPageBase = LOVABLE_FALLBACK;
+    }
     const tokenSecret = process.env.LOCATION_TOKEN_SECRET || "";
-    if (callId && locationPageBase && tokenSecret) {
+    if (callId && tokenSecret) {
       try {
         const crypto = await import("crypto");
         const locToken = crypto.createHmac("sha256", tokenSecret).update(callId).digest("hex");
@@ -489,9 +510,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
         const path = isLovableLike ? "/location" : "/index.html";
         callVariables.location_link = `${locationPageBase}${path}?caseId=${encodeURIComponent(callId)}&token=${locToken}`;
+        console.log(`[MediaStream] location_link built: ${callVariables.location_link}`);
       } catch (err) {
         console.error(`[MediaStream] Failed to build location_link:`, err);
       }
+    } else if (callId && !tokenSecret) {
+      console.warn(`[MediaStream] LOCATION_TOKEN_SECRET not set — cannot build location_link`);
     }
 
     // Inject Google Form fallback link variable so SMS templates can use {{form_link}}.
