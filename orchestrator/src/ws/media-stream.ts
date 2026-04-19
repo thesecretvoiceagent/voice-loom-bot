@@ -469,14 +469,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     };
 
     // Inject location confirmation link variable so SMS templates can use {{location_link}}.
-    // Token = HMAC-SHA256(callId, LOCATION_TOKEN_SECRET) — verified server-side on /api/location/confirm.
-    const azureStaticBase = (process.env.AZURE_STATIC_BASE_URL || "").replace(/\/+$/, "");
+    // Token = HMAC-SHA256(callId, LOCATION_TOKEN_SECRET) — verified server-side
+    // either by Railway /api/location/confirm OR by Lovable edge function `location-confirm`.
+    // The MVP uses the Lovable-hosted page (LOCATION_PAGE_BASE_URL); switch to Azure
+    // by changing that env var only — the page contract is identical.
+    const locationPageBase = (
+      process.env.LOCATION_PAGE_BASE_URL ||
+      process.env.AZURE_STATIC_BASE_URL ||
+      ""
+    ).replace(/\/+$/, "");
     const tokenSecret = process.env.LOCATION_TOKEN_SECRET || "";
-    if (callId && azureStaticBase && tokenSecret) {
+    if (callId && locationPageBase && tokenSecret) {
       try {
         const crypto = await import("crypto");
         const locToken = crypto.createHmac("sha256", tokenSecret).update(callId).digest("hex");
-        callVariables.location_link = `${azureStaticBase}/index.html?caseId=${encodeURIComponent(callId)}&token=${locToken}`;
+        // Lovable page lives at /location?caseId=...&token=...
+        // Azure static page lives at /index.html?caseId=...&token=...
+        // Detect by extension/path: if base ends with a host (no path), use /location.
+        const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
+        const path = isLovableLike ? "/location" : "/index.html";
+        callVariables.location_link = `${locationPageBase}${path}?caseId=${encodeURIComponent(callId)}&token=${locToken}`;
       } catch (err) {
         console.error(`[MediaStream] Failed to build location_link:`, err);
       }
