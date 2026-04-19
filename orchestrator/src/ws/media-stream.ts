@@ -206,6 +206,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let lastAssistantTranscript = "";
   let repeatedAssistantTranscriptCount = 0;
   let pendingRecoveryCooldownMs = 0;
+  const DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS = 220;
+  const INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS = 1200;
+  let greetingTokenLimitRaised = false;
 
   // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
   let antiBargeinEnabled = false;
@@ -275,6 +278,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!responseDoneReceived) return;
     if (responseHasAudio && !responseAudioDone) return;
     if (responsePlaybackMarkName) return;
+
+    if (greetingTokenLimitRaised && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+      greetingTokenLimitRaised = false;
+      openaiWs.send(JSON.stringify({
+        type: "session.update",
+        session: {
+          max_response_output_tokens: DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS,
+        },
+      }));
+      console.log(`[MediaStream] Restored default response token cap after initial greeting (callId=${callId})`);
+    }
 
     const completedResponseId = activeResponseId;
     const recoveryCooldownMs = pendingRecoveryCooldownMs || 1200;
@@ -584,19 +598,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
       console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || "(none)"}"`);
 
-      // Initial greeting must NEVER be cut off mid-sentence — override the per-turn
-      // token cap (220) so the opener can run as long as it needs. Subsequent turns
-      // still inherit the session-level cap from session.update.
-      // Initial greeting must NEVER be cut off mid-sentence — override the per-turn
-      // token cap (220) so the opener can run as long as it needs. Subsequent turns
-      // still inherit the session-level cap from session.update.
-      // Realtime beta (OpenAI-Beta: realtime=v1) uses `max_response_output_tokens`
-      // both at session and per-response level. "inf" = use the model's max.
       const responseCreate: any = {
         type: "response.create",
-        response: {
-          max_response_output_tokens: "inf",
-        },
+        response: {},
       };
       if (greeting) {
         responseCreate.response.instructions = `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`;
@@ -744,6 +748,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       // this range can cause the model to emit malformed audio (heard as static/clicks).
       const rawTemp = agentConfig ? agentTemperature : 0.6;
       const sessionTemperature = Math.min(1.2, Math.max(0.6, rawTemp));
+      greetingTokenLimitRaised = Boolean(greeting);
+
       const sessionUpdate: any = {
         type: "session.update",
         session: {
@@ -752,7 +758,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           voice,
           temperature: sessionTemperature,
           // Cap each turn so the model can't ramble or loop on the same sentence forever.
-          max_response_output_tokens: 220,
+          max_response_output_tokens: greetingTokenLimitRaised
+            ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS
+            : DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
