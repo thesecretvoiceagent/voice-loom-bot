@@ -133,14 +133,16 @@ export default function LocationConfirm() {
         </p>
       </header>
 
-      {/* Map */}
-      <div className="flex-1 relative min-h-[55vh]">
+      {/* Map — explicit height (not flex) so Leaflet can compute its size on first paint */}
+      <div
+        className="relative w-full"
+        style={{ height: "60vh", minHeight: 320 }}
+      >
         {position ? (
           <MapContainer
             center={position}
             zoom={16}
             scrollWheelZoom
-            className="absolute inset-0 z-0"
             style={{ height: "100%", width: "100%" }}
           >
             <TileLayer
@@ -173,7 +175,7 @@ export default function LocationConfirm() {
       </div>
 
       {/* Footer card */}
-      <div className="bg-card border-t border-border px-5 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-3">
+      <div className="bg-card border-t border-border px-5 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-3 mt-auto">
         <p className="text-sm text-muted-foreground">
           Liigutage vajadusel nööpnõela ja vajutage kinnita.
         </p>
