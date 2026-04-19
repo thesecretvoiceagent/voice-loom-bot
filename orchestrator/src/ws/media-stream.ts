@@ -589,12 +589,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       // still inherit the session-level cap from session.update.
       const responseCreate: any = {
         type: "response.create",
-        response: {
-          // Realtime API field name is `max_response_output_tokens` (same as session-level).
-          // Using the wrong key (`max_output_tokens`) silently falls back to the session
-          // cap of 220, which truncates long greetings mid-sentence.
-          max_response_output_tokens: "inf",
-        },
+        response: {},
       };
       if (greeting) {
         responseCreate.response.instructions = `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`;
