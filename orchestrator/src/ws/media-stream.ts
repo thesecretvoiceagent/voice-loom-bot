@@ -118,14 +118,18 @@ async function crmLookup(params: { phone_number?: string; reg_no?: string; descr
 }
 
 // Send SMS via Twilio REST API. Returns true on success.
-async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: string; error?: string }> {
+async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string }> {
+  console.log(`[sendSms] >>> attempt to=${to} from=${config.twilio.fromNumber || "(missing)"} bodyLen=${body?.length || 0} bodyPreview="${(body || "").slice(0, 60)}"`);
   if (!config.twilio.isConfigured) {
+    console.error(`[sendSms] FAIL: Twilio not configured (accountSid set? ${!!config.twilio.accountSid}, authToken set? ${!!config.twilio.authToken})`);
     return { ok: false, error: "Twilio not configured" };
   }
   if (!to || !body) {
+    console.error(`[sendSms] FAIL: missing fields to="${to}" bodyLen=${body?.length || 0}`);
     return { ok: false, error: "Missing 'to' or 'body'" };
   }
   if (!config.twilio.fromNumber) {
+    console.error(`[sendSms] FAIL: TWILIO_FROM_NUMBER not configured`);
     return { ok: false, error: "TWILIO_FROM_NUMBER not configured" };
   }
   try {
@@ -144,13 +148,33 @@ async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: s
       }).toString(),
     });
     const data: any = await res.json().catch(() => ({}));
+    console.log(`[sendSms] Twilio HTTP ${res.status} response:`, JSON.stringify({
+      sid: data?.sid,
+      status: data?.status,
+      error_code: data?.error_code,
+      error_message: data?.error_message,
+      to: data?.to,
+      from: data?.from,
+      num_segments: data?.num_segments,
+      price: data?.price,
+      message: data?.message,
+      code: data?.code,
+      more_info: data?.more_info,
+    }));
     if (!res.ok) {
-      console.error(`[sendSms] HTTP ${res.status}`, data);
-      return { ok: false, error: data?.message || `HTTP ${res.status}` };
+      console.error(`[sendSms] FAIL HTTP ${res.status} code=${data?.code} msg=${data?.message} more_info=${data?.more_info}`);
+      return { ok: false, error: `${data?.message || `HTTP ${res.status}`}${data?.code ? ` (code ${data.code})` : ""}${data?.more_info ? ` ${data.more_info}` : ""}` };
     }
-    return { ok: true, sid: data?.sid };
+    // Twilio returns 201 even if the message will fail later (e.g. status="failed" or has error_code).
+    // Treat any of those as a real failure so the AI doesn't claim success.
+    if (data?.error_code || data?.status === "failed" || data?.status === "undelivered") {
+      console.error(`[sendSms] FAIL Twilio accepted but flagged status="${data?.status}" error_code=${data?.error_code} error_message=${data?.error_message}`);
+      return { ok: false, sid: data?.sid, status: data?.status, errorCode: data?.error_code, error: data?.error_message || `Twilio status ${data?.status}` };
+    }
+    console.log(`[sendSms] OK sid=${data?.sid} status=${data?.status}`);
+    return { ok: true, sid: data?.sid, status: data?.status };
   } catch (err: any) {
-    console.error(`[sendSms] error:`, err);
+    console.error(`[sendSms] EXCEPTION:`, err);
     return { ok: false, error: err?.message || "send failed" };
   }
 }
@@ -945,9 +969,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
             if (fnName === "send_sms") {
               let args: any = {};
-              try { args = JSON.parse(event.arguments || "{}"); } catch {}
+              try { args = JSON.parse(event.arguments || "{}"); } catch (e) {
+                console.error(`[MediaStream] send_sms: failed to parse arguments "${event.arguments}":`, e);
+              }
               const requestedName = typeof args.template_name === "string" ? args.template_name.trim() : "";
               const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
+
+              console.log(`[MediaStream] send_sms INVOKED (callId=${callId}) requestedName="${requestedName}" callDirection=${callDirection} fromNumber="${fromNumber}" calledNumber="${calledNumber}" recipient="${recipient}" availableTemplates=[${smsMessages.map((m) => `${m.name}(${m.trigger})`).join(", ")}]`);
 
               // Look up the configured during-call template by exact name.
               // We NEVER use AI-supplied content — only the verbatim configured template.
@@ -955,7 +983,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 (m) => m.trigger === "during" && m.name === requestedName,
               );
 
-              let result: { ok: boolean; sid?: string; error?: string };
+              let result: { ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string };
               let bodyForLog = "";
               if (!recipient) {
                 result = { ok: false, error: "No recipient phone number available for this call" };
@@ -979,11 +1007,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     to_number: recipient,
                     body: bodyForLog,
                     twilio_sid: result.sid || null,
-                    status: "sent",
+                    status: result.status || "sent",
                   }).catch(() => {});
                 }
               }
-              console.log(`[MediaStream] send_sms template="${requestedName}" → ${recipient} ok=${result.ok} sid=${result.sid || "-"} err=${result.error || "-"} (callId=${callId})`);
+              console.log(`[MediaStream] send_sms RESULT template="${requestedName}" → ${recipient} ok=${result.ok} sid=${result.sid || "-"} status=${result.status || "-"} errorCode=${result.errorCode || "-"} err=${result.error || "-"} (callId=${callId})`);
               transcriptLines.push(`[System]: send_sms(template="${requestedName}", to=${recipient}, body="${(bodyForLog || "").slice(0, 80)}...") → ${result.ok ? "sent " + result.sid : "failed: " + result.error}`);
               openaiWs!.send(JSON.stringify({
                 type: "conversation.item.create",
@@ -992,7 +1020,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   call_id: event.call_id,
                   output: JSON.stringify(result.ok
                     ? { success: true, message: `SMS template "${requestedName}" sent. Briefly confirm to the caller in their language.` }
-                    : { success: false, error: result.error }),
+                    : { success: false, error: result.error, instruction: `Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent.` }),
                 },
               }));
               openaiWs!.send(JSON.stringify({ type: "response.create" }));
