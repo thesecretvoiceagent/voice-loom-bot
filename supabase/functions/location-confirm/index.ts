@@ -67,28 +67,21 @@ async function verifyToken(caseId: string, token: string): Promise<boolean> {
   return timingSafeHexEqual(token.toLowerCase(), expected.toLowerCase());
 }
 
+// OpenStreetMap Nominatim — free, no API key required.
+// Usage policy: max 1 req/s, must send a descriptive User-Agent.
+// https://operations.osmfoundation.org/policies/nominatim/
+const NOMINATIM_UA = "BeyondCode-VoiceLoom/1.0 (location-confirm edge function)";
+
 async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
-  const key = Deno.env.get("GOOGLE_MAPS_API_KEY") || "";
-  if (!key) {
-    console.warn("[location-confirm] GOOGLE_MAPS_API_KEY not set — skipping reverse geocode");
-    return null;
-  }
-  const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&language=et&key=${encodeURIComponent(
-    key,
-  )}`;
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&accept-language=et`;
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: { "User-Agent": NOMINATIM_UA } });
     if (!res.ok) {
-      console.error(`[location-confirm] Google HTTP ${res.status}: ${await res.text()}`);
+      console.error(`[location-confirm] Nominatim reverse HTTP ${res.status}: ${await res.text()}`);
       return null;
     }
     const data = await res.json();
-    if (data?.status && data.status !== "OK") {
-      console.error(`[location-confirm] Google status=${data.status} error=${data.error_message ?? ""}`);
-      return null;
-    }
-    const first = data?.results?.[0];
-    return first?.formatted_address ?? null;
+    return data?.display_name ?? null;
   } catch (err) {
     console.error("[location-confirm] reverse geocode error:", err);
     return null;
@@ -98,31 +91,23 @@ async function reverseGeocode(lat: number, lng: number): Promise<string | null> 
 async function forwardGeocode(
   query: string,
 ): Promise<{ lat: number; lng: number; address: string } | null> {
-  const key = Deno.env.get("GOOGLE_MAPS_API_KEY") || "";
-  if (!key) return null;
-  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+  // countrycodes=ee biases to Estonia; remove if you need broader search.
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
     query,
-  )}&language=et&region=ee&key=${encodeURIComponent(key)}`;
+  )}&accept-language=et&countrycodes=ee&limit=1&addressdetails=1`;
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: { "User-Agent": NOMINATIM_UA } });
     if (!res.ok) {
-      console.error(`[location-confirm] forward geocode HTTP ${res.status}`);
+      console.error(`[location-confirm] Nominatim search HTTP ${res.status}`);
       return null;
     }
     const data = await res.json();
-    if (data?.status !== "OK") {
-      console.error(
-        `[location-confirm] forward geocode status=${data?.status} error=${data?.error_message ?? ""}`,
-      );
-      return null;
-    }
-    const first = data.results?.[0];
-    const loc = first?.geometry?.location;
-    if (!first || !loc) return null;
+    const first = Array.isArray(data) ? data[0] : null;
+    if (!first?.lat || !first?.lon) return null;
     return {
-      lat: Number(loc.lat),
-      lng: Number(loc.lng),
-      address: first.formatted_address ?? query,
+      lat: Number(first.lat),
+      lng: Number(first.lon),
+      address: first.display_name ?? query,
     };
   } catch (err) {
     console.error("[location-confirm] forward geocode error:", err);
