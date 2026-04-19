@@ -969,9 +969,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
             if (fnName === "send_sms") {
               let args: any = {};
-              try { args = JSON.parse(event.arguments || "{}"); } catch {}
+              try { args = JSON.parse(event.arguments || "{}"); } catch (e) {
+                console.error(`[MediaStream] send_sms: failed to parse arguments "${event.arguments}":`, e);
+              }
               const requestedName = typeof args.template_name === "string" ? args.template_name.trim() : "";
               const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
+
+              console.log(`[MediaStream] send_sms INVOKED (callId=${callId}) requestedName="${requestedName}" callDirection=${callDirection} fromNumber="${fromNumber}" calledNumber="${calledNumber}" recipient="${recipient}" availableTemplates=[${smsMessages.map((m) => `${m.name}(${m.trigger})`).join(", ")}]`);
 
               // Look up the configured during-call template by exact name.
               // We NEVER use AI-supplied content — only the verbatim configured template.
@@ -979,7 +983,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 (m) => m.trigger === "during" && m.name === requestedName,
               );
 
-              let result: { ok: boolean; sid?: string; error?: string };
+              let result: { ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string };
               let bodyForLog = "";
               if (!recipient) {
                 result = { ok: false, error: "No recipient phone number available for this call" };
@@ -1003,11 +1007,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     to_number: recipient,
                     body: bodyForLog,
                     twilio_sid: result.sid || null,
-                    status: "sent",
+                    status: result.status || "sent",
                   }).catch(() => {});
                 }
               }
-              console.log(`[MediaStream] send_sms template="${requestedName}" → ${recipient} ok=${result.ok} sid=${result.sid || "-"} err=${result.error || "-"} (callId=${callId})`);
+              console.log(`[MediaStream] send_sms RESULT template="${requestedName}" → ${recipient} ok=${result.ok} sid=${result.sid || "-"} status=${result.status || "-"} errorCode=${result.errorCode || "-"} err=${result.error || "-"} (callId=${callId})`);
               transcriptLines.push(`[System]: send_sms(template="${requestedName}", to=${recipient}, body="${(bodyForLog || "").slice(0, 80)}...") → ${result.ok ? "sent " + result.sid : "failed: " + result.error}`);
               openaiWs!.send(JSON.stringify({
                 type: "conversation.item.create",
@@ -1016,7 +1020,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   call_id: event.call_id,
                   output: JSON.stringify(result.ok
                     ? { success: true, message: `SMS template "${requestedName}" sent. Briefly confirm to the caller in their language.` }
-                    : { success: false, error: result.error }),
+                    : { success: false, error: result.error, instruction: `Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent.` }),
                 },
               }));
               openaiWs!.send(JSON.stringify({ type: "response.create" }));
