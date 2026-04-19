@@ -207,7 +207,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let repeatedAssistantTranscriptCount = 0;
   let pendingRecoveryCooldownMs = 0;
   const DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS = 220;
-  const INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS = 1200;
+  // Realtime spoken output can consume tokens much faster than plain text, so give
+  // the first greeting a very large budget and then restore the normal cap.
+  const INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS = 4096;
   let greetingTokenLimitRaised = false;
 
   // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
