@@ -154,6 +154,7 @@ export default function CreateAgent() {
   const [retryDelay, setRetryDelay] = useState({ hours: 0, minutes: 5 });
   const [enableRecording, setEnableRecording] = useState(true);
   const [temperature, setTemperature] = useState([0.6]);
+  const [responseTokenCap, setResponseTokenCap] = useState([220]);
   const [uninterruptibleGreeting, setUninterruptibleGreeting] = useState(true);
   const [antiBargein, setAntiBargein] = useState(false);
   const [startTime, setStartTime] = useState("09:00");
@@ -200,6 +201,7 @@ export default function CreateAgent() {
         });
         setEnableRecording(agent.settings.enable_recording ?? true);
         setTemperature([(agent.settings as any).temperature ?? 0.6]);
+        setResponseTokenCap([(agent.settings as any).response_token_cap ?? 220]);
         setUninterruptibleGreeting((agent.settings as any).uninterruptible_greeting ?? true);
         setAntiBargein((agent.settings as any).anti_barge_in ?? false);
         const rawSettings = agent.settings as any;
@@ -297,6 +299,7 @@ export default function CreateAgent() {
       retry_delay_minutes: retryDelay.minutes,
       enable_recording: enableRecording,
       temperature: temperature[0],
+      response_token_cap: responseTokenCap[0],
       uninterruptible_greeting: uninterruptibleGreeting,
       anti_barge_in: antiBargein,
       sms_messages: smsMessages.map((m, idx) => ({
