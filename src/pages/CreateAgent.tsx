@@ -34,6 +34,7 @@ import {
   MessageSquareText,
   MapPin,
   ExternalLink,
+  ClipboardList,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -603,6 +604,42 @@ export default function CreateAgent() {
               </div>
             </div>
 
+            {/* SMS preview toolbar */}
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const previewCaseId = editId || "00000000-0000-0000-0000-000000000000";
+                  const url = `/location?caseId=${previewCaseId}&token=preview`;
+                  window.open(url, "_blank", "noopener,noreferrer");
+                }}
+                className="gap-1"
+                title="Avab asukoha kinnitamise lehe uues vahekaardis (eelvaade)"
+              >
+                <MapPin className="h-3 w-3" />
+                Ava asukoha leht
+                <ExternalLink className="h-3 w-3 opacity-60" />
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const previewCaseId = editId || "00000000-0000-0000-0000-000000000000";
+                  const url = `/form?caseId=${previewCaseId}&token=preview`;
+                  window.open(url, "_blank", "noopener,noreferrer");
+                }}
+                className="gap-1"
+                title="Avab info-vormi (reg-nr + tagasihelistamise nr) uues vahekaardis (eelvaade)"
+              >
+                <ClipboardList className="h-3 w-3" />
+                Ava info-vorm
+                <ExternalLink className="h-3 w-3 opacity-60" />
+              </Button>
+            </div>
+
             {/* SMS */}
             <div className="glass-card rounded-xl p-6">
               <div className="flex items-start gap-4">
@@ -616,29 +653,13 @@ export default function CreateAgent() {
                       <p className="text-sm text-muted-foreground">
                         Configure exact SMS texts. The AI sends them verbatim — never rewrites the content. Use{" "}
                         {"{{caller_name}}"}, {"{{caller_reg_no}}"}, {"{{first_name}}"} for variable substitution.
-                        Order matters: AI references SMSes by <strong>name</strong>, and after-call SMSes are sent in this order.
+                        Use <code className="text-xs">{"{{location_link}}"}</code> for the location confirmation link
+                        and <code className="text-xs">{"{{form_link}}"}</code> for the registration-number + callback
+                        info form. Order matters: AI references SMSes by <strong>name</strong>, and after-call SMSes
+                        are sent in this order.
                       </p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          // Open the live location confirmation page in a new tab using the
-                          // current agent id as the caseId placeholder + a preview token.
-                          // Submission will fail (token is fake) — this is for visual review only.
-                          const previewCaseId = editId || "00000000-0000-0000-0000-000000000000";
-                          const url = `/location?caseId=${previewCaseId}&token=preview`;
-                          window.open(url, "_blank", "noopener,noreferrer");
-                        }}
-                        className="gap-1"
-                        title="Avab asukoha kinnitamise lehe uues vahekaardis (eelvaade)"
-                      >
-                        <MapPin className="h-3 w-3" />
-                        Ava asukoha leht
-                        <ExternalLink className="h-3 w-3 opacity-60" />
-                      </Button>
                       <Button
                         type="button"
                         variant="outline"
