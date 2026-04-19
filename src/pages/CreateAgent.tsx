@@ -334,24 +334,54 @@ export default function CreateAgent() {
 
     try {
       if (editId) {
+        // Update + return the FULL row so we can verify what actually persisted.
         const { data, error } = await supabase
           .from("agents")
           .update(agentData as any)
           .eq("id", editId)
-          .select("id");
+          .select("*");
         if (error) throw error;
         if (!data || data.length === 0) {
           throw new Error("Update affected 0 rows — you may not have permission to edit this agent.");
         }
-        toast.success(`Agent updated · ${smsMessages.length} SMS template(s)`);
+        const saved = data[0] as any;
+        const savedSms = Array.isArray(saved?.settings?.sms_messages)
+          ? saved.settings.sms_messages
+          : [];
+        // Verify SMS round-trip: compare what we sent vs what came back.
+        const sentSms = settingsPayload.sms_messages;
+        const mismatch = savedSms.length !== sentSms.length
+          || sentSms.some((s, i) =>
+            savedSms[i]?.content !== s.content
+            || savedSms[i]?.description !== s.description
+            || savedSms[i]?.name !== s.name
+            || savedSms[i]?.trigger !== s.trigger,
+          );
+        console.log("[CreateAgent] Round-trip check:", { sentSms, savedSms, mismatch });
+        if (mismatch) {
+          toast.error("SMS templates did not round-trip correctly — check console");
+        } else {
+          toast.success(`Saved · ${savedSms.length} SMS template(s) confirmed in DB`);
+        }
+        // Re-hydrate state from DB so the UI reflects exactly what's stored.
+        setSmsMessages(
+          savedSms.map((m: any, idx: number) => ({
+            id: m.id || crypto.randomUUID(),
+            name: m.name || `SMS ${idx + 1}`,
+            description: typeof m.description === "string" ? m.description : "",
+            content: m.content || "",
+            trigger: m.trigger === "after" ? "after" : "during",
+          })),
+        );
+        // Stay on the edit page so the user can see persistence immediately.
       } else {
         const { error } = await supabase
           .from("agents")
           .insert({ ...agentData, user_id: user.id } as any);
         if (error) throw error;
         toast.success("Agent created");
+        navigate("/agents");
       }
-      navigate("/agents");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save agent");
     } finally {
