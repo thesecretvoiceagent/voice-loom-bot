@@ -118,14 +118,18 @@ async function crmLookup(params: { phone_number?: string; reg_no?: string; descr
 }
 
 // Send SMS via Twilio REST API. Returns true on success.
-async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: string; error?: string }> {
+async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string }> {
+  console.log(`[sendSms] >>> attempt to=${to} from=${config.twilio.fromNumber || "(missing)"} bodyLen=${body?.length || 0} bodyPreview="${(body || "").slice(0, 60)}"`);
   if (!config.twilio.isConfigured) {
+    console.error(`[sendSms] FAIL: Twilio not configured (accountSid set? ${!!config.twilio.accountSid}, authToken set? ${!!config.twilio.authToken})`);
     return { ok: false, error: "Twilio not configured" };
   }
   if (!to || !body) {
+    console.error(`[sendSms] FAIL: missing fields to="${to}" bodyLen=${body?.length || 0}`);
     return { ok: false, error: "Missing 'to' or 'body'" };
   }
   if (!config.twilio.fromNumber) {
+    console.error(`[sendSms] FAIL: TWILIO_FROM_NUMBER not configured`);
     return { ok: false, error: "TWILIO_FROM_NUMBER not configured" };
   }
   try {
@@ -144,13 +148,33 @@ async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: s
       }).toString(),
     });
     const data: any = await res.json().catch(() => ({}));
+    console.log(`[sendSms] Twilio HTTP ${res.status} response:`, JSON.stringify({
+      sid: data?.sid,
+      status: data?.status,
+      error_code: data?.error_code,
+      error_message: data?.error_message,
+      to: data?.to,
+      from: data?.from,
+      num_segments: data?.num_segments,
+      price: data?.price,
+      message: data?.message,
+      code: data?.code,
+      more_info: data?.more_info,
+    }));
     if (!res.ok) {
-      console.error(`[sendSms] HTTP ${res.status}`, data);
-      return { ok: false, error: data?.message || `HTTP ${res.status}` };
+      console.error(`[sendSms] FAIL HTTP ${res.status} code=${data?.code} msg=${data?.message} more_info=${data?.more_info}`);
+      return { ok: false, error: `${data?.message || `HTTP ${res.status}`}${data?.code ? ` (code ${data.code})` : ""}${data?.more_info ? ` ${data.more_info}` : ""}` };
     }
-    return { ok: true, sid: data?.sid };
+    // Twilio returns 201 even if the message will fail later (e.g. status="failed" or has error_code).
+    // Treat any of those as a real failure so the AI doesn't claim success.
+    if (data?.error_code || data?.status === "failed" || data?.status === "undelivered") {
+      console.error(`[sendSms] FAIL Twilio accepted but flagged status="${data?.status}" error_code=${data?.error_code} error_message=${data?.error_message}`);
+      return { ok: false, sid: data?.sid, status: data?.status, errorCode: data?.error_code, error: data?.error_message || `Twilio status ${data?.status}` };
+    }
+    console.log(`[sendSms] OK sid=${data?.sid} status=${data?.status}`);
+    return { ok: true, sid: data?.sid, status: data?.status };
   } catch (err: any) {
-    console.error(`[sendSms] error:`, err);
+    console.error(`[sendSms] EXCEPTION:`, err);
     return { ok: false, error: err?.message || "send failed" };
   }
 }
