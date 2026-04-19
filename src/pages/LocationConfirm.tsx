@@ -22,19 +22,28 @@ type SubmitState =
   | { kind: "success"; address: string }
   | { kind: "error"; message: string };
 
+type SearchState =
+  | { kind: "idle" }
+  | { kind: "loading" }
+  | { kind: "error"; message: string };
+
 export default function LocationConfirm() {
   const [params] = useSearchParams();
   const caseId = params.get("caseId") || "";
   const token = params.get("token") || "";
 
   const [position, setPosition] = useState<[number, number] | null>(null);
-  const [geoStatus, setGeoStatus] = useState("Küsime asukohta…");
+  const [geoStatus, setGeoStatus] = useState("Küsime sinu asukohta…");
   const [submit, setSubmit] = useState<SubmitState>({ kind: "idle" });
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchState, setSearchState] = useState<SearchState>({ kind: "idle" });
 
   const mapHostRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markerRef = useRef<L.Marker | null>(null);
 
+  // Auto-request geolocation on mount — this is the default UX.
   useEffect(() => {
     let settled = false;
 
@@ -46,11 +55,11 @@ export default function LocationConfirm() {
     };
 
     const fallbackTimer = window.setTimeout(() => {
-      settle(TALLINN, "Asukohta ei leitud — lohista nööpnõela õigesse kohta");
-    }, 4000);
+      settle(TALLINN, "Asukohta ei leitud — otsi aadressi või lohista nööpnõela");
+    }, 6000);
 
     if (!("geolocation" in navigator)) {
-      settle(TALLINN, "Brauser ei toeta asukohta — lohista nööpnõela");
+      settle(TALLINN, "Brauser ei toeta asukohta — otsi aadressi või lohista nööpnõela");
       return () => window.clearTimeout(fallbackTimer);
     }
 
@@ -59,14 +68,15 @@ export default function LocationConfirm() {
         (pos) => {
           settle(
             [pos.coords.latitude, pos.coords.longitude],
-            "Sinu asukoht — kinnita või lohista",
+            "Sinu asukoht — kinnita või lohista täpsemaks",
           );
         },
-        () => settle(TALLINN, "Asukoht keelatud — lohista nööpnõela"),
+        () =>
+          settle(TALLINN, "Asukoht keelatud — otsi aadressi või lohista nööpnõela"),
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 },
       );
     } catch {
-      settle(TALLINN, "Asukoha viga — lohista nööpnõela");
+      settle(TALLINN, "Asukoha viga — otsi aadressi või lohista nööpnõela");
     }
 
     return () => window.clearTimeout(fallbackTimer);
@@ -126,12 +136,41 @@ export default function LocationConfirm() {
       (pos) => {
         const next: [number, number] = [pos.coords.latitude, pos.coords.longitude];
         setPosition(next);
-        setGeoStatus("Sinu asukoht — kinnita või lohista");
+        setGeoStatus("Sinu asukoht — kinnita või lohista täpsemaks");
         mapRef.current?.setView(next, Math.max(mapRef.current.getZoom(), 16));
       },
       () => setGeoStatus("Asukoht keelatud — luba see brauseri seadetes"),
       { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 },
     );
+  };
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = searchQuery.trim();
+    if (!q || searchState.kind === "loading") return;
+
+    setSearchState({ kind: "loading" });
+    try {
+      const { data, error } = await supabase.functions.invoke("location-confirm", {
+        body: { mode: "search", query: q },
+      });
+      if (error) {
+        setSearchState({ kind: "error", message: error.message || "Otsing ebaõnnestus" });
+        return;
+      }
+      if (!data?.ok) {
+        setSearchState({ kind: "error", message: data?.error || "Aadressi ei leitud" });
+        return;
+      }
+      const next: [number, number] = [Number(data.lat), Number(data.lng)];
+      setPosition(next);
+      setGeoStatus(`Leitud: ${data.address}`);
+      mapRef.current?.setView(next, 17);
+      setSearchState({ kind: "idle" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Võrgu viga";
+      setSearchState({ kind: "error", message: msg });
+    }
   };
 
   const paramsValid = useMemo(() => {
@@ -194,14 +233,36 @@ export default function LocationConfirm() {
 
   return (
     <div className="bg-background flex flex-col" style={{ minHeight: "100dvh" }}>
-      <header className="px-5 pt-6 pb-3 space-y-1 shrink-0">
+      <header className="px-5 pt-6 pb-3 space-y-2 shrink-0">
         <h1 className="text-2xl font-semibold text-foreground leading-tight">
           Kinnita oma asukoht
         </h1>
         <p className="text-sm text-muted-foreground">{geoStatus}</p>
+
+        <form onSubmit={handleSearch} className="flex gap-2 pt-1">
+          <input
+            type="text"
+            inputMode="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Otsi aadressi (nt Pärnu mnt 100, Tallinn)"
+            className="flex-1 h-11 px-3 rounded-md bg-muted border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+          />
+          <button
+            type="submit"
+            disabled={searchState.kind === "loading" || !searchQuery.trim()}
+            className="h-11 px-4 rounded-md bg-secondary text-secondary-foreground text-sm font-medium disabled:opacity-50"
+          >
+            {searchState.kind === "loading" ? "Otsin…" : "Otsi"}
+          </button>
+        </form>
+
+        {searchState.kind === "error" && (
+          <p className="text-xs text-destructive">{searchState.message}</p>
+        )}
       </header>
 
-      <div className="relative w-full bg-muted shrink-0" style={{ height: "55vh", minHeight: 320 }}>
+      <div className="relative w-full bg-muted shrink-0" style={{ height: "48vh", minHeight: 280 }}>
         {position ? (
           <div ref={mapHostRef} className="absolute inset-0" />
         ) : (
@@ -247,6 +308,7 @@ export default function LocationConfirm() {
           >
             <div className="font-semibold">Asukoht kinnitatud</div>
             {submit.address && <div className="text-sm opacity-90">{submit.address}</div>}
+            <div className="text-xs opacity-75">AI assistent loeb selle sulle vestluses tagasi.</div>
           </div>
         ) : (
           <button
