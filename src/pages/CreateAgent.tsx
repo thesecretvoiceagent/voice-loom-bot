@@ -32,6 +32,8 @@ import {
   Trash2,
   X,
   MessageSquareText,
+  MapPin,
+  ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
