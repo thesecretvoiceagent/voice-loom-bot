@@ -193,6 +193,11 @@ export type Database = {
           direction: string
           duration_seconds: number | null
           ended_at: string | null
+          form_callback_phone_number: string | null
+          form_raw: Json | null
+          form_registration_number: string | null
+          form_submission_source: string | null
+          form_submitted_at: string | null
           from_number: string | null
           id: string
           location_address: string | null
@@ -218,6 +223,11 @@ export type Database = {
           direction?: string
           duration_seconds?: number | null
           ended_at?: string | null
+          form_callback_phone_number?: string | null
+          form_raw?: Json | null
+          form_registration_number?: string | null
+          form_submission_source?: string | null
+          form_submitted_at?: string | null
           from_number?: string | null
           id?: string
           location_address?: string | null
@@ -243,6 +253,11 @@ export type Database = {
           direction?: string
           duration_seconds?: number | null
           ended_at?: string | null
+          form_callback_phone_number?: string | null
+          form_raw?: Json | null
+          form_registration_number?: string | null
+          form_submission_source?: string | null
+          form_submitted_at?: string | null
           from_number?: string | null
           id?: string
           location_address?: string | null
