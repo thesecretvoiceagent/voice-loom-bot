@@ -590,7 +590,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       const responseCreate: any = {
         type: "response.create",
         response: {
-          max_output_tokens: "inf",
+          // Realtime API field name is `max_response_output_tokens` (same as session-level).
+          // Using the wrong key (`max_output_tokens`) silently falls back to the session
+          // cap of 220, which truncates long greetings mid-sentence.
+          max_response_output_tokens: "inf",
         },
       };
       if (greeting) {
