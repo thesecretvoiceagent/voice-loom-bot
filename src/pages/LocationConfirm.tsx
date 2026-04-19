@@ -38,41 +38,60 @@ export default function LocationConfirm() {
   const caseId = params.get("caseId") || "";
   const token = params.get("token") || "";
 
+  // initialCenter is set ONCE when geolocation resolves (or fallback fires).
+  // After that, `position` tracks the marker — but we never re-mount the map.
+  const [initialCenter, setInitialCenter] = useState<[number, number] | null>(null);
   const [position, setPosition] = useState<[number, number] | null>(null);
+  const [geoStatus, setGeoStatus] = useState<string>("Küsime asukohta…");
   const [submit, setSubmit] = useState<SubmitState>({ kind: "idle" });
   const markerRef = useRef<L.Marker | null>(null);
 
-  // Initial geolocation. We use a hard wall-clock fallback because some
-  // environments (e.g. iframes without `allow="geolocation"`, or browsers
-  // that silently swallow the permission prompt) never fire either callback,
-  // which would leave the user staring at "Laeme kaarti…" forever.
   useEffect(() => {
     let settled = false;
-    const settle = (pos: [number, number]) => {
+    const settle = (pos: [number, number], status: string) => {
       if (settled) return;
       settled = true;
+      setInitialCenter(pos);
       setPosition(pos);
+      setGeoStatus(status);
     };
 
-    const fallbackTimer = window.setTimeout(() => settle(TALLINN), 4000);
+    const fallbackTimer = window.setTimeout(
+      () => settle(TALLINN, "Asukohta ei leitud — lohista nööpnõela õigesse kohta"),
+      4000,
+    );
 
     if (!("geolocation" in navigator)) {
-      settle(TALLINN);
+      settle(TALLINN, "Brauser ei toeta asukohta — lohista nööpnõela");
       return () => window.clearTimeout(fallbackTimer);
     }
 
     try {
       navigator.geolocation.getCurrentPosition(
-        (pos) => settle([pos.coords.latitude, pos.coords.longitude]),
-        () => settle(TALLINN),
+        (pos) => settle([pos.coords.latitude, pos.coords.longitude], "Sinu asukoht — kinnita või lohista"),
+        () => settle(TALLINN, "Asukoht keelatud — lohista nööpnõela"),
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 },
       );
     } catch {
-      settle(TALLINN);
+      settle(TALLINN, "Asukoha viga — lohista nööpnõela");
     }
 
     return () => window.clearTimeout(fallbackTimer);
   }, []);
+
+  const requestGeoAgain = () => {
+    if (!("geolocation" in navigator)) return;
+    setGeoStatus("Küsime asukohta uuesti…");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const next: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        setPosition(next);
+        setGeoStatus("Sinu asukoht — kinnita või lohista");
+      },
+      () => setGeoStatus("Asukoht keelatud — luba see brauseri seadetes"),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 },
+    );
+  };
 
   const paramsValid = useMemo(() => {
     const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -122,25 +141,23 @@ export default function LocationConfirm() {
   }
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="bg-background flex flex-col" style={{ minHeight: "100dvh" }}>
       {/* Header */}
-      <header className="px-5 pt-6 pb-4 space-y-2">
+      <header className="px-5 pt-6 pb-3 space-y-1 shrink-0">
         <h1 className="text-2xl font-semibold text-foreground leading-tight">
           Kinnita oma asukoht
         </h1>
-        <p className="text-sm text-muted-foreground">
-          1. Kontrolli asukohta &nbsp;·&nbsp; 2. Vajuta kinnita
-        </p>
+        <p className="text-sm text-muted-foreground">{geoStatus}</p>
       </header>
 
-      {/* Map — explicit height (not flex) so Leaflet can compute its size on first paint */}
+      {/* Map — explicit height so Leaflet can size itself */}
       <div
-        className="relative w-full"
-        style={{ height: "60vh", minHeight: 320 }}
+        className="relative w-full bg-muted shrink-0"
+        style={{ height: "55vh", minHeight: 320 }}
       >
-        {position ? (
+        {initialCenter ? (
           <MapContainer
-            center={position}
+            center={initialCenter}
             zoom={16}
             scrollWheelZoom
             style={{ height: "100%", width: "100%" }}
@@ -150,22 +167,24 @@ export default function LocationConfirm() {
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
             <MapClickHandler onPick={(lat, lng) => setPosition([lat, lng])} />
-            <Marker
-              position={position}
-              draggable
-              icon={markerIcon}
-              ref={(ref) => {
-                markerRef.current = ref;
-              }}
-              eventHandlers={{
-                dragend: () => {
-                  const m = markerRef.current;
-                  if (!m) return;
-                  const ll = m.getLatLng();
-                  setPosition([ll.lat, ll.lng]);
-                },
-              }}
-            />
+            {position && (
+              <Marker
+                position={position}
+                draggable
+                icon={markerIcon}
+                ref={(ref) => {
+                  markerRef.current = ref;
+                }}
+                eventHandlers={{
+                  dragend: () => {
+                    const m = markerRef.current;
+                    if (!m) return;
+                    const ll = m.getLatLng();
+                    setPosition([ll.lat, ll.lng]);
+                  },
+                }}
+              />
+            )}
           </MapContainer>
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
@@ -175,13 +194,21 @@ export default function LocationConfirm() {
       </div>
 
       {/* Footer card */}
-      <div className="bg-card border-t border-border px-5 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-3 mt-auto">
-        <p className="text-sm text-muted-foreground">
-          Liigutage vajadusel nööpnõela ja vajutage kinnita.
-        </p>
-        <p className="text-xs text-muted-foreground">
-          Kui kaart ei näita õiget kohta, liigutage nööpnõela.
-        </p>
+      <div className="bg-card border-t border-border px-5 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-3 flex-1">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs text-muted-foreground font-mono">
+            {position
+              ? `${position[0].toFixed(5)}, ${position[1].toFixed(5)}`
+              : "—"}
+          </p>
+          <button
+            type="button"
+            onClick={requestGeoAgain}
+            className="text-xs text-primary underline underline-offset-2"
+          >
+            Kasuta minu asukohta
+          </button>
+        </div>
 
         {submit.kind === "error" && (
           <div
@@ -195,8 +222,10 @@ export default function LocationConfirm() {
         {submit.kind === "success" ? (
           <div
             role="status"
-            className="rounded-md border border-success/40 bg-success/10 text-success-foreground px-4 py-3 space-y-1"
+            className="rounded-md px-4 py-3 space-y-1"
             style={{
+              borderWidth: 1,
+              borderStyle: "solid",
               borderColor: "hsl(142 71% 45% / 0.4)",
               background: "hsl(142 71% 45% / 0.12)",
               color: "hsl(142 71% 35%)",
