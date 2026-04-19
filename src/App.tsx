@@ -33,6 +33,7 @@ import ApiDocsSettings from "./pages/settings/ApiDocsSettings";
 import WidgetsSettings from "./pages/settings/WidgetsSettings";
 import NotFound from "./pages/NotFound";
 import LocationConfirm from "./pages/LocationConfirm";
+import FormSubmit from "./pages/FormSubmit";
 
 const queryClient = new QueryClient();
 
@@ -50,6 +51,9 @@ const App = () => (
 
               {/* Public location confirmation page (opened from SMS link during a live call) */}
               <Route path="/location" element={<LocationConfirm />} />
+
+              {/* Public form submission page (opened from SMS link during a live call) */}
+              <Route path="/form" element={<FormSubmit />} />
 
               {/* Protected routes */}
               <Route element={<MainLayout />}>
