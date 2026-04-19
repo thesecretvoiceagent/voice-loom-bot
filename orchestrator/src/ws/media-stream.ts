@@ -863,6 +863,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             responseDoneReceived = false;
             ignoreAudioUntilNextResponse = false;
             aiIsSpeaking = true; // Keep this true until Twilio confirms playback completion.
+            lastResponseFinishReason = null;
+            lastResponseOutputTokens = null;
             break;
 
           case "response.audio.delta": {
