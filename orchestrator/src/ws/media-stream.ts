@@ -482,6 +482,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }
     }
 
+    // Inject Google Form fallback link variable so SMS templates can use {{form_link}}.
+    // Form is prefilled with the caseId so Apps Script can post it back to Railway,
+    // which writes the form fields into the same calls row.
+    // GOOGLE_FORM_BASE_URL example: https://docs.google.com/forms/d/e/<FORM_ID>/viewform
+    // GOOGLE_FORM_CASE_ENTRY_ID example: entry.123456789  (the entry ID for the "Case ID" field)
+    const formBaseUrl = (process.env.GOOGLE_FORM_BASE_URL || "").replace(/\/+$/, "");
+    const formCaseEntryId = process.env.GOOGLE_FORM_CASE_ENTRY_ID || "";
+    if (callId && formBaseUrl && formCaseEntryId) {
+      try {
+        const params = new URLSearchParams({
+          usp: "pp_url",
+          [formCaseEntryId]: callId,
+        });
+        callVariables.form_link = `${formBaseUrl}?${params.toString()}`;
+      } catch (err) {
+        console.error(`[MediaStream] Failed to build form_link:`, err);
+      }
+    }
+
     if (Object.keys(callVariables).length > 0) {
       instructions = substituteVars(instructions);
       greeting = substituteVars(greeting);
@@ -575,23 +594,52 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const row = payload?.new;
                 const prev = payload?.old;
                 if (!row) return;
-                const justConfirmed =
+
+                // 1. Location confirmation
+                const justLocationConfirmed =
                   row.location_confirmed === true && prev?.location_confirmed !== true;
-                if (!justConfirmed) return;
-                const addr = (row.location_address || "").toString().slice(0, 300);
-                console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
-                transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
-                if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                  const sysMsg = `📍 Klient kinnitas oma asukoha SMS-i lingilt: "${addr}". Loe see talle vestluses kohe tagasi sama keeles, mida vestluses kasutate, ja küsi kinnitust. Ära paku midagi muud — ainult kinnita asukoht.`;
-                  openaiWs.send(JSON.stringify({
-                    type: "conversation.item.create",
-                    item: {
-                      type: "message",
-                      role: "system",
-                      content: [{ type: "input_text", text: sysMsg }],
-                    },
-                  }));
-                  openaiWs.send(JSON.stringify({ type: "response.create" }));
+                if (justLocationConfirmed) {
+                  const addr = (row.location_address || "").toString().slice(0, 300);
+                  console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
+                  transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
+                  if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+                    const sysMsg = `📍 Klient kinnitas oma asukoha SMS-i lingilt: "${addr}". Loe see talle vestluses kohe tagasi sama keeles, mida vestluses kasutate, ja küsi kinnitust. Ära paku midagi muud — ainult kinnita asukoht.`;
+                    openaiWs.send(JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "message",
+                        role: "system",
+                        content: [{ type: "input_text", text: sysMsg }],
+                      },
+                    }));
+                    openaiWs.send(JSON.stringify({ type: "response.create" }));
+                  }
+                }
+
+                // 2. Google Form fallback submission (registration number / callback phone)
+                const justFormSubmitted =
+                  row.form_submitted_at && row.form_submitted_at !== prev?.form_submitted_at;
+                if (justFormSubmitted) {
+                  const reg = (row.form_registration_number || "").toString().slice(0, 20);
+                  const phone = (row.form_callback_phone_number || "").toString().slice(0, 20);
+                  console.log(`[MediaStream] Form submitted (callId=${callId}): reg="${reg}" phone="${phone}"`);
+                  transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
+                  if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+                    const parts: string[] = [];
+                    if (reg) parts.push(`registreerimisnumber: ${reg}`);
+                    if (phone) parts.push(`tagasihelistamise number: ${phone}`);
+                    const fields = parts.join(", ");
+                    const sysMsg = `📝 Klient esitas vormi andmed: ${fields}. Loe need talle kohe vestluses tagasi sama keeles, mida vestluses kasutate, ja küsi kinnitust. Jätka seejärel vestlust nende kinnitatud andmetega.`;
+                    openaiWs.send(JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "message",
+                        role: "system",
+                        content: [{ type: "input_text", text: sysMsg }],
+                      },
+                    }));
+                    openaiWs.send(JSON.stringify({ type: "response.create" }));
+                  }
                 }
               },
             )
