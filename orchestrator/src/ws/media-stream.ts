@@ -789,7 +789,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           // Cap each turn so the model can't ramble or loop on the same sentence forever.
           max_response_output_tokens: greetingTokenLimitRaised
             ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS
-            : DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS,
+            : configuredMaxResponseOutputTokens,
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           input_audio_transcription: {
