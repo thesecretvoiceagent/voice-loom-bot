@@ -281,15 +281,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (responseHasAudio && !responseAudioDone) return;
     if (responsePlaybackMarkName) return;
 
-    if (greetingTokenLimitRaised && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+    if (greetingTokenLimitRaised) {
+      // Keep the larger response budget for the rest of the call.
+      // Lowering it immediately after the opener has proven unstable in this live bridge.
       greetingTokenLimitRaised = false;
-      openaiWs.send(JSON.stringify({
-        type: "session.update",
-        session: {
-          max_response_output_tokens: DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS,
-        },
-      }));
-      console.log(`[MediaStream] Restored default response token cap after initial greeting (callId=${callId})`);
     }
 
     const completedResponseId = activeResponseId;
