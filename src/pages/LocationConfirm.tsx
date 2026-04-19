@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { MapContainer, TileLayer, Marker, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { supabase } from "@/integrations/supabase/client";
 
-// Default Leaflet marker icons don't load via bundlers — point them to CDN.
 const markerIcon = new L.Icon({
   iconUrl: "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/images/marker-icon.png",
   iconRetinaUrl: "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/images/marker-icon-2x.png",
@@ -24,42 +22,32 @@ type SubmitState =
   | { kind: "success"; address: string }
   | { kind: "error"; message: string };
 
-function MapClickHandler({ onPick }: { onPick: (lat: number, lng: number) => void }) {
-  useMapEvents({
-    click(e) {
-      onPick(e.latlng.lat, e.latlng.lng);
-    },
-  });
-  return null;
-}
-
 export default function LocationConfirm() {
   const [params] = useSearchParams();
   const caseId = params.get("caseId") || "";
   const token = params.get("token") || "";
 
-  // initialCenter is set ONCE when geolocation resolves (or fallback fires).
-  // After that, `position` tracks the marker — but we never re-mount the map.
-  const [initialCenter, setInitialCenter] = useState<[number, number] | null>(null);
   const [position, setPosition] = useState<[number, number] | null>(null);
-  const [geoStatus, setGeoStatus] = useState<string>("Küsime asukohta…");
+  const [geoStatus, setGeoStatus] = useState("Küsime asukohta…");
   const [submit, setSubmit] = useState<SubmitState>({ kind: "idle" });
+
+  const mapHostRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
   const markerRef = useRef<L.Marker | null>(null);
 
   useEffect(() => {
     let settled = false;
-    const settle = (pos: [number, number], status: string) => {
+
+    const settle = (next: [number, number], status: string) => {
       if (settled) return;
       settled = true;
-      setInitialCenter(pos);
-      setPosition(pos);
+      setPosition(next);
       setGeoStatus(status);
     };
 
-    const fallbackTimer = window.setTimeout(
-      () => settle(TALLINN, "Asukohta ei leitud — lohista nööpnõela õigesse kohta"),
-      4000,
-    );
+    const fallbackTimer = window.setTimeout(() => {
+      settle(TALLINN, "Asukohta ei leitud — lohista nööpnõela õigesse kohta");
+    }, 4000);
 
     if (!("geolocation" in navigator)) {
       settle(TALLINN, "Brauser ei toeta asukohta — lohista nööpnõela");
@@ -68,7 +56,12 @@ export default function LocationConfirm() {
 
     try {
       navigator.geolocation.getCurrentPosition(
-        (pos) => settle([pos.coords.latitude, pos.coords.longitude], "Sinu asukoht — kinnita või lohista"),
+        (pos) => {
+          settle(
+            [pos.coords.latitude, pos.coords.longitude],
+            "Sinu asukoht — kinnita või lohista",
+          );
+        },
         () => settle(TALLINN, "Asukoht keelatud — lohista nööpnõela"),
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 },
       );
@@ -79,14 +72,62 @@ export default function LocationConfirm() {
     return () => window.clearTimeout(fallbackTimer);
   }, []);
 
+  useEffect(() => {
+    if (!mapHostRef.current || !position || mapRef.current) return;
+
+    const map = L.map(mapHostRef.current, {
+      zoomControl: true,
+      attributionControl: true,
+    }).setView(position, 16);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      maxZoom: 19,
+    }).addTo(map);
+
+    const marker = L.marker(position, {
+      draggable: true,
+      icon: markerIcon,
+    }).addTo(map);
+
+    map.on("click", (event: L.LeafletMouseEvent) => {
+      const next: [number, number] = [event.latlng.lat, event.latlng.lng];
+      marker.setLatLng(next);
+      setPosition(next);
+    });
+
+    marker.on("dragend", () => {
+      const ll = marker.getLatLng();
+      setPosition([ll.lat, ll.lng]);
+    });
+
+    mapRef.current = map;
+    markerRef.current = marker;
+
+    window.setTimeout(() => map.invalidateSize(), 0);
+
+    return () => {
+      markerRef.current = null;
+      mapRef.current?.remove();
+      mapRef.current = null;
+    };
+  }, [position]);
+
+  useEffect(() => {
+    if (!position || !markerRef.current) return;
+    markerRef.current.setLatLng(position);
+  }, [position]);
+
   const requestGeoAgain = () => {
     if (!("geolocation" in navigator)) return;
+
     setGeoStatus("Küsime asukohta uuesti…");
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const next: [number, number] = [pos.coords.latitude, pos.coords.longitude];
         setPosition(next);
         setGeoStatus("Sinu asukoht — kinnita või lohista");
+        mapRef.current?.setView(next, Math.max(mapRef.current.getZoom(), 16));
       },
       () => setGeoStatus("Asukoht keelatud — luba see brauseri seadetes"),
       { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 },
@@ -100,6 +141,15 @@ export default function LocationConfirm() {
 
   const handleSubmit = async () => {
     if (!position || submit.kind === "loading" || submit.kind === "success") return;
+
+    if (token === "preview") {
+      setSubmit({
+        kind: "error",
+        message: "See on eelvaate link. Päris kinnitamiseks on vaja allkirjastatud linki.",
+      });
+      return;
+    }
+
     setSubmit({ kind: "loading" });
 
     try {
@@ -116,10 +166,12 @@ export default function LocationConfirm() {
         setSubmit({ kind: "error", message: error.message || "Tundmatu viga" });
         return;
       }
+
       if (!data?.ok) {
         setSubmit({ kind: "error", message: data?.error || "Asukoha kinnitamine ebaõnnestus" });
         return;
       }
+
       setSubmit({ kind: "success", address: data.address || "" });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Võrgu viga";
@@ -142,7 +194,6 @@ export default function LocationConfirm() {
 
   return (
     <div className="bg-background flex flex-col" style={{ minHeight: "100dvh" }}>
-      {/* Header */}
       <header className="px-5 pt-6 pb-3 space-y-1 shrink-0">
         <h1 className="text-2xl font-semibold text-foreground leading-tight">
           Kinnita oma asukoht
@@ -150,42 +201,9 @@ export default function LocationConfirm() {
         <p className="text-sm text-muted-foreground">{geoStatus}</p>
       </header>
 
-      {/* Map — explicit height so Leaflet can size itself */}
-      <div
-        className="relative w-full bg-muted shrink-0"
-        style={{ height: "55vh", minHeight: 320 }}
-      >
-        {initialCenter ? (
-          <MapContainer
-            center={initialCenter}
-            zoom={16}
-            scrollWheelZoom
-            style={{ height: "100%", width: "100%" }}
-          >
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
-            <MapClickHandler onPick={(lat, lng) => setPosition([lat, lng])} />
-            {position && (
-              <Marker
-                position={position}
-                draggable
-                icon={markerIcon}
-                ref={(ref) => {
-                  markerRef.current = ref;
-                }}
-                eventHandlers={{
-                  dragend: () => {
-                    const m = markerRef.current;
-                    if (!m) return;
-                    const ll = m.getLatLng();
-                    setPosition([ll.lat, ll.lng]);
-                  },
-                }}
-              />
-            )}
-          </MapContainer>
+      <div className="relative w-full bg-muted shrink-0" style={{ height: "55vh", minHeight: 320 }}>
+        {position ? (
+          <div ref={mapHostRef} className="absolute inset-0" />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
             Laeme kaarti…
@@ -193,13 +211,10 @@ export default function LocationConfirm() {
         )}
       </div>
 
-      {/* Footer card */}
       <div className="bg-card border-t border-border px-5 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-3 flex-1">
         <div className="flex items-center justify-between gap-3">
           <p className="text-xs text-muted-foreground font-mono">
-            {position
-              ? `${position[0].toFixed(5)}, ${position[1].toFixed(5)}`
-              : "—"}
+            {position ? `${position[0].toFixed(5)}, ${position[1].toFixed(5)}` : "—"}
           </p>
           <button
             type="button"
@@ -209,6 +224,12 @@ export default function LocationConfirm() {
             Kasuta minu asukohta
           </button>
         </div>
+
+        {token === "preview" && (
+          <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
+            Eelvaate link näitab kaarti, aga ei salvesta. Päris test vajab allkirjastatud linki.
+          </div>
+        )}
 
         {submit.kind === "error" && (
           <div
@@ -222,14 +243,7 @@ export default function LocationConfirm() {
         {submit.kind === "success" ? (
           <div
             role="status"
-            className="rounded-md px-4 py-3 space-y-1"
-            style={{
-              borderWidth: 1,
-              borderStyle: "solid",
-              borderColor: "hsl(142 71% 45% / 0.4)",
-              background: "hsl(142 71% 45% / 0.12)",
-              color: "hsl(142 71% 35%)",
-            }}
+            className="rounded-md border border-success/40 bg-success/10 text-success px-4 py-3 space-y-1"
           >
             <div className="font-semibold">Asukoht kinnitatud</div>
             {submit.address && <div className="text-sm opacity-90">{submit.address}</div>}
