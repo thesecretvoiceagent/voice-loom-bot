@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Phone, Plus, Settings, Code, Copy, Check, Trash2, Pencil, MessageSquare } from "lucide-react";
+import { Phone, Plus, Settings, Code, Copy, Check, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
 
 interface Widget {
@@ -19,7 +19,7 @@ interface Widget {
 const existingWidgets: Widget[] = [
   {
     id: "45e0d969-5477-43d1-993c-7cb5f9bea17c",
-    phoneNumber: "+37256011298",
+    phoneNumber: "+372 56101535",
     agentName: "BeyondCode AI Voice Agent",
     active: true,
   },
@@ -29,17 +29,12 @@ export default function WidgetsSettings() {
   const [activeTab, setActiveTab] = useState<"create" | "manage">("manage");
   const [selectedWidget, setSelectedWidget] = useState<Widget | null>(existingWidgets[0]);
   const [copied, setCopied] = useState(false);
-
   const [widgetConfig, setWidgetConfig] = useState({
     name: "",
-    phoneNumber: "+37256011298",
+    phoneNumber: "+372 56101535",
     brandColor: "#3b82f6",
     position: "bottom-right",
     greeting: "Need help? Call us for instant support!",
-    buttonText: "Call",
-    feature1: "Available 24/7",
-    feature2: "Instant connection",
-    feature3: "No wait time",
   });
 
   const embedCode = selectedWidget ? `<script> (function() { var script = document.createElement('script');

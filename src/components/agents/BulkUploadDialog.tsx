@@ -82,7 +82,7 @@ export function BulkUploadDialog({ open, onOpenChange, agentName }: BulkUploadDi
   };
 
   const downloadTemplate = () => {
-    const template = 'phone,first_name,last_name,company\n+37256011298,John,Doe,Acme Corp\n+37256011299,Jane,Smith,Tech Inc';
+    const template = 'phone,first_name,last_name,company\n+372 56101535,John,Doe,Acme Corp\n+37256011299,Jane,Smith,Tech Inc';
     const blob = new Blob([template], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

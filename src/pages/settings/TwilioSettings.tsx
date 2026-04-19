@@ -6,7 +6,7 @@ import { Phone, Pencil, AlertTriangle, ShoppingCart } from "lucide-react";
 
 const phoneNumbers = [
   {
-    number: "+37256011298",
+    number: "+372 56101535",
     friendlyName: "Mobile EST",
     webhooks: true,
     iei: true,
