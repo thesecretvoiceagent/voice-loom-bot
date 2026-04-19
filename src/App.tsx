@@ -32,6 +32,7 @@ import ToolsSettings from "./pages/settings/ToolsSettings";
 import ApiDocsSettings from "./pages/settings/ApiDocsSettings";
 import WidgetsSettings from "./pages/settings/WidgetsSettings";
 import NotFound from "./pages/NotFound";
+import LocationConfirm from "./pages/LocationConfirm";
 
 const queryClient = new QueryClient();
 
@@ -46,7 +47,10 @@ const App = () => (
             <Routes>
               {/* Public auth route */}
               <Route path="/auth" element={<Auth />} />
-              
+
+              {/* Public location confirmation page (opened from SMS link during a live call) */}
+              <Route path="/location" element={<LocationConfirm />} />
+
               {/* Protected routes */}
               <Route element={<MainLayout />}>
                 <Route path="/" element={<Dashboard />} />
