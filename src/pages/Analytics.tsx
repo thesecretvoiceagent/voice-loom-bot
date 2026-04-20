@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useCalls } from "@/hooks/useCalls";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { useAgents } from "@/hooks/useAgents";
-import { format, subDays, eachDayOfInterval } from "date-fns";
+import { format, subDays, subHours, eachDayOfInterval, eachHourOfInterval } from "date-fns";
 
 const HOURLY_RATE = 12;
 
