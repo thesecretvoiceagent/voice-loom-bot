@@ -180,6 +180,7 @@ export function KnowledgeBaseTable() {
             {filtered.length} of {rows.length} clients
           </span>
           <Button
+            type="button"
             variant="neon"
             size="sm"
             className="gap-2"
@@ -235,6 +236,7 @@ export function KnowledgeBaseTable() {
                   <TableCell className="text-right p-1.5">
                     <div className="flex items-center justify-end gap-1">
                       <Button
+                        type="button"
                         size="icon"
                         variant="ghost"
                         className="h-8 w-8"
@@ -248,6 +250,7 @@ export function KnowledgeBaseTable() {
                         )}
                       </Button>
                       <Button
+                        type="button"
                         size="icon"
                         variant="ghost"
                         className="h-8 w-8"
@@ -321,6 +324,7 @@ export function KnowledgeBaseTable() {
                           {isEditing ? (
                             <>
                               <Button
+                                type="button"
                                 size="icon"
                                 variant="ghost"
                                 className="h-8 w-8"
@@ -334,6 +338,7 @@ export function KnowledgeBaseTable() {
                                 )}
                               </Button>
                               <Button
+                                type="button"
                                 size="icon"
                                 variant="ghost"
                                 className="h-8 w-8"
@@ -345,6 +350,7 @@ export function KnowledgeBaseTable() {
                           ) : (
                             <>
                               <Button
+                                type="button"
                                 size="icon"
                                 variant="ghost"
                                 className="h-8 w-8"
@@ -353,6 +359,7 @@ export function KnowledgeBaseTable() {
                                 <Pencil className="h-4 w-4 text-muted-foreground" />
                               </Button>
                               <Button
+                                type="button"
                                 size="icon"
                                 variant="ghost"
                                 className="h-8 w-8 text-destructive hover:text-destructive"
