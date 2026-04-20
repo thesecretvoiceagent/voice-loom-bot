@@ -60,6 +60,74 @@ function formatTime(dateStr: string): string {
   }
 }
 
+function csvEscape(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const str = String(value);
+  // Escape double quotes by doubling them, wrap in quotes if contains separator/newline/quote
+  if (/[",\n\r]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+function exportCallsToCsv(rows: CallRow[]) {
+  const headers = [
+    "id",
+    "created_at",
+    "direction",
+    "status",
+    "from_number",
+    "to_number",
+    "agent_id",
+    "campaign_id",
+    "duration_seconds",
+    "started_at",
+    "answered_at",
+    "ended_at",
+    "twilio_call_sid",
+    "recording_url",
+    "summary",
+    "transcript",
+  ];
+  const lines = [headers.join(",")];
+  for (const r of rows) {
+    lines.push(
+      [
+        r.id,
+        r.created_at,
+        r.direction,
+        r.status,
+        r.from_number,
+        r.to_number,
+        r.agent_id,
+        r.campaign_id,
+        r.duration_seconds,
+        r.started_at,
+        r.answered_at,
+        r.ended_at,
+        r.twilio_call_sid,
+        r.recording_url,
+        r.summary,
+        r.transcript,
+      ]
+        .map(csvEscape)
+        .join(",")
+    );
+  }
+  // Prepend BOM so Excel detects UTF-8 (Estonian/Finnish chars in transcripts)
+  const csv = "\uFEFF" + lines.join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  a.href = url;
+  a.download = `call-logs-${stamp}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 export default function CallLogs() {
   const { calls, loading, refetch } = useCalls({ limit: 200 });
   const [searchQuery, setSearchQuery] = useState("");
@@ -130,9 +198,21 @@ export default function CallLogs() {
               Delete All
             </Button>
           )}
-          <Button variant="outline" className="gap-2">
+          <Button
+            variant="outline"
+            className="gap-2"
+            onClick={() => {
+              if (filteredLogs.length === 0) {
+                toast.error("No calls to export");
+                return;
+              }
+              exportCallsToCsv(filteredLogs);
+              toast.success(`Exported ${filteredLogs.length} call${filteredLogs.length !== 1 ? "s" : ""} to CSV`);
+            }}
+            disabled={loading}
+          >
             <Download className="h-4 w-4" />
-            Export
+            Export CSV
           </Button>
         </div>
       </div>
