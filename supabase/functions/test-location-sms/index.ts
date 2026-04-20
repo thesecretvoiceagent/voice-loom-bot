@@ -31,7 +31,7 @@ serve(async (req) => {
 
     // Frontend route serves the LocationConfirm page
     const baseUrl = "https://voice-loom-bot.lovable.app";
-    const url = `${baseUrl}/location/confirm?caseId=${encodeURIComponent(caseId)}&token=${encodeURIComponent(token)}`;
+    const url = `${baseUrl}/location?caseId=${encodeURIComponent(caseId)}&token=${encodeURIComponent(token)}`;
 
     const body = `IIZI: kinnita oma asukoht: ${url}`;
 
