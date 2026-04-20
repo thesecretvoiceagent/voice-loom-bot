@@ -42,6 +42,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import type { AgentRow } from "@/hooks/useAgents";
+import { KnowledgeBaseTable } from "@/components/agents/KnowledgeBaseTable";
 
 const tabs = [
   { id: "instructions", label: "Instructions", icon: MessageSquare },
