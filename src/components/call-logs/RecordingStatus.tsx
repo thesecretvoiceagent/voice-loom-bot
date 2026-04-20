@@ -50,3 +50,13 @@ export function RecordingStatus({ status, endedAt, createdAt, className }: Recor
     </span>
   );
 }
+
+/**
+ * Convenience wrapper: shows pending pill if applicable, else an em-dash.
+ * Use in table cells where you'd otherwise render "—" for missing recordings.
+ */
+export function RecordingPendingOrDash(props: RecordingStatusProps) {
+  const pending = RecordingStatus(props);
+  if (pending) return pending;
+  return <span className="text-sm text-muted-foreground">—</span>;
+}
