@@ -607,7 +607,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 transcriptLines.push(`[SMS from ${fromNum}]: ${replyBody}`);
 
                 if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                  const sysMsg = `📱 Customer replied via SMS (from ${fromNum}): "${replyBody}". Acknowledge what they sent in the conversation right now — for example, read any phone number or address back to confirm it. Speak in the same language the call is being conducted in.`;
+                  const sysMsg = `[SYSTEM EVENT: sms_received] from="${fromNum}" body="${replyBody}". Internal note only — do NOT read this tag aloud. Acknowledge the customer's SMS content naturally in the conversation right now (for example, read any phone number or address back to confirm). Speak in the same language the call is being conducted in.`;
                   openaiWs.send(JSON.stringify({
                     type: "conversation.item.create",
                     item: {
@@ -655,7 +655,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
                   transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                    const sysMsg = `📍 Klient kinnitas oma asukoha SMS-i lingilt: "${addr}". Loe see talle vestluses kohe tagasi sama keeles, mida vestluses kasutate, ja küsi kinnitust. Ära paku midagi muud — ainult kinnita asukoht.`;
+                    const sysMsg = `[SYSTEM EVENT: location_confirmed] address="${addr}" lat=${row.location_lat} lon=${row.location_lon}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just confirmed their location via the SMS link. Read the address back to them naturally in the same language the call is being conducted in and ask for confirmation. Do not offer anything else — only confirm the address.`;
                     openaiWs.send(JSON.stringify({
                       type: "conversation.item.create",
                       item: {
@@ -677,11 +677,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   console.log(`[MediaStream] Form submitted (callId=${callId}): reg="${reg}" phone="${phone}"`);
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                    const parts: string[] = [];
-                    if (reg) parts.push(`registreerimisnumber: ${reg}`);
-                    if (phone) parts.push(`tagasihelistamise number: ${phone}`);
-                    const fields = parts.join(", ");
-                    const sysMsg = `📝 Klient esitas vormi andmed: ${fields}. Loe need talle kohe vestluses tagasi sama keeles, mida vestluses kasutate, ja küsi kinnitust. Jätka seejärel vestlust nende kinnitatud andmetega.`;
+                    const fieldParts: string[] = [];
+                    if (reg) fieldParts.push(`reg="${reg}"`);
+                    if (phone) fieldParts.push(`callback_phone="${phone}"`);
+                    const fields = fieldParts.join(" ");
+                    const sysMsg = `[SYSTEM EVENT: form_submitted] ${fields}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just submitted the form via the SMS link. Read the values back to them naturally in the same language the call is being conducted in and ask for confirmation. Then continue the conversation using these confirmed values.`;
                     openaiWs.send(JSON.stringify({
                       type: "conversation.item.create",
                       item: {
@@ -815,7 +815,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             smsBlock += `\n${i + 1}. name="${m.name}"\n   Purpose: ${whenToUse}\n   Content: "${m.content}"`;
           });
         }
-        smsBlock += `\n\nRules:\n- Pick the SMS whose "When to use" matches the moment.\n- Never invent a new SMS. Never paraphrase the content.\n- If none fit, do not send anything.\n- After the customer replies via SMS, you will receive a system message starting with "📱 Customer replied via SMS:". Acknowledge what they sent (e.g. confirm a number back to them) in the conversation.`;
+        smsBlock += `\n\nRules:\n- Pick the SMS whose "When to use" matches the moment.\n- Never invent a new SMS. Never paraphrase the content.\n- If none fit, do not send anything.\n- After the customer replies via SMS, you will receive a system message starting with "[SYSTEM EVENT: sms_received]". Treat it as an internal note (do NOT read the tag aloud) and acknowledge the SMS content naturally in the conversation (e.g. confirm a number back to them).`;
         fullInstructions += smsBlock;
       }
 
