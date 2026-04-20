@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { config } from "../config.js";
-import { updateCallBySid } from "../supabase.js";
+import { updateCallBySid, updateSmsBySid } from "../supabase.js";
 
 export const twilioWebhookRouter = Router();
 
