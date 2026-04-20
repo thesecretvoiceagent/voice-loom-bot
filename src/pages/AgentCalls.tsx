@@ -390,36 +390,7 @@ export default function AgentCalls() {
         </Table>
       </div>
 
-      {/* Inline Audio Player */}
-      {playingId && (() => {
-        const call = calls.find((c) => c.id === playingId);
-        if (!call?.recording_url) return null;
-        return (
-          <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 glass-card rounded-xl p-4 shadow-elevated flex items-center gap-4 min-w-[400px]">
-            <Volume2 className="h-5 w-5 text-primary shrink-0" />
-            <div className="flex-1">
-              <p className="text-sm font-medium text-foreground mb-2">
-                Recording — {call.to_number}
-              </p>
-              <audio
-                src={getProxiedRecordingUrl(call.recording_url)}
-                controls
-                autoPlay
-                className="w-full h-8"
-                onEnded={() => setPlayingId(null)}
-              />
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 shrink-0"
-              onClick={() => setPlayingId(null)}
-            >
-              <XCircle className="h-4 w-4" />
-            </Button>
-          </div>
-        );
-      })()}
+
 
       {/* Transcript Modal */}
       <Dialog open={!!transcriptModal} onOpenChange={() => setTranscriptModal(null)}>
