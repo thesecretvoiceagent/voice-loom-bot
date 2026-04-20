@@ -40,6 +40,8 @@ import {
   Loader2,
   Trash2,
   RefreshCw,
+  ExternalLink,
+  Link as LinkIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCalls, type CallRow } from "@/hooks/useCalls";
@@ -362,16 +364,49 @@ export default function AgentCalls() {
                           </Button>
                         </div>
                       ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="gap-1.5 h-8"
-                          onClick={() => setPlayingId(call.id)}
-                          title="Play recording"
-                        >
-                          <Volume2 className="h-3.5 w-3.5" />
-                          Play
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5 h-8"
+                            onClick={() => setPlayingId(call.id)}
+                            title="Play recording"
+                          >
+                            <Volume2 className="h-3.5 w-3.5" />
+                            Play
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            asChild
+                            title="Open recording in new tab"
+                          >
+                            <a
+                              href={getProxiedRecordingUrl(call.recording_url)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(getProxiedRecordingUrl(call.recording_url!));
+                                toast.success("Recording link copied");
+                              } catch {
+                                toast.error("Failed to copy link");
+                              }
+                            }}
+                            title="Copy recording link"
+                          >
+                            <LinkIcon className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       )
                     ) : (
                       <span className="text-sm text-muted-foreground">—</span>
