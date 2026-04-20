@@ -50,6 +50,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { getProxiedRecordingUrl } from "@/lib/recording";
+import { RecordingPendingOrDash } from "@/components/call-logs/RecordingStatus";
 
 function formatDuration(seconds: number | null): string {
   if (!seconds) return "0:00";
