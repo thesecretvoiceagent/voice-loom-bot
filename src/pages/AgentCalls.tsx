@@ -64,6 +64,35 @@ function formatTime(dateStr: string | null): string {
   }
 }
 
+function formatDateParts(dateStr: string | null): { date: string; time: string } | null {
+  if (!dateStr) return null;
+  try {
+    const d = new Date(dateStr);
+    const date = d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+    const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    return { date, time };
+  } catch {
+    return null;
+  }
+}
+
+function formatRelative(dateStr: string | null): string {
+  if (!dateStr) return "";
+  try {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    if (d < 30) return `${d}d ago`;
+    return "";
+  } catch {
+    return "";
+  }
+}
+
 export default function AgentCalls() {
   const { id } = useParams();
   const { calls, loading, refetch } = useCalls({ agent_id: id, limit: 200 });
@@ -220,14 +249,25 @@ export default function AgentCalls() {
                     </span>
                   </TableCell>
                   <TableCell>
-                    <div className="text-sm">
-                      <p className="text-muted-foreground">{formatTime(call.started_at || call.created_at)}</p>
-                      {call.ended_at && (
-                        <p className="text-xs text-muted-foreground">
-                          End: {formatTime(call.ended_at)}
-                        </p>
-                      )}
-                    </div>
+                    {(() => {
+                      const start = formatDateParts(call.started_at || call.created_at);
+                      const end = formatDateParts(call.ended_at);
+                      const rel = formatRelative(call.started_at || call.created_at);
+                      if (!start) return <span className="text-muted-foreground">—</span>;
+                      return (
+                        <div className="text-sm leading-tight">
+                          <div className="flex items-baseline gap-1.5">
+                            <span className="font-medium text-foreground">{start.time}</span>
+                            <span className="text-xs text-muted-foreground">{start.date}</span>
+                          </div>
+                          {end ? (
+                            <p className="text-xs text-muted-foreground">ended {end.time}</p>
+                          ) : rel ? (
+                            <p className="text-xs text-muted-foreground">{rel}</p>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1.5">
@@ -247,9 +287,18 @@ export default function AgentCalls() {
                     {formatDuration(call.duration_seconds)}
                   </TableCell>
                   <TableCell>
-                    <p className="text-sm text-muted-foreground line-clamp-2 max-w-[200px]">
-                      {call.summary || "—"}
-                    </p>
+                    {call.summary ? (
+                      <button
+                        type="button"
+                        onClick={() => setSummaryModal(call)}
+                        className="text-left text-sm text-muted-foreground line-clamp-2 max-w-[240px] hover:text-foreground transition-colors cursor-pointer underline-offset-2 hover:underline"
+                        title="Click to view full summary"
+                      >
+                        {call.summary}
+                      </button>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">—</p>
+                    )}
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">
