@@ -1099,6 +1099,7 @@ export default function CreateAgent() {
         )}
 
         {activeTab === "knowledge" && (
+          <div className="space-y-6">
           <div className="glass-card rounded-xl p-6">
             <div className="flex items-start gap-4">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-500/10">
@@ -1106,8 +1107,8 @@ export default function CreateAgent() {
               </div>
               <div className="flex-1 space-y-4">
                 <div>
-                  <h3 className="font-semibold text-foreground">Knowledge Base</h3>
-                  <p className="text-sm text-muted-foreground">Add information the AI can reference during calls</p>
+                  <h3 className="font-semibold text-foreground">Internal Topics</h3>
+                  <p className="text-sm text-muted-foreground">Static reference notes the AI can use during calls</p>
                 </div>
 
                 {/* Add knowledge item */}
