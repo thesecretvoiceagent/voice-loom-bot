@@ -105,6 +105,37 @@ export default function AgentCalls() {
   const [summaryModal, setSummaryModal] = useState<CallRow | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  const [syncing, setSyncing] = useState(false);
+
+  const handleSyncRecordings = async () => {
+    setSyncing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("twilio-recording-backfill", {
+        body: { agent_id: id, max_pages: 10 },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      const updated = data?.updated ?? 0;
+      const scanned = data?.scanned ?? 0;
+      const unmatched = data?.unmatched ?? 0;
+      if (updated > 0) {
+        toast.success(`Synced ${updated} recording${updated === 1 ? "" : "s"} from Twilio`, {
+          description: `Scanned ${scanned} • ${unmatched} unmatched`,
+        });
+        refetch();
+      } else {
+        toast.info("No new recordings to sync", {
+          description: `Scanned ${scanned} • ${unmatched} unmatched`,
+        });
+      }
+    } catch (err) {
+      toast.error("Failed to sync recordings", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const filteredCalls = filter === "all"
     ? calls
