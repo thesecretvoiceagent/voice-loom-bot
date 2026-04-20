@@ -97,3 +97,9 @@ export async function updateCallBySid(twilioCallSid: string, data: Record<string
 export async function insertCallEvent(callId: string, type: string, payload: Record<string, unknown>): Promise<void> {
   await callEdgeFunction("call-write", { action: "insert_event", call_id: callId, type, payload });
 }
+
+// ─── SMS Data Writes ───
+
+export async function updateSmsBySid(twilioSid: string, data: Record<string, unknown>): Promise<void> {
+  await callEdgeFunction("call-write", { action: "update_sms_by_sid", twilio_sid: twilioSid, data });
+}
