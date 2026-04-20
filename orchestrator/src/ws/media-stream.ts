@@ -503,6 +503,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!locationPageBase) {
       locationPageBase = LOVABLE_FALLBACK;
     }
+    // Defensive: strip route segments that some operators accidentally append
+    // to LOCATION_PAGE_BASE_URL (e.g. `https://app.example.com/location`),
+    // which previously produced double-path URLs like `/location/location?...`
+    // and 404 in production. The base URL must be only scheme + host (+ optional
+    // sub-path that is NOT one of our route names).
+    const ROUTE_SUFFIXES = [
+      /\/location\/?$/i,
+      /\/form\/?$/i,
+      /\/index\.html?$/i,
+    ];
+    for (const re of ROUTE_SUFFIXES) {
+      if (re.test(locationPageBase)) {
+        const before = locationPageBase;
+        locationPageBase = locationPageBase.replace(re, "");
+        console.warn(
+          `[MediaStream] LOCATION_PAGE_BASE_URL contained a route suffix (${before}), normalized to ${locationPageBase}`,
+        );
+      }
+    }
     const tokenSecret = process.env.LOCATION_TOKEN_SECRET || "";
     if (callId && tokenSecret) {
       try {
