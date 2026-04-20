@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useCalls } from "@/hooks/useCalls";
 import { useCampaigns } from "@/hooks/useCampaigns";
 import { useAgents } from "@/hooks/useAgents";
-import { format, subDays, eachDayOfInterval } from "date-fns";
+import { format, subDays, subHours, eachDayOfInterval, eachHourOfInterval } from "date-fns";
 
 const HOURLY_RATE = 12;
 
@@ -28,20 +28,48 @@ export default function Analytics() {
   // Filter calls by date range
   const calls = useMemo(() => {
     if (dateRange === "all") return allCalls;
+    if (dateRange === "24h") {
+      const cutoff = subHours(new Date(), 24);
+      return allCalls.filter((c) => new Date(c.created_at) >= cutoff);
+    }
     const daysBack = dateRange === "7d" ? 7 : dateRange === "14d" ? 14 : dateRange === "30d" ? 30 : 90;
     const cutoff = subDays(new Date(), daysBack);
     return allCalls.filter((c) => new Date(c.created_at) >= cutoff);
   }, [allCalls, dateRange]);
 
-  // Daily data for selected range
+  // Time-series data (hourly for 24h, daily otherwise) — split by inbound/outbound
   const dailyData = useMemo(() => {
+    if (dateRange === "24h") {
+      const now = new Date();
+      const hours = eachHourOfInterval({ start: subHours(now, 23), end: now });
+      return hours.map((hour) => {
+        const hourStart = hour.getTime();
+        const hourEnd = hourStart + 60 * 60 * 1000;
+        const hourCalls = calls.filter((c) => {
+          const t = new Date(c.created_at).getTime();
+          return t >= hourStart && t < hourEnd;
+        });
+        return {
+          day: format(hour, "HH:00"),
+          inbound: hourCalls.filter((c) => c.direction === "inbound").length,
+          outbound: hourCalls.filter((c) => c.direction === "outbound").length,
+          calls: hourCalls.length,
+          success: hourCalls.filter((c) => c.status === "completed").length,
+        };
+      });
+    }
     const daysBack = dateRange === "7d" ? 7 : dateRange === "14d" ? 14 : dateRange === "30d" ? 30 : dateRange === "90d" ? 90 : 30;
     const days = eachDayOfInterval({ start: subDays(new Date(), daysBack - 1), end: new Date() });
     return days.map((day) => {
       const dayStr = format(day, "yyyy-MM-dd");
       const dayCalls = calls.filter((c) => c.created_at.startsWith(dayStr));
-      const success = dayCalls.filter((c) => c.status === "completed").length;
-      return { day: format(day, dateRange === "7d" ? "EEE" : "MMM dd"), calls: dayCalls.length, success };
+      return {
+        day: format(day, dateRange === "7d" ? "EEE" : "MMM dd"),
+        inbound: dayCalls.filter((c) => c.direction === "inbound").length,
+        outbound: dayCalls.filter((c) => c.direction === "outbound").length,
+        calls: dayCalls.length,
+        success: dayCalls.filter((c) => c.status === "completed").length,
+      };
     });
   }, [calls, dateRange]);
 
@@ -109,6 +137,7 @@ export default function Analytics() {
             <CalendarIcon className="h-4 w-4 mr-2" /><SelectValue />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value="24h">Last 24 hours</SelectItem>
             <SelectItem value="7d">Last 7 days</SelectItem>
             <SelectItem value="14d">Last 14 days</SelectItem>
             <SelectItem value="30d">Last 30 days</SelectItem>
@@ -164,7 +193,19 @@ export default function Analytics() {
 
           <div className="grid gap-6 lg:grid-cols-2">
             <div className="glass-card rounded-xl p-6">
-              <h3 className="mb-6 font-semibold text-foreground">Call Volume</h3>
+              <div className="mb-6 flex items-center justify-between">
+                <h3 className="font-semibold text-foreground">Call Volume {dateRange === "24h" ? "(hourly)" : "(daily)"}</h3>
+                <div className="flex items-center gap-4 text-xs">
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full" style={{ background: "hsl(142 76% 45%)" }} />
+                    <span className="text-muted-foreground">Inbound</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full" style={{ background: "hsl(173 80% 50%)" }} />
+                    <span className="text-muted-foreground">Outbound</span>
+                  </div>
+                </div>
+              </div>
               <div className="h-[280px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={dailyData}>
@@ -172,8 +213,8 @@ export default function Analytics() {
                     <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
                     <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
                     <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px", fontSize: "12px" }} />
-                    <Bar dataKey="calls" fill="hsl(173 80% 50%)" radius={[4, 4, 0, 0]} name="Total" />
-                    <Bar dataKey="success" fill="hsl(142 76% 45%)" radius={[4, 4, 0, 0]} name="Successful" />
+                    <Bar dataKey="inbound" stackId="calls" fill="hsl(142 76% 45%)" radius={[0, 0, 0, 0]} name="Inbound" />
+                    <Bar dataKey="outbound" stackId="calls" fill="hsl(173 80% 50%)" radius={[4, 4, 0, 0]} name="Outbound" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
