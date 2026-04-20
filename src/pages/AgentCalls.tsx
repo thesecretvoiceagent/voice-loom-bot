@@ -64,6 +64,35 @@ function formatTime(dateStr: string | null): string {
   }
 }
 
+function formatDateParts(dateStr: string | null): { date: string; time: string } | null {
+  if (!dateStr) return null;
+  try {
+    const d = new Date(dateStr);
+    const date = d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+    const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    return { date, time };
+  } catch {
+    return null;
+  }
+}
+
+function formatRelative(dateStr: string | null): string {
+  if (!dateStr) return "";
+  try {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    if (d < 30) return `${d}d ago`;
+    return "";
+  } catch {
+    return "";
+  }
+}
+
 export default function AgentCalls() {
   const { id } = useParams();
   const { calls, loading, refetch } = useCalls({ agent_id: id, limit: 200 });
