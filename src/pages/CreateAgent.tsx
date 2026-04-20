@@ -757,6 +757,21 @@ export default function CreateAgent() {
                               type="button"
                               variant="ghost"
                               size="icon"
+                              onClick={() => handleSendTestSms(sms.content)}
+                              className="shrink-0 text-primary hover:text-primary"
+                              title="Send test SMS"
+                              disabled={!sms.content.trim() || sendingTestSmsIndex === index}
+                            >
+                              {sendingTestSmsIndex === index ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Send className="h-4 w-4" />
+                              )}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
                               onClick={() => setSmsMessages((prev) => prev.filter((_, i) => i !== index))}
                               className="shrink-0 text-destructive hover:text-destructive"
                               title="Delete"
