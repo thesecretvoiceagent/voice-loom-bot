@@ -409,7 +409,11 @@ export default function AgentCalls() {
                         </div>
                       )
                     ) : (
-                      <span className="text-sm text-muted-foreground">—</span>
+                      <RecordingStatus
+                        status={call.status}
+                        endedAt={call.ended_at}
+                        createdAt={call.created_at}
+                      /> ?? <span className="text-sm text-muted-foreground">—</span>
                     )}
                   </TableCell>
                   <TableCell>
