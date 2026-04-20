@@ -168,6 +168,48 @@ export default function CreateAgent() {
   const [knowledgeText, setKnowledgeText] = useState("");
   type SmsMessage = { id: string; name: string; description: string; content: string; trigger: "during" | "after" };
   const [smsMessages, setSmsMessages] = useState<SmsMessage[]>([]);
+  const [sendingTestSmsIndex, setSendingTestSmsIndex] = useState<number | null>(null);
+
+  const handleSendTestSms = async (content: string) => {
+    if (!content.trim()) {
+      toast.error("SMS content is empty");
+      return;
+    }
+    const lastNumber =
+      typeof window !== "undefined" ? localStorage.getItem("test_sms_to") || "" : "";
+    const to = window.prompt(
+      "Send test SMS to which phone number? (E.164 format, e.g. +37253402318)",
+      lastNumber || "+372",
+    );
+    if (!to) return;
+    const trimmed = to.trim();
+    if (!/^\+\d{8,15}$/.test(trimmed)) {
+      toast.error("Invalid phone number — must be E.164 format like +37253402318");
+      return;
+    }
+    localStorage.setItem("test_sms_to", trimmed);
+
+    const index = smsMessages.findIndex((m) => m.content === content);
+    setSendingTestSmsIndex(index);
+    try {
+      const { data, error } = await supabase.functions.invoke("test-sms-template", {
+        body: { to: trimmed, content },
+      });
+      if (error) {
+        toast.error(`Send failed: ${error.message}`);
+        return;
+      }
+      if (!data?.ok) {
+        toast.error(`Twilio rejected: ${data?.error || "unknown error"}`);
+        return;
+      }
+      toast.success(`Test SMS sent to ${trimmed} (sid ${data.sid})`);
+    } catch (err) {
+      toast.error(`Network error: ${(err as Error).message}`);
+    } finally {
+      setSendingTestSmsIndex(null);
+    }
+  };
 
   const isInbound = type === "inbound";
 
