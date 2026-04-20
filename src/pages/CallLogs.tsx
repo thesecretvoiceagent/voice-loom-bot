@@ -32,6 +32,8 @@ import {
   Settings,
   Loader2,
   Volume2,
+  ExternalLink,
+  Link as LinkIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TranscriptDialog } from "@/components/call-logs/TranscriptDialog";
@@ -277,15 +279,48 @@ export default function CallLogs() {
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
                       {log.recording_url && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          onClick={() => setPlayingId(playingId === log.id ? null : log.id)}
-                          title="Play recording"
-                        >
-                          <Volume2 className={cn("h-4 w-4", playingId === log.id && "text-primary")} />
-                        </Button>
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => setPlayingId(playingId === log.id ? null : log.id)}
+                            title="Play recording"
+                          >
+                            <Volume2 className={cn("h-4 w-4", playingId === log.id && "text-primary")} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            asChild
+                            title="Open recording in new tab"
+                          >
+                            <a
+                              href={getProxiedRecordingUrl(log.recording_url)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(getProxiedRecordingUrl(log.recording_url!));
+                                toast.success("Recording link copied");
+                              } catch {
+                                toast.error("Failed to copy link");
+                              }
+                            }}
+                            title="Copy recording link"
+                          >
+                            <LinkIcon className="h-4 w-4" />
+                          </Button>
+                        </>
                       )}
                       {log.transcript && (
                         <Button

@@ -1,11 +1,11 @@
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
-import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
+import { PasswordGate } from "@/components/auth/PasswordGate";
 import { POVSwitcher } from "./POVSwitcher";
 
 export function MainLayout() {
   return (
-    <ProtectedRoute>
+    <PasswordGate>
       <div className="min-h-screen bg-background">
         <Sidebar />
         <main className="pl-64">
@@ -15,6 +15,6 @@ export function MainLayout() {
           </div>
         </main>
       </div>
-    </ProtectedRoute>
+    </PasswordGate>
   );
 }
