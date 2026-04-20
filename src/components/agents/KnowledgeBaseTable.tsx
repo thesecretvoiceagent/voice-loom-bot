@@ -181,17 +181,31 @@ export function KnowledgeBaseTable() {
           </span>
           <Button
             type="button"
-            variant="neon"
-            size="sm"
-            className="gap-2"
+            size="icon"
+            variant="outline"
+            className="border-primary/40 text-primary hover:bg-primary/10"
             onClick={() => {
               setAdding(true);
               setDraft(EMPTY_ROW);
             }}
             disabled={adding}
+            aria-label="Make new row"
           >
             <Plus className="h-4 w-4" />
-            Add Client
+          </Button>
+          <Button
+            type="button"
+            variant="neon"
+            size="sm"
+            className="gap-2"
+            onClick={adding ? handleAdd : () => {
+              setAdding(true);
+              setDraft(EMPTY_ROW);
+            }}
+            disabled={saving}
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            {adding ? "Save Client" : "Add Client"}
           </Button>
         </div>
       </div>
