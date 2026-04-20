@@ -35,8 +35,13 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
   const calledNumber = req.body?.To || "";
   const fromNumber = req.body?.From || "";
 
+  const recordingCallback = `${config.publicBaseUrl}/twilio/recording-status`;
+
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+  <Start>
+    <Recording recordingStatusCallback="${recordingCallback}" recordingStatusCallbackMethod="POST" recordingStatusCallbackEvent="completed" recordingChannels="dual" recordingTrack="both"/>
+  </Start>
   <Connect>
     <Stream url="${streamUrl}">
       <Parameter name="callId" value="${callId}"/>
