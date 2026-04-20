@@ -145,6 +145,7 @@ async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: s
         To: to,
         From: config.twilio.fromNumber,
         Body: body.slice(0, 1600),
+        StatusCallback: `${config.publicBaseUrl}/twilio/sms-status`,
       }).toString(),
     });
     const data: any = await res.json().catch(() => ({}));
