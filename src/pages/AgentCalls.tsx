@@ -39,6 +39,7 @@ import {
   XCircle,
   Loader2,
   Trash2,
+  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCalls, type CallRow } from "@/hooks/useCalls";
