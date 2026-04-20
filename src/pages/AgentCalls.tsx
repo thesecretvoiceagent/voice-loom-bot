@@ -448,7 +448,7 @@ export default function AgentCalls() {
 
       {/* AI Summary Modal */}
       <Dialog open={!!summaryModal} onOpenChange={() => setSummaryModal(null)}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <MessageSquare className="h-5 w-5" />
@@ -456,10 +456,41 @@ export default function AgentCalls() {
             </DialogTitle>
             <DialogDescription>Post-call analysis</DialogDescription>
           </DialogHeader>
-          {summaryModal && (
-            <p className="text-sm text-foreground leading-relaxed">
-              {summaryModal.summary}
-            </p>
+          {summaryModal?.summary && (
+            <div className="flex-1 overflow-auto pr-1 space-y-3 text-sm text-foreground leading-relaxed">
+              {summaryModal.summary
+                .replace(/\r\n/g, "\n")
+                .split(/\n{2,}/)
+                .map((block, i) => {
+                  const trimmed = block.trim();
+                  if (!trimmed) return null;
+                  const lines = trimmed.split("\n").filter((l) => l.trim());
+                  const isAllBullets = lines.every((l) => /^\s*[-*•]\s+/.test(l));
+                  const isHeading = lines.length === 1 && /^(#+\s+|\*\*[^*]+\*\*\s*:?\s*$|[A-ZÄÖÜÕ\s]{4,}:?$)/.test(lines[0]);
+
+                  if (isHeading) {
+                    return (
+                      <h4 key={i} className="font-semibold text-foreground text-sm mt-2 first:mt-0">
+                        {lines[0].replace(/^#+\s+/, "").replace(/\*\*/g, "").replace(/:$/, "")}
+                      </h4>
+                    );
+                  }
+                  if (isAllBullets) {
+                    return (
+                      <ul key={i} className="list-disc pl-5 space-y-1">
+                        {lines.map((l, j) => (
+                          <li key={j}>{l.replace(/^\s*[-*•]\s+/, "").replace(/\*\*(.+?)\*\*/g, "$1")}</li>
+                        ))}
+                      </ul>
+                    );
+                  }
+                  return (
+                    <p key={i} className="whitespace-pre-line">
+                      {trimmed.replace(/\*\*(.+?)\*\*/g, "$1")}
+                    </p>
+                  );
+                })}
+            </div>
           )}
         </DialogContent>
       </Dialog>
