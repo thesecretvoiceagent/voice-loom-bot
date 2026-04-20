@@ -183,10 +183,26 @@ export default function AgentCalls() {
             </span>
           </p>
         </div>
-        <Button className="gap-2">
-          <Download className="h-4 w-4" />
-          Export CSV
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            className="gap-2"
+            onClick={handleSyncRecordings}
+            disabled={syncing}
+            title="Pull recordings from Twilio for past calls"
+          >
+            {syncing ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            {syncing ? "Syncing…" : "Sync recordings"}
+          </Button>
+          <Button className="gap-2">
+            <Download className="h-4 w-4" />
+            Export CSV
+          </Button>
+        </div>
       </div>
 
       {/* Filter */}
