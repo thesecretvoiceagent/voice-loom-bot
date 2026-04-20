@@ -9,7 +9,7 @@ const corsHeaders = {
 const FRONTEND_BASE_URL = "https://voice-loom-bot.lovable.app";
 
 function substituteVars(template: string, caseId: string, locationToken: string): string {
-  const locationLink = `${FRONTEND_BASE_URL}/location/confirm?caseId=${encodeURIComponent(
+  const locationLink = `${FRONTEND_BASE_URL}/location?caseId=${encodeURIComponent(
     caseId,
   )}&token=${encodeURIComponent(locationToken)}`;
   const formLink = `${FRONTEND_BASE_URL}/form?caseId=${encodeURIComponent(caseId)}`;
