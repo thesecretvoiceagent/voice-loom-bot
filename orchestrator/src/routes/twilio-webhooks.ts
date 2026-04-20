@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { config } from "../config.js";
-import { updateCallBySid } from "../supabase.js";
+import { updateCallBySid, updateSmsBySid } from "../supabase.js";
 
 export const twilioWebhookRouter = Router();
 
@@ -161,6 +161,18 @@ twilioWebhookRouter.post("/sms-status", async (req: Request, res: Response) => {
     RawDlrDoneDate,
   }));
 
+  // Persist delivery status to sms_messages so Call Logs UI reflects real state
+  if (sid && sid !== "(no-sid)" && status && status !== "(no-status)") {
+    try {
+      const updateData: Record<string, unknown> = { status };
+      if (ErrorCode) updateData.status = `failed:${ErrorCode}`;
+      await updateSmsBySid(sid, updateData);
+      console.log(`[TwilioSmsCallback] Updated sms_messages: sid=${sid} status=${updateData.status}`);
+    } catch (err) {
+      console.error(`[TwilioSmsCallback] Failed to update sms_messages:`, err);
+    }
+  }
+
   const responsePayload = { ok: true, correlation_id: correlationId };
   console.log(`[TwilioSmsCallback] Responding 200 OK  correlation_id=${correlationId}`);
   console.log(`[TwilioSmsCallback] ──────────────────────────────────────────`);
@@ -223,6 +235,17 @@ twilioWebhookRouter.post("/sms-fallback", async (req: Request, res: Response) =>
     AccountSid,
     ApiVersion,
   }));
+
+  // Persist failure to sms_messages
+  if (sid && sid !== "(no-sid)") {
+    try {
+      const failStatus = ErrorCode ? `fallback:${ErrorCode}` : `fallback:${status}`;
+      await updateSmsBySid(sid, { status: failStatus });
+      console.log(`[TwilioSmsFallback] Updated sms_messages: sid=${sid} status=${failStatus}`);
+    } catch (err) {
+      console.error(`[TwilioSmsFallback] Failed to update sms_messages:`, err);
+    }
+  }
 
   const responsePayload = { ok: true, correlation_id: correlationId };
   console.log(`[TwilioSmsFallback] Responding 200 OK  correlation_id=${correlationId}`);
