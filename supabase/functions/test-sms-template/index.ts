@@ -6,7 +6,8 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const FRONTEND_BASE_URL = "https://voice-loom-bot.lovable.app";
+// Override with FRONTEND_BASE_URL secret if you change domains again.
+const FRONTEND_BASE_URL = (Deno.env.get("FRONTEND_BASE_URL") || "https://app.beyondcode.ai").replace(/\/$/, "");
 
 function substituteVars(template: string, caseId: string, locationToken: string): string {
   const locationLink = `${FRONTEND_BASE_URL}/location?caseId=${encodeURIComponent(

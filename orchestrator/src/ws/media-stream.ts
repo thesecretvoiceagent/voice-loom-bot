@@ -488,7 +488,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       /your-?domain/i,
       /placeholder/i,
     ];
-    const LOVABLE_FALLBACK = "https://voice-loom-bot.lovable.app";
+    const LOVABLE_FALLBACK = "https://app.beyondcode.ai";
     let locationPageBase = (
       process.env.LOCATION_PAGE_BASE_URL ||
       process.env.AZURE_STATIC_BASE_URL ||
