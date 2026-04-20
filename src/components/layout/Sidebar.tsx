@@ -77,24 +77,6 @@ export function Sidebar() {
           ))}
         </nav>
 
-        {/* Stats */}
-        <div className="border-t border-sidebar-border p-4">
-          <div className="rounded-xl bg-gradient-subtle border border-border/30 p-3">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <div className="flex items-center gap-1">
-                <PhoneIncoming className="h-3.5 w-3.5 text-primary" />
-                <span className="font-medium text-foreground">124</span>
-              </div>
-              <span className="text-border">•</span>
-              <div className="flex items-center gap-1">
-                <PhoneOutgoing className="h-3.5 w-3.5 text-accent" />
-                <span className="font-medium text-foreground">89</span>
-              </div>
-              <span className="ml-auto text-muted-foreground">Today</span>
-            </div>
-          </div>
-        </div>
-
         {/* User */}
         <div className="border-t border-sidebar-border p-4">
           <div className="flex items-center gap-3">
