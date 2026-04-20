@@ -29,8 +29,9 @@ serve(async (req) => {
       ? createHmac("sha256", tokenSecret).update(caseId).digest("hex")
       : "preview";
 
-    // Frontend route serves the LocationConfirm page
-    const baseUrl = "https://voice-loom-bot.lovable.app";
+    // Frontend route serves the LocationConfirm page.
+    // Override with FRONTEND_BASE_URL secret if you change domains again.
+    const baseUrl = (Deno.env.get("FRONTEND_BASE_URL") || "https://app.beyondcode.ai").replace(/\/$/, "");
     const url = `${baseUrl}/location?caseId=${encodeURIComponent(caseId)}&token=${encodeURIComponent(token)}`;
 
     const body = `IIZI: kinnita oma asukoht: ${url}`;
