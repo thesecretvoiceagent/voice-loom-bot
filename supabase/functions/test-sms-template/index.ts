@@ -12,7 +12,10 @@ function substituteVars(template: string, caseId: string, locationToken: string)
   const locationLink = `${FRONTEND_BASE_URL}/location?caseId=${encodeURIComponent(
     caseId,
   )}&token=${encodeURIComponent(locationToken)}`;
-  const formLink = `${FRONTEND_BASE_URL}/form?caseId=${encodeURIComponent(caseId)}`;
+  // Form link reuses the same signed token so FormSubmit treats it as a valid signed link
+  const formLink = `${FRONTEND_BASE_URL}/form?caseId=${encodeURIComponent(
+    caseId,
+  )}&token=${encodeURIComponent(locationToken)}`;
 
   return template
     .replaceAll("{{location_link}}", locationLink)
