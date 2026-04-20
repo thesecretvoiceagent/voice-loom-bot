@@ -98,6 +98,140 @@ twilioWebhookRouter.post("/status", async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /twilio/sms-status — Twilio SMS status callback
+ * Receives delivery status updates for outbound SMS messages.
+ * Logs the full payload so Railway deploy logs can be used to diagnose
+ * SMS delivery failures (e.g. Twilio error 30453 carrier/fraud blocks).
+ */
+twilioWebhookRouter.post("/sms-status", async (req: Request, res: Response) => {
+  const correlationId = crypto.randomUUID();
+  const receivedAt = new Date().toISOString();
+
+  // Pull every field Twilio may send on an SMS status callback
+  const {
+    MessageSid,
+    SmsSid,
+    MessageStatus,
+    SmsStatus,
+    ErrorCode,
+    ErrorMessage,
+    To,
+    From,
+    Body,
+    NumSegments,
+    NumMedia,
+    AccountSid,
+    ApiVersion,
+    ChannelPrefix,
+    ChannelInstallSid,
+    RawDlrDoneDate,
+  } = req.body || {};
+
+  const sid = MessageSid || SmsSid || "(no-sid)";
+  const status = MessageStatus || SmsStatus || "(no-status)";
+
+  console.log(`[TwilioSmsCallback] ──────────────────────────────────────────`);
+  console.log(`[TwilioSmsCallback] POST /twilio/sms-status received at ${receivedAt}`);
+  console.log(`[TwilioSmsCallback] correlationId=${correlationId}`);
+  console.log(`[TwilioSmsCallback] MessageSid=${sid}  Status=${status}`);
+  console.log(`[TwilioSmsCallback] To=${To || "(none)"}  From=${From || "(none)"}`);
+
+  if (ErrorCode || ErrorMessage) {
+    console.error(`[TwilioSmsCallback] ⚠ ERROR  ErrorCode=${ErrorCode || "(none)"}  ErrorMessage=${ErrorMessage || "(none)"}`);
+  } else {
+    console.log(`[TwilioSmsCallback] ErrorCode=(none)  ErrorMessage=(none)`);
+  }
+
+  console.log(`[TwilioSmsCallback] Full body:`, JSON.stringify({
+    MessageSid,
+    SmsSid,
+    MessageStatus,
+    SmsStatus,
+    ErrorCode,
+    ErrorMessage,
+    To,
+    From,
+    Body: Body ? `${String(Body).slice(0, 80)}${String(Body).length > 80 ? "…" : ""}` : undefined,
+    NumSegments,
+    NumMedia,
+    AccountSid,
+    ApiVersion,
+    ChannelPrefix,
+    ChannelInstallSid,
+    RawDlrDoneDate,
+  }));
+
+  const responsePayload = { ok: true, correlation_id: correlationId };
+  console.log(`[TwilioSmsCallback] Responding 200 OK  correlation_id=${correlationId}`);
+  console.log(`[TwilioSmsCallback] ──────────────────────────────────────────`);
+
+  return res.status(200).json(responsePayload);
+});
+
+/**
+ * POST /twilio/sms-fallback — Twilio SMS fallback handler
+ * Called by Twilio when the primary SMS webhook URL fails or returns an error.
+ * Logs the full payload for debugging; always returns 200 so Twilio stops retrying.
+ */
+twilioWebhookRouter.post("/sms-fallback", async (req: Request, res: Response) => {
+  const correlationId = crypto.randomUUID();
+  const receivedAt = new Date().toISOString();
+
+  const {
+    MessageSid,
+    SmsSid,
+    MessageStatus,
+    SmsStatus,
+    ErrorCode,
+    ErrorMessage,
+    To,
+    From,
+    Body,
+    NumSegments,
+    NumMedia,
+    AccountSid,
+    ApiVersion,
+  } = req.body || {};
+
+  const sid = MessageSid || SmsSid || "(no-sid)";
+  const status = MessageStatus || SmsStatus || "(no-status)";
+
+  console.log(`[TwilioSmsFallback] ──────────────────────────────────────────`);
+  console.log(`[TwilioSmsFallback] POST /twilio/sms-fallback received at ${receivedAt}`);
+  console.log(`[TwilioSmsFallback] correlationId=${correlationId}`);
+  console.log(`[TwilioSmsFallback] MessageSid=${sid}  Status=${status}`);
+  console.log(`[TwilioSmsFallback] To=${To || "(none)"}  From=${From || "(none)"}`);
+
+  if (ErrorCode || ErrorMessage) {
+    console.error(`[TwilioSmsFallback] ⚠ ERROR  ErrorCode=${ErrorCode || "(none)"}  ErrorMessage=${ErrorMessage || "(none)"}`);
+  } else {
+    console.log(`[TwilioSmsFallback] ErrorCode=(none)  ErrorMessage=(none)`);
+  }
+
+  console.log(`[TwilioSmsFallback] Full body:`, JSON.stringify({
+    MessageSid,
+    SmsSid,
+    MessageStatus,
+    SmsStatus,
+    ErrorCode,
+    ErrorMessage,
+    To,
+    From,
+    Body: Body ? `${String(Body).slice(0, 80)}${String(Body).length > 80 ? "…" : ""}` : undefined,
+    NumSegments,
+    NumMedia,
+    AccountSid,
+    ApiVersion,
+  }));
+
+  const responsePayload = { ok: true, correlation_id: correlationId };
+  console.log(`[TwilioSmsFallback] Responding 200 OK  correlation_id=${correlationId}`);
+  console.log(`[TwilioSmsFallback] ──────────────────────────────────────────`);
+
+  return res.status(200).json(responsePayload);
+});
+
+/**
  * POST /twilio/recording-status — Twilio recording status callback
  * Saves recording URL to the call record
  */
