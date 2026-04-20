@@ -137,6 +137,7 @@ export default function Analytics() {
             <CalendarIcon className="h-4 w-4 mr-2" /><SelectValue />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value="24h">Last 24 hours</SelectItem>
             <SelectItem value="7d">Last 7 days</SelectItem>
             <SelectItem value="14d">Last 14 days</SelectItem>
             <SelectItem value="30d">Last 30 days</SelectItem>
