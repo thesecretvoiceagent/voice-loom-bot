@@ -199,6 +199,12 @@ export default function AgentCalls() {
                   Duration
                 </div>
               </TableHead>
+              <TableHead className="text-muted-foreground">
+                <div className="flex items-center gap-1">
+                  <Volume2 className="h-4 w-4" />
+                  Recording
+                </div>
+              </TableHead>
               <TableHead className="text-muted-foreground">Summary</TableHead>
               <TableHead className="text-muted-foreground text-right">Actions</TableHead>
             </TableRow>
@@ -207,14 +213,14 @@ export default function AgentCalls() {
             {loading ? (
               Array.from({ length: 4 }).map((_, i) => (
                 <TableRow key={i} className="border-border">
-                  {Array.from({ length: 7 }).map((_, j) => (
+                  {Array.from({ length: 8 }).map((_, j) => (
                     <TableCell key={j}><Skeleton className="h-4 w-full" /></TableCell>
                   ))}
                 </TableRow>
               ))
             ) : filteredCalls.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
+                <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
                   No calls recorded yet
                 </TableCell>
               </TableRow>
@@ -287,6 +293,43 @@ export default function AgentCalls() {
                     {formatDuration(call.duration_seconds)}
                   </TableCell>
                   <TableCell>
+                    {call.recording_url ? (
+                      playingId === call.id ? (
+                        <div className="flex items-center gap-2 min-w-[220px]">
+                          <audio
+                            src={getProxiedRecordingUrl(call.recording_url)}
+                            controls
+                            autoPlay
+                            className="h-8 w-full max-w-[240px]"
+                            onEnded={() => setPlayingId(null)}
+                          />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0"
+                            onClick={() => setPlayingId(null)}
+                            title="Close player"
+                          >
+                            <XCircle className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-1.5 h-8"
+                          onClick={() => setPlayingId(call.id)}
+                          title="Play recording"
+                        >
+                          <Volume2 className="h-3.5 w-3.5" />
+                          Play
+                        </Button>
+                      )
+                    ) : (
+                      <span className="text-sm text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
                     {call.summary ? (
                       <button
                         type="button"
@@ -302,17 +345,6 @@ export default function AgentCalls() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">
-                      {call.recording_url && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={() => setPlayingId(playingId === call.id ? null : call.id)}
-                          title="Play recording"
-                        >
-                          <Volume2 className={cn("h-4 w-4", playingId === call.id && "text-primary")} />
-                        </Button>
-                      )}
                       {call.transcript && (
                         <Button
                           variant="outline"
@@ -358,36 +390,7 @@ export default function AgentCalls() {
         </Table>
       </div>
 
-      {/* Inline Audio Player */}
-      {playingId && (() => {
-        const call = calls.find((c) => c.id === playingId);
-        if (!call?.recording_url) return null;
-        return (
-          <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 glass-card rounded-xl p-4 shadow-elevated flex items-center gap-4 min-w-[400px]">
-            <Volume2 className="h-5 w-5 text-primary shrink-0" />
-            <div className="flex-1">
-              <p className="text-sm font-medium text-foreground mb-2">
-                Recording — {call.to_number}
-              </p>
-              <audio
-                src={getProxiedRecordingUrl(call.recording_url)}
-                controls
-                autoPlay
-                className="w-full h-8"
-                onEnded={() => setPlayingId(null)}
-              />
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 shrink-0"
-              onClick={() => setPlayingId(null)}
-            >
-              <XCircle className="h-4 w-4" />
-            </Button>
-          </div>
-        );
-      })()}
+
 
       {/* Transcript Modal */}
       <Dialog open={!!transcriptModal} onOpenChange={() => setTranscriptModal(null)}>
