@@ -655,7 +655,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
                   transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                    const sysMsg = `📍 Klient kinnitas oma asukoha SMS-i lingilt: "${addr}". Loe see talle vestluses kohe tagasi sama keeles, mida vestluses kasutate, ja küsi kinnitust. Ära paku midagi muud — ainult kinnita asukoht.`;
+                    const sysMsg = `[SYSTEM EVENT: location_confirmed] address="${addr}" lat=${row.location_lat} lon=${row.location_lon}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just confirmed their location via the SMS link. Read the address back to them naturally in the same language the call is being conducted in and ask for confirmation. Do not offer anything else — only confirm the address.`;
                     openaiWs.send(JSON.stringify({
                       type: "conversation.item.create",
                       item: {
