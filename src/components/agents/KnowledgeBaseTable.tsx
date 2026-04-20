@@ -236,6 +236,7 @@ export function KnowledgeBaseTable() {
                   <TableCell className="text-right p-1.5">
                     <div className="flex items-center justify-end gap-1">
                       <Button
+                        type="button"
                         size="icon"
                         variant="ghost"
                         className="h-8 w-8"
@@ -249,6 +250,7 @@ export function KnowledgeBaseTable() {
                         )}
                       </Button>
                       <Button
+                        type="button"
                         size="icon"
                         variant="ghost"
                         className="h-8 w-8"
