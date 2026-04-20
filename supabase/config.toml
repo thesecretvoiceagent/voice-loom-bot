@@ -35,3 +35,6 @@ verify_jwt = false
 
 [functions.test-sms-template]
 verify_jwt = true
+
+[functions.twilio-safelist-add]
+verify_jwt = true
