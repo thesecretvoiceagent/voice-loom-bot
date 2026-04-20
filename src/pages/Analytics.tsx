@@ -28,20 +28,48 @@ export default function Analytics() {
   // Filter calls by date range
   const calls = useMemo(() => {
     if (dateRange === "all") return allCalls;
+    if (dateRange === "24h") {
+      const cutoff = subHours(new Date(), 24);
+      return allCalls.filter((c) => new Date(c.created_at) >= cutoff);
+    }
     const daysBack = dateRange === "7d" ? 7 : dateRange === "14d" ? 14 : dateRange === "30d" ? 30 : 90;
     const cutoff = subDays(new Date(), daysBack);
     return allCalls.filter((c) => new Date(c.created_at) >= cutoff);
   }, [allCalls, dateRange]);
 
-  // Daily data for selected range
+  // Time-series data (hourly for 24h, daily otherwise) — split by inbound/outbound
   const dailyData = useMemo(() => {
+    if (dateRange === "24h") {
+      const now = new Date();
+      const hours = eachHourOfInterval({ start: subHours(now, 23), end: now });
+      return hours.map((hour) => {
+        const hourStart = hour.getTime();
+        const hourEnd = hourStart + 60 * 60 * 1000;
+        const hourCalls = calls.filter((c) => {
+          const t = new Date(c.created_at).getTime();
+          return t >= hourStart && t < hourEnd;
+        });
+        return {
+          day: format(hour, "HH:00"),
+          inbound: hourCalls.filter((c) => c.direction === "inbound").length,
+          outbound: hourCalls.filter((c) => c.direction === "outbound").length,
+          calls: hourCalls.length,
+          success: hourCalls.filter((c) => c.status === "completed").length,
+        };
+      });
+    }
     const daysBack = dateRange === "7d" ? 7 : dateRange === "14d" ? 14 : dateRange === "30d" ? 30 : dateRange === "90d" ? 90 : 30;
     const days = eachDayOfInterval({ start: subDays(new Date(), daysBack - 1), end: new Date() });
     return days.map((day) => {
       const dayStr = format(day, "yyyy-MM-dd");
       const dayCalls = calls.filter((c) => c.created_at.startsWith(dayStr));
-      const success = dayCalls.filter((c) => c.status === "completed").length;
-      return { day: format(day, dateRange === "7d" ? "EEE" : "MMM dd"), calls: dayCalls.length, success };
+      return {
+        day: format(day, dateRange === "7d" ? "EEE" : "MMM dd"),
+        inbound: dayCalls.filter((c) => c.direction === "inbound").length,
+        outbound: dayCalls.filter((c) => c.direction === "outbound").length,
+        calls: dayCalls.length,
+        success: dayCalls.filter((c) => c.status === "completed").length,
+      };
     });
   }, [calls, dateRange]);
 
