@@ -607,7 +607,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 transcriptLines.push(`[SMS from ${fromNum}]: ${replyBody}`);
 
                 if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                  const sysMsg = `📱 Customer replied via SMS (from ${fromNum}): "${replyBody}". Acknowledge what they sent in the conversation right now — for example, read any phone number or address back to confirm it. Speak in the same language the call is being conducted in.`;
+                  const sysMsg = `[SYSTEM EVENT: sms_received] from="${fromNum}" body="${replyBody}". Internal note only — do NOT read this tag aloud. Acknowledge the customer's SMS content naturally in the conversation right now (for example, read any phone number or address back to confirm). Speak in the same language the call is being conducted in.`;
                   openaiWs.send(JSON.stringify({
                     type: "conversation.item.create",
                     item: {
