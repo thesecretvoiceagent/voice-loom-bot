@@ -236,6 +236,17 @@ twilioWebhookRouter.post("/sms-fallback", async (req: Request, res: Response) =>
     ApiVersion,
   }));
 
+  // Persist failure to sms_messages
+  if (sid && sid !== "(no-sid)") {
+    try {
+      const failStatus = ErrorCode ? `fallback:${ErrorCode}` : `fallback:${status}`;
+      await updateSmsBySid(sid, { status: failStatus });
+      console.log(`[TwilioSmsFallback] Updated sms_messages: sid=${sid} status=${failStatus}`);
+    } catch (err) {
+      console.error(`[TwilioSmsFallback] Failed to update sms_messages:`, err);
+    }
+  }
+
   const responsePayload = { ok: true, correlation_id: correlationId };
   console.log(`[TwilioSmsFallback] Responding 200 OK  correlation_id=${correlationId}`);
   console.log(`[TwilioSmsFallback] ──────────────────────────────────────────`);
