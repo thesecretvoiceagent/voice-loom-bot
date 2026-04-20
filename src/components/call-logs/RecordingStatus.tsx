@@ -10,15 +10,24 @@ interface RecordingStatusProps {
 }
 
 const PENDING_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+const ELIGIBLE_STATUSES = ["completed", "in-progress"];
+
+function isPending(status: string, endedAt: string | null, createdAt: string): boolean {
+  if (!ELIGIBLE_STATUSES.includes(status)) return false;
+  const reference = endedAt || createdAt;
+  if (!reference) return false;
+  const elapsed = Date.now() - new Date(reference).getTime();
+  return elapsed >= 0 && elapsed <= PENDING_WINDOW_MS;
+}
 
 /**
- * Shows a "Recording pending" pill when a call recently completed but the
+ * Renders a "Recording pending" pill when a call recently completed but the
  * recording_url hasn't arrived yet (Twilio recording status callback can lag
- * 30-90s). After the 2-minute window elapses, shows nothing (caller renders "—").
+ * 30–90s). After the 2-minute window elapses, falls back to an em-dash.
  *
- * Returns null if the call shouldn't be considered pending at all.
+ * Use in table cells where you'd otherwise render "—" for missing recordings.
  */
-export function RecordingStatus({ status, endedAt, createdAt, className }: RecordingStatusProps) {
+export function RecordingPendingOrDash({ status, endedAt, createdAt, className }: RecordingStatusProps) {
   // Tick every 15s so the pending state automatically clears after the window.
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -26,15 +35,9 @@ export function RecordingStatus({ status, endedAt, createdAt, className }: Recor
     return () => clearInterval(t);
   }, []);
 
-  // Only completed/in-progress calls produce recordings worth waiting on.
-  const eligibleStatuses = ["completed", "in-progress"];
-  if (!eligibleStatuses.includes(status)) return null;
-
-  const reference = endedAt || createdAt;
-  if (!reference) return null;
-
-  const elapsed = Date.now() - new Date(reference).getTime();
-  if (elapsed < 0 || elapsed > PENDING_WINDOW_MS) return null;
+  if (!isPending(status, endedAt, createdAt)) {
+    return <span className="text-sm text-muted-foreground">—</span>;
+  }
 
   return (
     <span
@@ -49,14 +52,4 @@ export function RecordingStatus({ status, endedAt, createdAt, className }: Recor
       Recording pending
     </span>
   );
-}
-
-/**
- * Convenience wrapper: shows pending pill if applicable, else an em-dash.
- * Use in table cells where you'd otherwise render "—" for missing recordings.
- */
-export function RecordingPendingOrDash(props: RecordingStatusProps) {
-  const pending = RecordingStatus(props);
-  if (pending) return pending;
-  return <span className="text-sm text-muted-foreground">—</span>;
 }
