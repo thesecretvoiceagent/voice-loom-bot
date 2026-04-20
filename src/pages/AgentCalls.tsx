@@ -293,6 +293,43 @@ export default function AgentCalls() {
                     {formatDuration(call.duration_seconds)}
                   </TableCell>
                   <TableCell>
+                    {call.recording_url ? (
+                      playingId === call.id ? (
+                        <div className="flex items-center gap-2 min-w-[220px]">
+                          <audio
+                            src={getProxiedRecordingUrl(call.recording_url)}
+                            controls
+                            autoPlay
+                            className="h-8 w-full max-w-[240px]"
+                            onEnded={() => setPlayingId(null)}
+                          />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0"
+                            onClick={() => setPlayingId(null)}
+                            title="Close player"
+                          >
+                            <XCircle className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-1.5 h-8"
+                          onClick={() => setPlayingId(call.id)}
+                          title="Play recording"
+                        >
+                          <Volume2 className="h-3.5 w-3.5" />
+                          Play
+                        </Button>
+                      )
+                    ) : (
+                      <span className="text-sm text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
                     {call.summary ? (
                       <button
                         type="button"
@@ -308,18 +345,17 @@ export default function AgentCalls() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">
-                      {call.recording_url && (
+                      {call.transcript && (
                         <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={() => setPlayingId(playingId === call.id ? null : call.id)}
-                          title="Play recording"
+                          variant="outline"
+                          size="sm"
+                          className="gap-1.5"
+                          onClick={() => setTranscriptModal(call)}
                         >
-                          <Volume2 className={cn("h-4 w-4", playingId === call.id && "text-primary")} />
+                          <FileText className="h-3.5 w-3.5" />
+                          Transcript
                         </Button>
                       )}
-                      {call.transcript && (
                         <Button
                           variant="outline"
                           size="sm"
