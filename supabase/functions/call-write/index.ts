@@ -88,6 +88,31 @@ serve(async (req) => {
       });
     }
 
+    // UPDATE sms_messages by Twilio SID (for SMS status callbacks)
+    if (action === "update_sms_by_sid") {
+      const { twilio_sid, data } = body;
+
+      const { data: existing } = await supabase
+        .from("sms_messages")
+        .select("id")
+        .eq("twilio_sid", twilio_sid)
+        .maybeSingle();
+
+      if (existing) {
+        const { error } = await supabase
+          .from("sms_messages")
+          .update(data)
+          .eq("id", existing.id);
+        if (error) throw error;
+      } else {
+        console.log(`No sms_messages row found for SID ${twilio_sid}, skipping`);
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // INSERT call event
     if (action === "insert_event") {
       const { call_id, type, payload } = body;
