@@ -43,6 +43,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { getProxiedRecordingUrl } from "@/lib/recording";
+import { RecordingPendingOrDash } from "@/components/call-logs/RecordingStatus";
 
 function formatDuration(seconds: number | null): string {
   if (!seconds) return "0:00";
@@ -278,7 +279,7 @@ export default function CallLogs() {
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
-                      {log.recording_url && (
+                      {log.recording_url ? (
                         <>
                           <Button
                             variant="ghost"
@@ -321,6 +322,12 @@ export default function CallLogs() {
                             <LinkIcon className="h-4 w-4" />
                           </Button>
                         </>
+                      ) : (
+                        <RecordingPendingOrDash
+                          status={log.status}
+                          endedAt={log.ended_at}
+                          createdAt={log.created_at}
+                        />
                       )}
                       {log.transcript && (
                         <Button
