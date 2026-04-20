@@ -334,10 +334,10 @@ export default function AgentCalls() {
                       <button
                         type="button"
                         onClick={() => setSummaryModal(call)}
-                        className="text-left text-sm text-muted-foreground line-clamp-2 max-w-[240px] hover:text-foreground transition-colors cursor-pointer underline-offset-2 hover:underline"
+                        className="text-left text-sm text-muted-foreground line-clamp-2 max-w-[240px] hover:text-foreground transition-colors cursor-pointer underline-offset-2 hover:underline whitespace-pre-line"
                         title="Click to view full summary"
                       >
-                        {call.summary}
+                        {call.summary.replace(/\n+/g, " · ")}
                       </button>
                     ) : (
                       <p className="text-sm text-muted-foreground">—</p>
