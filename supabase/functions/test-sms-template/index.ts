@@ -62,6 +62,8 @@ serve(async (req) => {
     const body = substituteVars(content, caseId, locationToken).slice(0, 1600);
 
     const auth = btoa(`${accountSid}:${authToken}`);
+    // Twilio sometimes false-flags repeated test traffic with error 30453.
+    // riskCheck: "disable" is used here to prevent false-positive blocking for this SMS flow.
     const res = await fetch(
       `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
       {
@@ -70,7 +72,7 @@ serve(async (req) => {
           Authorization: `Basic ${auth}`,
           "Content-Type": "application/x-www-form-urlencoded",
         },
-        body: new URLSearchParams({ To: to, From: fromNumber, Body: body }).toString(),
+        body: new URLSearchParams({ To: to, From: fromNumber, Body: body, RiskCheck: "disable" }).toString(),
       },
     );
     const data = await res.json();
