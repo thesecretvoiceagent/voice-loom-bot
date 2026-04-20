@@ -161,6 +161,18 @@ twilioWebhookRouter.post("/sms-status", async (req: Request, res: Response) => {
     RawDlrDoneDate,
   }));
 
+  // Persist delivery status to sms_messages so Call Logs UI reflects real state
+  if (sid && sid !== "(no-sid)" && status && status !== "(no-status)") {
+    try {
+      const updateData: Record<string, unknown> = { status };
+      if (ErrorCode) updateData.status = `failed:${ErrorCode}`;
+      await updateSmsBySid(sid, updateData);
+      console.log(`[TwilioSmsCallback] Updated sms_messages: sid=${sid} status=${updateData.status}`);
+    } catch (err) {
+      console.error(`[TwilioSmsCallback] Failed to update sms_messages:`, err);
+    }
+  }
+
   const responsePayload = { ok: true, correlation_id: correlationId };
   console.log(`[TwilioSmsCallback] Responding 200 OK  correlation_id=${correlationId}`);
   console.log(`[TwilioSmsCallback] ──────────────────────────────────────────`);
