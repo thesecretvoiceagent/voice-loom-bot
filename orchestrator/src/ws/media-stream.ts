@@ -135,6 +135,8 @@ async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: s
   try {
     const url = `https://api.twilio.com/2010-04-01/Accounts/${config.twilio.accountSid}/Messages.json`;
     const authHeader = Buffer.from(`${config.twilio.accountSid}:${config.twilio.authToken}`).toString("base64");
+    // Twilio sometimes false-flags repeated test traffic with error 30453.
+    // riskCheck: "disable" is used here to prevent false-positive blocking for this SMS flow.
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -146,6 +148,7 @@ async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: s
         From: config.twilio.fromNumber,
         Body: body.slice(0, 1600),
         StatusCallback: `${config.publicBaseUrl}/twilio/sms-status`,
+        RiskCheck: "disable",
       }).toString(),
     });
     const data: any = await res.json().catch(() => ({}));
