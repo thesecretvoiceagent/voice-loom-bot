@@ -254,20 +254,6 @@ export function KnowledgeBaseTable() {
                         size="icon"
                         variant="ghost"
                         className="h-8 w-8"
-                        onClick={handleAdd}
-                        disabled={saving}
-                      >
-                        {saving ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Save className="h-4 w-4 text-primary" />
-                        )}
-                      </Button>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="h-8 w-8"
                         onClick={() => {
                           setAdding(false);
                           setDraft(EMPTY_ROW);
