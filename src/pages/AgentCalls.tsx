@@ -199,6 +199,12 @@ export default function AgentCalls() {
                   Duration
                 </div>
               </TableHead>
+              <TableHead className="text-muted-foreground">
+                <div className="flex items-center gap-1">
+                  <Volume2 className="h-4 w-4" />
+                  Recording
+                </div>
+              </TableHead>
               <TableHead className="text-muted-foreground">Summary</TableHead>
               <TableHead className="text-muted-foreground text-right">Actions</TableHead>
             </TableRow>
