@@ -19,7 +19,6 @@ import Analytics from "./pages/Analytics";
 import Items from "./pages/Items";
 import Settings from "./pages/Settings";
 import About from "./pages/About";
-import Auth from "./pages/Auth";
 import SystemHealth from "./pages/SystemHealth";
 import FeatureFlags from "./pages/FeatureFlags";
 import Incidents from "./pages/Incidents";
@@ -46,8 +45,8 @@ const App = () => (
           <Sonner />
           <BrowserRouter>
             <Routes>
-              {/* Public auth route */}
-              <Route path="/auth" element={<Auth />} />
+              {/* Legacy auth route → redirect to dashboard (password gate now lives in MainLayout) */}
+              <Route path="/auth" element={<Navigate to="/" replace />} />
 
               {/* Public location confirmation page (opened from SMS link during a live call) */}
               <Route path="/location" element={<LocationConfirm />} />
