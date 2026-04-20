@@ -42,6 +42,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import type { AgentRow } from "@/hooks/useAgents";
+import { KnowledgeBaseTable } from "@/components/agents/KnowledgeBaseTable";
 
 const tabs = [
   { id: "instructions", label: "Instructions", icon: MessageSquare },
@@ -1099,6 +1100,7 @@ export default function CreateAgent() {
         )}
 
         {activeTab === "knowledge" && (
+          <div className="space-y-6">
           <div className="glass-card rounded-xl p-6">
             <div className="flex items-start gap-4">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-500/10">
@@ -1106,8 +1108,8 @@ export default function CreateAgent() {
               </div>
               <div className="flex-1 space-y-4">
                 <div>
-                  <h3 className="font-semibold text-foreground">Knowledge Base</h3>
-                  <p className="text-sm text-muted-foreground">Add information the AI can reference during calls</p>
+                  <h3 className="font-semibold text-foreground">Internal Topics</h3>
+                  <p className="text-sm text-muted-foreground">Static reference notes the AI can use during calls</p>
                 </div>
 
                 {/* Add knowledge item */}
@@ -1193,6 +1195,24 @@ export default function CreateAgent() {
                 )}
               </div>
             </div>
+          </div>
+
+          <div className="glass-card rounded-xl p-6">
+            <div className="flex items-start gap-4">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+                <Database className="h-5 w-5 text-primary" />
+              </div>
+              <div className="flex-1 space-y-4 min-w-0">
+                <div>
+                  <h3 className="font-semibold text-foreground">Knowledge Base — Clients</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Live, dynamic table of clients the AI can look up during a call. Add or remove rows here and the database updates instantly.
+                  </p>
+                </div>
+                <KnowledgeBaseTable />
+              </div>
+            </div>
+          </div>
           </div>
         )}
       </div>
