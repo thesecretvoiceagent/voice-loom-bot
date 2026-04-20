@@ -82,6 +82,39 @@ twilioWebhookRouter.post("/status", async (req: Request, res: Response) => {
 
     if (CallStatus === "answered" || CallStatus === "in-progress") {
       data.answered_at = new Date().toISOString();
+
+      // Start a recording via REST API. Required because Record=true on /Calls
+      // does NOT capture audio when using <Connect><Stream> (Media Streams).
+      if (config.twilio.isConfigured) {
+        try {
+          const recCallback = `${config.publicBaseUrl}/twilio/recording-status`;
+          const recUrl = `https://api.twilio.com/2010-04-01/Accounts/${config.twilio.accountSid}/Calls/${CallSid}/Recordings.json`;
+          const auth = Buffer.from(`${config.twilio.accountSid}:${config.twilio.authToken}`).toString("base64");
+          const body = new URLSearchParams({
+            RecordingStatusCallback: recCallback,
+            RecordingStatusCallbackMethod: "POST",
+            RecordingStatusCallbackEvent: "completed",
+            RecordingChannels: "dual",
+            RecordingTrack: "both",
+          });
+          const recRes = await fetch(recUrl, {
+            method: "POST",
+            headers: {
+              Authorization: `Basic ${auth}`,
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: body.toString(),
+          });
+          if (recRes.ok) {
+            console.log(`[${correlationId}] Started recording for CallSid=${CallSid}`);
+          } else {
+            const txt = await recRes.text();
+            console.error(`[${correlationId}] Failed to start recording: ${recRes.status} ${txt.slice(0, 300)}`);
+          }
+        } catch (err) {
+          console.error(`[${correlationId}] Recording start error:`, err);
+        }
+      }
     }
 
     if (CallStatus === "completed") {
