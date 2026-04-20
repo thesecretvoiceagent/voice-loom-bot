@@ -180,6 +180,7 @@ export function KnowledgeBaseTable() {
             {filtered.length} of {rows.length} clients
           </span>
           <Button
+            type="button"
             variant="neon"
             size="sm"
             className="gap-2"
