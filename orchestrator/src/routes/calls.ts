@@ -51,14 +51,26 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
     const voiceUrl = `${config.publicBaseUrl}/twilio/voice?callId=${callId}&agentId=${agent_id}${campaign_id ? `&campaignId=${campaign_id}` : ""}${variablesParam}`;
     const statusUrl = `${config.publicBaseUrl}/twilio/status`;
 
-    // Fetch agent settings to determine recording and ring timeout
+    // Fetch agent settings to determine recording, ring timeout, and caller-id number
     let enableRecording = true;
     let maxRingTime = 60;
+    let fromNumber = config.twilio.fromNumber;
     const agentConfig = await fetchAgentConfig(agent_id);
     if (agentConfig?.settings) {
       const s = agentConfig.settings as Record<string, unknown>;
       if (typeof s.enable_recording === "boolean") enableRecording = s.enable_recording;
       if (typeof s.max_ring_time === "number") maxRingTime = s.max_ring_time;
+    }
+    // Per-agent caller ID: use the number saved on the agent (digits-only, E.164),
+    // falling back to the orchestrator's TWILIO_FROM_NUMBER env var.
+    if (agentConfig?.phone_number) {
+      const cleaned = String(agentConfig.phone_number).replace(/[^\d+]/g, "");
+      const e164 = cleaned.startsWith("+") ? cleaned : `+${cleaned.replace(/^\+*/, "")}`;
+      if (/^\+\d{8,15}$/.test(e164)) {
+        fromNumber = e164;
+      } else {
+        console.warn(`[${correlationId}] Agent phone_number "${agentConfig.phone_number}" failed E.164 validation, falling back to env`);
+      }
     }
 
     const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${config.twilio.accountSid}/Calls.json`;
@@ -66,7 +78,7 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
 
     const params: Record<string, string> = {
       To: to_number,
-      From: config.twilio.fromNumber,
+      From: fromNumber,
       Url: voiceUrl,
       StatusCallback: statusUrl,
       StatusCallbackEvent: "initiated ringing answered completed",
@@ -82,7 +94,7 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
 
     const formBody = new URLSearchParams(params);
 
-    console.log(`[${correlationId}] Calling Twilio: ${to_number} from ${config.twilio.fromNumber}`);
+    console.log(`[${correlationId}] Calling Twilio: ${to_number} from ${fromNumber} (agent_id=${agent_id})`);
 
     const twilioRes = await fetch(twilioUrl, {
       method: "POST",

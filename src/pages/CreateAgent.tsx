@@ -73,6 +73,7 @@ const voices = [
 
 const phoneNumbers = [
   { id: "1", label: "Mobile EST", number: "+372 56101535" },
+  { id: "2", label: "Mobile EST 2", number: "+372 56101547" },
 ];
 
 const weekDays = [
@@ -304,6 +305,14 @@ export default function CreateAgent() {
       }
       if (agent.knowledge_base && Array.isArray(agent.knowledge_base)) {
         setKnowledgeItems(agent.knowledge_base as any[] || []);
+      }
+      // Match the saved phone_number against the known list (compare digits only,
+      // so spacing differences don't break selection).
+      if (agent.phone_number) {
+        const digitsOnly = (s: string) => s.replace(/\D/g, "");
+        const savedDigits = digitsOnly(agent.phone_number);
+        const match = phoneNumbers.find((p) => digitsOnly(p.number) === savedDigits);
+        if (match) setSelectedPhone(match.id);
       }
       setLoadingEdit(false);
     })();

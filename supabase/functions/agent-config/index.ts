@@ -20,7 +20,7 @@ serve(async (req) => {
     const dir: "inbound" | "outbound" | null =
       direction === "inbound" || direction === "outbound" ? direction : null;
 
-    const selectFields = "id,name,type,greeting,system_prompt,analysis_prompt,voice,tools,settings,schedule,knowledge_base";
+    const selectFields = "id,name,type,greeting,system_prompt,analysis_prompt,voice,tools,settings,schedule,knowledge_base,phone_number";
 
     // 1. Try by agent ID (explicit ID always wins)
     if (agent_id && agent_id !== "default") {
