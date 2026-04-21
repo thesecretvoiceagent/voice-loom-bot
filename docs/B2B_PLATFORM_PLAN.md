@@ -189,6 +189,10 @@ Exit criteria:
 
 - require each major capability to have one primary owner plane
 - prevent new runtime behavior from being implemented in parallel stacks
+- publish the backend ownership, lifecycle, and table-access inventories:
+  - [BACKEND_OWNERSHIP_MATRIX.md](/home/henri/code/voice-loom-bot/docs/BACKEND_OWNERSHIP_MATRIX.md)
+  - [CALL_LIFECYCLE_MAP.md](/home/henri/code/voice-loom-bot/docs/CALL_LIFECYCLE_MAP.md)
+  - [TABLE_ACCESS_AND_TENANCY_INVENTORY.md](/home/henri/code/voice-loom-bot/docs/TABLE_ACCESS_AND_TENANCY_INVENTORY.md)
 
 ### Milestone 3: Access And Tenancy Hardening
 
