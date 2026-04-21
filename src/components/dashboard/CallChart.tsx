@@ -18,9 +18,10 @@ interface ChartDataPoint {
 interface CallChartProps {
   data: ChartDataPoint[];
   loading?: boolean;
+  title?: string;
 }
 
-export function CallChart({ data, loading }: CallChartProps) {
+export function CallChart({ data, loading, title = "Call Volume (Today)" }: CallChartProps) {
   if (loading) {
     return (
       <div className="glass-card rounded-xl p-6">
@@ -35,7 +36,7 @@ export function CallChart({ data, loading }: CallChartProps) {
   return (
     <div className="glass-card rounded-xl p-6">
       <div className="mb-6 flex items-center justify-between">
-        <h3 className="font-semibold text-foreground">Call Volume (Today)</h3>
+        <h3 className="font-semibold text-foreground">{title}</h3>
         <div className="flex items-center gap-4 text-xs">
           <div className="flex items-center gap-2">
             <div className="h-2 w-2 rounded-full bg-success" />
@@ -50,7 +51,7 @@ export function CallChart({ data, loading }: CallChartProps) {
       <div className="h-[280px]">
         {!hasData ? (
           <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-            No calls today yet
+            No calls in this range yet
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
