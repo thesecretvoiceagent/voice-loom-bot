@@ -16,6 +16,7 @@ interface AgentConfig {
   settings: Record<string, unknown> | null;
   schedule: Record<string, unknown> | null;
   knowledge_base: unknown[] | null;
+  phone_number: string | null;
 }
 
 function getBaseUrl(): string {
