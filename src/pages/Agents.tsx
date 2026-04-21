@@ -232,10 +232,10 @@ export default function Agents() {
                     Call Logs
                   </Button>
                 </Link>
-                <Link to={`/agents/${agent.id}/flow`} className="flex-1">
+                <Link to={`/agents/create/${agent.type}?edit=${agent.id}`} className="flex-1">
                   <Button variant="neon" className="w-full gap-2">
-                    <Workflow className="h-4 w-4" />
-                    See Flow
+                    <Pencil className="h-4 w-4" />
+                    Edit Agent
                   </Button>
                 </Link>
                 <Button
