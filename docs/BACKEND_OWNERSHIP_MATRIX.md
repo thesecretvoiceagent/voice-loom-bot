@@ -6,9 +6,9 @@ Milestone 2 is inventory and planning only. This document records the current ba
 
 Cross-links:
 
-- [CALL_LIFECYCLE_MAP.md](/home/henri/code/voice-loom-bot/docs/CALL_LIFECYCLE_MAP.md)
-- [TABLE_ACCESS_AND_TENANCY_INVENTORY.md](/home/henri/code/voice-loom-bot/docs/TABLE_ACCESS_AND_TENANCY_INVENTORY.md)
-- [B2B_ARCHITECTURE_DECISIONS.md](/home/henri/code/voice-loom-bot/docs/B2B_ARCHITECTURE_DECISIONS.md)
+- [CALL_LIFECYCLE_MAP.md](CALL_LIFECYCLE_MAP.md)
+- [TABLE_ACCESS_AND_TENANCY_INVENTORY.md](TABLE_ACCESS_AND_TENANCY_INVENTORY.md)
+- [B2B_ARCHITECTURE_DECISIONS.md](B2B_ARCHITECTURE_DECISIONS.md)
 
 ## Capability Matrix
 

@@ -82,8 +82,8 @@ They are not equal-primary with the orchestrator runtime path.
 
 ## Key Documents
 
-- [Platform plan](/home/henri/code/voice-loom-bot/docs/B2B_PLATFORM_PLAN.md)
-- [Architecture decisions](/home/henri/code/voice-loom-bot/docs/B2B_ARCHITECTURE_DECISIONS.md)
-- [Execution playbook](/home/henri/code/voice-loom-bot/docs/B2B_EXECUTION_PLAYBOOK.md)
-- [Operations runbook](/home/henri/code/voice-loom-bot/infra/README-OPS.md)
-- [Orchestrator runtime README](/home/henri/code/voice-loom-bot/orchestrator/README.md)
+- [Platform plan](docs/B2B_PLATFORM_PLAN.md)
+- [Architecture decisions](docs/B2B_ARCHITECTURE_DECISIONS.md)
+- [Execution playbook](docs/B2B_EXECUTION_PLAYBOOK.md)
+- [Operations runbook](infra/README-OPS.md)
+- [Orchestrator runtime README](orchestrator/README.md)

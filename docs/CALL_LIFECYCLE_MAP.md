@@ -6,8 +6,8 @@ This document records the current end-to-end call lifecycle as implemented in th
 
 Cross-links:
 
-- [BACKEND_OWNERSHIP_MATRIX.md](/home/henri/code/voice-loom-bot/docs/BACKEND_OWNERSHIP_MATRIX.md)
-- [TABLE_ACCESS_AND_TENANCY_INVENTORY.md](/home/henri/code/voice-loom-bot/docs/TABLE_ACCESS_AND_TENANCY_INVENTORY.md)
+- [BACKEND_OWNERSHIP_MATRIX.md](BACKEND_OWNERSHIP_MATRIX.md)
+- [TABLE_ACCESS_AND_TENANCY_INVENTORY.md](TABLE_ACCESS_AND_TENANCY_INVENTORY.md)
 
 ## Current End-to-End Lifecycle
 

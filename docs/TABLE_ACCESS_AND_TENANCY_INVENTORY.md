@@ -6,8 +6,8 @@ This inventory focuses on the core backend tables that affect runtime safety, br
 
 Cross-links:
 
-- [BACKEND_OWNERSHIP_MATRIX.md](/home/henri/code/voice-loom-bot/docs/BACKEND_OWNERSHIP_MATRIX.md)
-- [CALL_LIFECYCLE_MAP.md](/home/henri/code/voice-loom-bot/docs/CALL_LIFECYCLE_MAP.md)
+- [BACKEND_OWNERSHIP_MATRIX.md](BACKEND_OWNERSHIP_MATRIX.md)
+- [CALL_LIFECYCLE_MAP.md](CALL_LIFECYCLE_MAP.md)
 
 ## Table Inventory
 
