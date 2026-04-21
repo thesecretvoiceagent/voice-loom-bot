@@ -1,73 +1,89 @@
-# Welcome to your Lovable project
+# Voice Loom B2B Platform
 
-## Project info
+This repository is a multi-surface B2B voice platform in transition from preview-era patterns to a single authoritative architecture.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+Milestone 1 locks ownership before implementation changes:
 
-## How can I edit this code?
+- `orchestrator/` is the canonical execution and runtime plane.
+- Supabase/Postgres is the durable data plane and system of record.
+- `src/` is the control-plane UI surface for operators and admins.
+- overlapping Supabase voice runtime functions are transitional or legacy candidates, not equal-primary runtime paths.
 
-There are several ways of editing your application.
+## Plane Model
 
-**Use Lovable**
+### Control Plane
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+Owns operator workflows, configuration, dashboards, and admin UX.
 
-Changes made via Lovable will be committed automatically to this repo.
+Primary repo surfaces:
 
-**Use your preferred IDE**
+- `src/`
+- selected non-runtime Supabase functions used for trusted admin utilities
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+### Runtime Plane
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+Owns live call execution and provider coordination.
 
-Follow these steps:
+Primary repo surface:
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+- `orchestrator/`
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+Runtime responsibilities include:
 
-# Step 3: Install the necessary dependencies.
-npm i
+- outbound call initiation
+- Twilio webhooks
+- media-stream lifecycle
+- OpenAI Realtime session handling
+- runtime writeback orchestration
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
-```
+### Data Plane
 
-**Edit a file directly in GitHub**
+Owns durable state, schema, auditability, and reporting inputs.
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+Primary repo surfaces:
 
-**Use GitHub Codespaces**
+- `supabase/migrations/`
+- Supabase/Postgres tables and policies
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+Durable records include:
 
-## What technologies are used for this project?
+- `calls`
+- `call_events`
+- `agents`
+- `campaigns`
+- `organization_settings`
+- `feature_flags`
+- `provider_status`
+- `incident_log`
 
-This project is built with:
+## Authoritative Stack
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+The authoritative stack for current and future implementation is:
 
-## How can I deploy this project?
+1. `src/` for control-plane UI
+2. `orchestrator/` for runtime execution
+3. Supabase/Postgres for durable data
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+The following Supabase functions must be read as transitional or legacy runtime candidates until later convergence work removes or narrows them:
 
-## Can I connect a custom domain to my Lovable project?
+- `supabase/functions/calls-start`
+- `supabase/functions/twilio-voice`
+- `supabase/functions/twilio-status`
+- `supabase/functions/openai-realtime-session`
 
-Yes, you can!
+They are not equal-primary with the orchestrator runtime path.
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+## Working Rules
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+- Do not add new live voice runtime behavior outside `orchestrator/`.
+- Do not treat Supabase edge functions as a second full runtime stack.
+- Do not treat Lovable-generated UI patterns as backend architecture authority.
+- Do not change schema, orchestrator logic, or deployment posture as part of Milestone 1 documentation work.
+
+## Key Documents
+
+- [Platform plan](/home/henri/code/voice-loom-bot/docs/B2B_PLATFORM_PLAN.md)
+- [Architecture decisions](/home/henri/code/voice-loom-bot/docs/B2B_ARCHITECTURE_DECISIONS.md)
+- [Execution playbook](/home/henri/code/voice-loom-bot/docs/B2B_EXECUTION_PLAYBOOK.md)
+- [Operations runbook](/home/henri/code/voice-loom-bot/infra/README-OPS.md)
+- [Orchestrator runtime README](/home/henri/code/voice-loom-bot/orchestrator/README.md)
