@@ -6,6 +6,10 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Strip everything but digits — used to compare phone numbers regardless of
+// formatting (e.g. "+372 56101535" vs "+37256101535" vs "37256101535").
+const digits = (s: string | null | undefined) => (s || "").replace(/\D/g, "");
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -20,7 +24,7 @@ serve(async (req) => {
     const dir: "inbound" | "outbound" | null =
       direction === "inbound" || direction === "outbound" ? direction : null;
 
-    const selectFields = "id,name,type,greeting,system_prompt,analysis_prompt,voice,tools,settings,schedule,knowledge_base,phone_number";
+    const selectFields = "id,name,type,greeting,system_prompt,analysis_prompt,voice,tools,settings,schedule,knowledge_base,phone_number,is_active,created_at";
 
     // 1. Try by agent ID (explicit ID always wins)
     if (agent_id && agent_id !== "default") {
@@ -38,41 +42,31 @@ serve(async (req) => {
       console.log(`Agent not found by ID: ${agent_id}`, error?.message);
     }
 
-    // 2. Try by phone number, filtered by direction/type when provided.
-    //    Inbound calls → "inbound" agent. Outbound → "outbound" agent.
+    // 2. Match by phone number using digits-only comparison so "+372 56101535"
+    //    in DB matches "+37256101535" sent by Twilio.
     if (phone_number) {
-      let query = supabase
+      const targetDigits = digits(phone_number);
+      const { data: candidates } = await supabase
         .from("agents")
         .select(selectFields)
-        .eq("phone_number", phone_number)
         .eq("is_active", true);
-      if (dir) query = query.eq("type", dir);
 
-      const { data } = await query.limit(1).maybeSingle();
-      if (data) {
-        console.log(`Agent matched phone+type: ${phone_number} type=${dir || "any"} → ${data.name}`);
-        return new Response(JSON.stringify({ agent: data }), {
+      const matchingByPhone = (candidates || []).filter(
+        (a: any) => digits(a.phone_number) === targetDigits && targetDigits.length > 0
+      );
+
+      if (matchingByPhone.length > 0) {
+        // Prefer same direction/type when provided
+        const typed = dir ? matchingByPhone.find((a: any) => a.type === dir) : null;
+        const chosen = typed || matchingByPhone[0];
+        console.log(
+          `Agent matched by phone digits: ${phone_number} (digits=${targetDigits}) type=${dir || "any"} → ${chosen.name}`
+        );
+        return new Response(JSON.stringify({ agent: chosen }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-
-      // Soft fallback: same phone, any type
-      if (dir) {
-        const { data: anyData } = await supabase
-          .from("agents")
-          .select(selectFields)
-          .eq("phone_number", phone_number)
-          .eq("is_active", true)
-          .limit(1)
-          .maybeSingle();
-        if (anyData) {
-          console.log(`Agent matched phone (no type match): ${phone_number} → ${anyData.name}`);
-          return new Response(JSON.stringify({ agent: anyData }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
-      }
-      console.log(`Agent not found by phone: ${phone_number} dir=${dir}`);
+      console.log(`Agent not found by phone digits: ${phone_number} (digits=${targetDigits}) dir=${dir}`);
     }
 
     // 3. Fallback: first active agent — direction-aware when provided.
