@@ -602,6 +602,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       greeting = substituteVars(greeting);
       console.log(`[MediaStream] Substituted ${Object.keys(callVariables).length} variables into prompt (callId=${callId})`);
     }
+    // Always strip ANY remaining {{...}} placeholders so they're never spoken aloud
+    // or fed to the model verbatim. This catches things like {{eesti keeles suhtle!}}
+    // that were used as language hints but aren't real variables.
+    greeting = stripUnresolvedPlaceholders(greeting);
+    instructions = stripUnresolvedPlaceholders(instructions);
     // Make substitute available outside this scope for SMS sending
     substituteVarsRef = substituteVars;
 
