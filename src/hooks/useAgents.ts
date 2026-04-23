@@ -29,6 +29,7 @@ export interface AgentRow {
     timezone: string;
   };
   knowledge_base: unknown[];
+  tenant_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -36,17 +37,26 @@ export interface AgentRow {
 export type AgentInsert = Omit<AgentRow, "id" | "created_at" | "updated_at">;
 export type AgentUpdate = Partial<Omit<AgentRow, "id" | "user_id" | "created_at" | "updated_at">>;
 
-export function useAgents() {
+export interface UseAgentsOptions {
+  tenant_id?: string;
+}
+
+export function useAgents(options: UseAgentsOptions = {}) {
+  const { tenant_id } = options;
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchAgents = useCallback(async () => {
     try {
-      const { data, error: fetchError } = await supabase
+      let query = supabase
         .from("agents")
         .select("*")
         .order("created_at", { ascending: false });
+
+      if (tenant_id) query = query.eq("tenant_id", tenant_id);
+
+      const { data, error: fetchError } = await query;
 
       if (fetchError) {
         setError(fetchError.message);
@@ -59,11 +69,12 @@ export function useAgents() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [tenant_id]);
 
   useEffect(() => {
     fetchAgents();
   }, [fetchAgents]);
+
 
   const createAgent = async (agent: AgentInsert): Promise<AgentRow | null> => {
     const { data, error } = await supabase

@@ -38,3 +38,6 @@ verify_jwt = true
 
 [functions.twilio-safelist-add]
 verify_jwt = true
+
+[functions.tenant-auth]
+verify_jwt = false

@@ -27,12 +27,13 @@ export interface UseCallsOptions {
   direction?: string;
   agent_id?: string;
   campaign_id?: string;
+  tenant_id?: string;
   limit?: number;
   realtime?: boolean;
 }
 
 export function useCalls(options: UseCallsOptions = {}) {
-  const { status, direction, agent_id, campaign_id, limit = 100, realtime = true } = options;
+  const { status, direction, agent_id, campaign_id, tenant_id, limit = 100, realtime = true } = options;
   const [calls, setCalls] = useState<CallRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +50,7 @@ export function useCalls(options: UseCallsOptions = {}) {
       if (direction) query = query.eq("direction", direction);
       if (agent_id) query = query.eq("agent_id", agent_id);
       if (campaign_id) query = query.eq("campaign_id", campaign_id);
+      if (tenant_id) query = query.eq("tenant_id", tenant_id);
 
       const { data, error: fetchError } = await query;
 
@@ -64,7 +66,8 @@ export function useCalls(options: UseCallsOptions = {}) {
     } finally {
       setLoading(false);
     }
-  }, [status, direction, agent_id, campaign_id, limit]);
+  }, [status, direction, agent_id, campaign_id, tenant_id, limit]);
+
 
   useEffect(() => {
     fetchCalls();

@@ -33,6 +33,11 @@ import WidgetsSettings from "./pages/settings/WidgetsSettings";
 import NotFound from "./pages/NotFound";
 import LocationConfirm from "./pages/LocationConfirm";
 import FormSubmit from "./pages/FormSubmit";
+import TenantsAdmin from "./pages/admin/TenantsAdmin";
+import { TenantLayout } from "./components/layout/TenantLayout";
+import TenantDashboard from "./pages/tenant/TenantDashboard";
+import TenantAgents from "./pages/tenant/TenantAgents";
+import TenantCalls from "./pages/tenant/TenantCalls";
 
 const queryClient = new QueryClient();
 
@@ -71,6 +76,7 @@ const App = () => (
                 <Route path="/incidents" element={<Incidents />} />
                 <Route path="/items" element={<Items />} />
                 <Route path="/about" element={<About />} />
+                <Route path="/admin" element={<TenantsAdmin />} />
                 <Route path="/settings" element={<Settings />}>
                   <Route index element={<Navigate to="/settings/user" replace />} />
                   <Route path="user" element={<UserSettings />} />
@@ -83,6 +89,16 @@ const App = () => (
                   <Route path="api-docs" element={<ApiDocsSettings />} />
                 </Route>
               </Route>
+
+              {/* Tenant workspace routes (own password gate, isolated from main) */}
+              <Route path="/:tenantSlug" element={<TenantLayout />}>
+                <Route index element={<TenantDashboard />} />
+                <Route path="agents" element={<TenantAgents />} />
+                <Route path="calls" element={<TenantCalls />} />
+                <Route path="campaigns" element={<TenantDashboard />} />
+                <Route path="analytics" element={<TenantDashboard />} />
+              </Route>
+
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>
