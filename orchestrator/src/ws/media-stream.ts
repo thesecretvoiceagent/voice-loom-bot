@@ -299,16 +299,24 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // Flush any audio that accumulated during greeting playback (echo, line noise)
     // BEFORE enabling VAD, so it doesn't immediately fire a false speech_started.
     openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+    const sessionPatch: any = {
+      turn_detection: {
+        type: "server_vad",
+        threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
+        prefix_padding_ms: 500,
+        silence_duration_ms: 900,   // Wait longer before considering speech ended
+      },
+    };
+    // Activate tools NOW (post-greeting). They were withheld during the greeting
+    // so the model couldn't immediately call end_call or lookup_vehicle.
+    if (!toolsActivated && pendingToolsForActivation.length > 0) {
+      sessionPatch.tools = pendingToolsForActivation;
+      toolsActivated = true;
+      console.log(`[MediaStream] Activating ${pendingToolsForActivation.length} tools post-greeting (callId=${callId})`);
+    }
     openaiWs.send(JSON.stringify({
       type: "session.update",
-      session: {
-        turn_detection: {
-          type: "server_vad",
-          threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
-          prefix_padding_ms: 500,
-          silence_duration_ms: 900,   // Wait longer before considering speech ended
-        },
-      },
+      session: sessionPatch,
     }));
   };
 
