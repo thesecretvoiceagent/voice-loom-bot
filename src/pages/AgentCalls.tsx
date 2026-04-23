@@ -42,6 +42,7 @@ import {
   RefreshCw,
   ExternalLink,
   Link as LinkIcon,
+  Copy,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCalls, type CallRow } from "@/hooks/useCalls";
@@ -543,6 +544,26 @@ export default function AgentCalls() {
               AI Call Summary
             </DialogTitle>
             <DialogDescription>Post-call analysis</DialogDescription>
+            {summaryModal?.summary && (
+              <div className="pt-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(summaryModal.summary!);
+                      toast.success("Summary copied to clipboard");
+                    } catch {
+                      toast.error("Failed to copy summary");
+                    }
+                  }}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  Copy analysis
+                </Button>
+              </div>
+            )}
           </DialogHeader>
           {summaryModal?.summary && (
             <div className="flex-1 overflow-auto pr-1 space-y-3 text-sm text-foreground leading-relaxed">
