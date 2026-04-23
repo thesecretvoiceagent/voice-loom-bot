@@ -242,6 +242,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let configuredMaxResponseOutputTokens = DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS;
   let lastResponseFinishReason: string | null = null;
   let lastResponseOutputTokens: number | null = null;
+  // Tools are deferred: we do NOT expose them during the greeting so the model
+  // cannot auto-fire end_call / lookup_vehicle before saying hello. The full
+  // toolset is attached via session.update right after greeting playback ends.
+  let pendingToolsForActivation: any[] = [];
+  let toolsActivated = false;
 
   // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
   let antiBargeinEnabled = false;
