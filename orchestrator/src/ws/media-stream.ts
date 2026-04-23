@@ -792,10 +792,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
       const responseCreate: any = {
         type: "response.create",
-        response: {},
+        response: {
+          // Force a low temperature for the greeting turn ONLY so the model
+          // says it verbatim instead of paraphrasing/translating it.
+          temperature: 0.6,
+        },
       };
       if (greeting) {
-        responseCreate.response.instructions = `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`;
+        // Strict, unambiguous instructions. Past versions said "in the original language"
+        // which the model interpreted loosely and would translate Estonian → English.
+        responseCreate.response.instructions =
+          `Your one and ONLY job for this turn is to read the following greeting OUT LOUD, ` +
+          `WORD-FOR-WORD, in the EXACT SAME LANGUAGE it is written in. ` +
+          `Do NOT translate it. Do NOT paraphrase it. Do NOT add anything before or after it. ` +
+          `Do NOT change a single word. Do NOT pronounce any punctuation, brackets, or template syntax. ` +
+          `If the greeting is in Estonian, you MUST speak Estonian. If in Finnish, Finnish. If in English, English. ` +
+          `\n\nGREETING TO SAY VERBATIM:\n"""\n${greeting}\n"""`;
       }
       openaiWs.send(JSON.stringify(responseCreate));
 
