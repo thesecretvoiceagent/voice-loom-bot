@@ -431,12 +431,17 @@ export default function CreateAgent() {
         );
         // Stay on the edit page so the user can see persistence immediately.
       } else {
+        const tenantParam = searchParams.get("tenant");
+        const insertPayload: any = { ...agentData, user_id: user.id };
+        if (tenantParam) insertPayload.tenant_id = tenantParam;
         const { error } = await supabase
           .from("agents")
-          .insert({ ...agentData, user_id: user.id } as any);
+          .insert(insertPayload);
         if (error) throw error;
         toast.success("Agent created");
-        navigate("/agents");
+        // Return to wherever we came from (tenant workspace or main)
+        const tenantSlug = searchParams.get("tenantSlug");
+        navigate(tenantSlug ? `/${tenantSlug}/agents` : "/agents");
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save agent");
