@@ -72,6 +72,7 @@ export type Database = {
           schedule: Json | null
           settings: Json | null
           system_prompt: string | null
+          tenant_id: string | null
           tools: string[] | null
           type: string
           updated_at: string
@@ -90,6 +91,7 @@ export type Database = {
           schedule?: Json | null
           settings?: Json | null
           system_prompt?: string | null
+          tenant_id?: string | null
           tools?: string[] | null
           type?: string
           updated_at?: string
@@ -108,13 +110,22 @@ export type Database = {
           schedule?: Json | null
           settings?: Json | null
           system_prompt?: string | null
+          tenant_id?: string | null
           tools?: string[] | null
           type?: string
           updated_at?: string
           user_id?: string
           voice?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "agents_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       audit_logs: {
         Row: {
@@ -210,6 +221,7 @@ export type Database = {
           started_at: string | null
           status: string
           summary: string | null
+          tenant_id: string | null
           to_number: string
           transcript: string | null
           twilio_call_sid: string | null
@@ -240,6 +252,7 @@ export type Database = {
           started_at?: string | null
           status?: string
           summary?: string | null
+          tenant_id?: string | null
           to_number: string
           transcript?: string | null
           twilio_call_sid?: string | null
@@ -270,12 +283,21 @@ export type Database = {
           started_at?: string | null
           status?: string
           summary?: string | null
+          tenant_id?: string | null
           to_number?: string
           transcript?: string | null
           twilio_call_sid?: string | null
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "calls_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       campaigns: {
         Row: {
@@ -290,6 +312,7 @@ export type Database = {
           start_date: string | null
           status: string
           success_rate: number
+          tenant_id: string | null
           updated_at: string
           user_id: string
         }
@@ -305,6 +328,7 @@ export type Database = {
           start_date?: string | null
           status?: string
           success_rate?: number
+          tenant_id?: string | null
           updated_at?: string
           user_id: string
         }
@@ -320,6 +344,7 @@ export type Database = {
           start_date?: string | null
           status?: string
           success_rate?: number
+          tenant_id?: string | null
           updated_at?: string
           user_id?: string
         }
@@ -329,6 +354,13 @@ export type Database = {
             columns: ["agent_id"]
             isOneToOne: false
             referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "campaigns_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
             referencedColumns: ["id"]
           },
         ]
@@ -676,6 +708,7 @@ export type Database = {
           id: string
           status: string | null
           template_name: string | null
+          tenant_id: string | null
           to_number: string
           twilio_sid: string | null
           updated_at: string
@@ -690,6 +723,7 @@ export type Database = {
           id?: string
           status?: string | null
           template_name?: string | null
+          tenant_id?: string | null
           to_number: string
           twilio_sid?: string | null
           updated_at?: string
@@ -704,6 +738,7 @@ export type Database = {
           id?: string
           status?: string | null
           template_name?: string | null
+          tenant_id?: string | null
           to_number?: string
           twilio_sid?: string | null
           updated_at?: string
@@ -716,7 +751,41 @@ export type Database = {
             referencedRelation: "calls"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "sms_messages_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
         ]
+      }
+      tenants: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          password_hash: string | null
+          slug: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          password_hash?: string | null
+          slug: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          password_hash?: string | null
+          slug?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
       user_roles: {
         Row: {
@@ -739,6 +808,38 @@ export type Database = {
         }
         Relationships: []
       }
+      user_tenants: {
+        Row: {
+          created_at: string
+          id: string
+          role: string
+          tenant_id: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role?: string
+          tenant_id: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: string
+          tenant_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "user_tenants_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -755,6 +856,7 @@ export type Database = {
         }
         Returns: boolean
       }
+      is_super_admin: { Args: { _user_id: string }; Returns: boolean }
       log_audit_event: {
         Args: {
           _action: string
@@ -763,6 +865,10 @@ export type Database = {
           _resource_type: string
         }
         Returns: undefined
+      }
+      user_has_tenant_access: {
+        Args: { _tenant_id: string; _user_id: string }
+        Returns: boolean
       }
     }
     Enums: {
