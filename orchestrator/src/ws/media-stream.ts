@@ -242,6 +242,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let configuredMaxResponseOutputTokens = DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS;
   let lastResponseFinishReason: string | null = null;
   let lastResponseOutputTokens: number | null = null;
+  // Tools are deferred: we do NOT expose them during the greeting so the model
+  // cannot auto-fire end_call / lookup_vehicle before saying hello. The full
+  // toolset is attached via session.update right after greeting playback ends.
+  let pendingToolsForActivation: any[] = [];
+  let toolsActivated = false;
 
   // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
   let antiBargeinEnabled = false;
@@ -294,16 +299,24 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // Flush any audio that accumulated during greeting playback (echo, line noise)
     // BEFORE enabling VAD, so it doesn't immediately fire a false speech_started.
     openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+    const sessionPatch: any = {
+      turn_detection: {
+        type: "server_vad",
+        threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
+        prefix_padding_ms: 500,
+        silence_duration_ms: 900,   // Wait longer before considering speech ended
+      },
+    };
+    // Activate tools NOW (post-greeting). They were withheld during the greeting
+    // so the model couldn't immediately call end_call or lookup_vehicle.
+    if (!toolsActivated && pendingToolsForActivation.length > 0) {
+      sessionPatch.tools = pendingToolsForActivation;
+      toolsActivated = true;
+      console.log(`[MediaStream] Activating ${pendingToolsForActivation.length} tools post-greeting (callId=${callId})`);
+    }
     openaiWs.send(JSON.stringify({
       type: "session.update",
-      session: {
-        turn_detection: {
-          type: "server_vad",
-          threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
-          prefix_padding_ms: 500,
-          silence_duration_ms: 900,   // Wait longer before considering speech ended
-        },
-      },
+      session: sessionPatch,
     }));
   };
 
@@ -848,7 +861,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "end_call",
-          description: "End the current phone call. Use when the conversation is naturally finished, the user says goodbye, or the user asks to hang up.",
+          description: "End the current phone call. STRICT RULES: (1) Never call this during or immediately after the greeting. (2) Never call this before the caller has spoken at least one substantive sentence to you. (3) Only call this AFTER the caller has clearly said goodbye (e.g. 'aitäh, head aega', 'tšau', 'bye'), OR the caller explicitly asked to hang up, OR all required intake information has been collected AND you have confirmed the next step with the caller. If you are unsure, do NOT call this — keep the conversation going.",
           parameters: {
             type: "object",
             properties: {
@@ -866,21 +879,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "lookup_vehicle",
-          description: "Look up a vehicle in the CRM. ALWAYS call this immediately when the caller mentions ANY identifying detail — a registration plate (registreerimismärk like 484DLC), a phone number, OR a description of the car (make/model/color/year, e.g. 'must BMW 535D 2006'). Use the description field as a fallback when you cannot make out the plate clearly. Returns owner name, vehicle, insurer, cover type/status. If no match, returns found:false.",
+          description: "Look up a vehicle in the CRM. Call this ONLY when the caller has SPOKEN one of the following out loud during the live conversation: (a) a registration plate (e.g. '484DLC'), or (b) a free-text description of the car (make/model/color/year, e.g. 'must BMW 535D 2006'). DO NOT call this just because you know the caller's phone number — the system already attempted a phone-based match before connecting you. DO NOT call this during or immediately after the greeting. DO NOT call this before the caller has actually spoken to you. Returns owner name, vehicle, insurer, cover type/status. If no match, returns found:false.",
           parameters: {
             type: "object",
             properties: {
               reg_no: {
                 type: "string",
-                description: "Estonian registration plate, e.g. '495BJS'. Strip spaces, uppercase. Pass even if you are not 100% sure — server does fuzzy matching.",
-              },
-              phone_number: {
-                type: "string",
-                description: "Phone number in E.164 format, e.g. '+3725541645'.",
+                description: "Estonian registration plate the caller spoke aloud, e.g. '495BJS'. Strip spaces, uppercase. Pass even if you are not 100% sure — server does fuzzy matching.",
               },
               description: {
                 type: "string",
-                description: "Free-text vehicle description in any language (Estonian preferred), e.g. 'must BMW 535D 2006' or 'punane Saab 9-5'. Use when caller describes the car instead of giving the plate.",
+                description: "Free-text vehicle description the caller spoke aloud, in any language (Estonian preferred), e.g. 'must BMW 535D 2006' or 'punane Saab 9-5'. Use when caller describes the car instead of giving the plate.",
               },
             },
           },
@@ -942,9 +951,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         },
       };
 
-      if (tools.length > 0) {
-        sessionUpdate.session.tools = tools;
-      }
+      // IMPORTANT: do NOT attach tools yet. Tools are activated only after the
+      // greeting playback completes (see enableTurnDetection). This prevents the
+      // model from auto-calling end_call / lookup_vehicle before the greeting,
+      // which was causing inbound calls to drop with "Thank you, have a great day!".
+      pendingToolsForActivation = tools;
+      toolsActivated = false;
 
       pendingInitialResponse = true;
       openaiWs!.send(JSON.stringify(sessionUpdate));
