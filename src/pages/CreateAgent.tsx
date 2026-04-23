@@ -227,7 +227,8 @@ export default function CreateAgent() {
 
       if (error || !data) {
         toast.error("Agent not found");
-        navigate("/agents");
+        const ts = searchParams.get("tenantSlug");
+        navigate(ts ? `/${ts}/agents` : "/agents");
         return;
       }
 
@@ -483,7 +484,7 @@ export default function CreateAgent() {
             Configure your AI agent for {isInbound ? "incoming" : "outgoing"} phone calls
           </p>
         </div>
-        <Link to="/agents">
+        <Link to={searchParams.get("tenantSlug") ? `/${searchParams.get("tenantSlug")}/agents` : "/agents"}>
           <Button variant="outline" className="gap-2">
             <ArrowLeft className="h-4 w-4" />
             Back to Agents
