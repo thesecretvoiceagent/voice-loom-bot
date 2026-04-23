@@ -227,7 +227,8 @@ export default function CreateAgent() {
 
       if (error || !data) {
         toast.error("Agent not found");
-        navigate("/agents");
+        const ts = searchParams.get("tenantSlug");
+        navigate(ts ? `/${ts}/agents` : "/agents");
         return;
       }
 
@@ -339,7 +340,21 @@ export default function CreateAgent() {
       toast.error("Please enter an agent name");
       return;
     }
-    if (!user?.id) {
+    const tenantParam = searchParams.get("tenant");
+    // Resolve owner user_id: prefer logged-in user, otherwise fall back to
+    // an existing agent's owner in the same tenant (so workspace clients
+    // who only authed via the tenant password can still create agents).
+    let ownerUserId: string | null = user?.id ?? null;
+    if (!ownerUserId && tenantParam) {
+      const { data: existing } = await supabase
+        .from("agents")
+        .select("user_id")
+        .eq("tenant_id", tenantParam)
+        .limit(1)
+        .maybeSingle();
+      ownerUserId = (existing as any)?.user_id ?? null;
+    }
+    if (!ownerUserId) {
       toast.error("You must be logged in");
       return;
     }
@@ -431,12 +446,16 @@ export default function CreateAgent() {
         );
         // Stay on the edit page so the user can see persistence immediately.
       } else {
+        const insertPayload: any = { ...agentData, user_id: ownerUserId };
+        if (tenantParam) insertPayload.tenant_id = tenantParam;
         const { error } = await supabase
           .from("agents")
-          .insert({ ...agentData, user_id: user.id } as any);
+          .insert(insertPayload);
         if (error) throw error;
         toast.success("Agent created");
-        navigate("/agents");
+        // Return to wherever we came from (tenant workspace or main)
+        const tenantSlug = searchParams.get("tenantSlug");
+        navigate(tenantSlug ? `/${tenantSlug}/agents` : "/agents");
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save agent");
@@ -465,7 +484,7 @@ export default function CreateAgent() {
             Configure your AI agent for {isInbound ? "incoming" : "outgoing"} phone calls
           </p>
         </div>
-        <Link to="/agents">
+        <Link to={searchParams.get("tenantSlug") ? `/${searchParams.get("tenantSlug")}/agents` : "/agents"}>
           <Button variant="outline" className="gap-2">
             <ArrowLeft className="h-4 w-4" />
             Back to Agents

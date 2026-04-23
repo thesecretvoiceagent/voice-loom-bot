@@ -94,6 +94,9 @@ const App = () => (
               <Route path="/:tenantSlug" element={<TenantLayout />}>
                 <Route index element={<TenantDashboard />} />
                 <Route path="agents" element={<TenantAgents />} />
+                <Route path="agents/create/:type" element={<CreateAgent />} />
+                <Route path="agents/:id/calls" element={<AgentCalls />} />
+                <Route path="agents/:id/flow" element={<FlowBuilder />} />
                 <Route path="calls" element={<TenantCalls />} />
                 <Route path="campaigns" element={<TenantDashboard />} />
                 <Route path="analytics" element={<TenantDashboard />} />
