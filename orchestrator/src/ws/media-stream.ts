@@ -485,6 +485,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       });
     };
 
+    // Strip orphan {{...}} placeholders that didn't match any variable.
+    // Without this, things like "{{eesti keeles suhtle!}}" get read aloud verbatim
+    // by TTS, which sounds broken to the caller.
+    const stripUnresolvedPlaceholders = (text: string): string => {
+      if (!text) return text;
+      return text.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
+    };
+
     // Inject location confirmation link variable so SMS templates can use {{location_link}}.
     // Token = HMAC-SHA256(callId, LOCATION_TOKEN_SECRET) — verified server-side
     // either by Railway /api/location/confirm OR by Lovable edge function `location-confirm`.
