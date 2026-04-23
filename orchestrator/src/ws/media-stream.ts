@@ -485,6 +485,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       });
     };
 
+    // Strip orphan {{...}} placeholders that didn't match any variable.
+    // Without this, things like "{{eesti keeles suhtle!}}" get read aloud verbatim
+    // by TTS, which sounds broken to the caller.
+    const stripUnresolvedPlaceholders = (text: string): string => {
+      if (!text) return text;
+      return text.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
+    };
+
     // Inject location confirmation link variable so SMS templates can use {{location_link}}.
     // Token = HMAC-SHA256(callId, LOCATION_TOKEN_SECRET) — verified server-side
     // either by Railway /api/location/confirm OR by Lovable edge function `location-confirm`.
@@ -594,6 +602,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       greeting = substituteVars(greeting);
       console.log(`[MediaStream] Substituted ${Object.keys(callVariables).length} variables into prompt (callId=${callId})`);
     }
+    // Always strip ANY remaining {{...}} placeholders so they're never spoken aloud
+    // or fed to the model verbatim. This catches things like {{eesti keeles suhtle!}}
+    // that were used as language hints but aren't real variables.
+    greeting = stripUnresolvedPlaceholders(greeting);
+    instructions = stripUnresolvedPlaceholders(instructions);
     // Make substitute available outside this scope for SMS sending
     substituteVarsRef = substituteVars;
 
@@ -779,10 +792,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
       const responseCreate: any = {
         type: "response.create",
-        response: {},
+        response: {
+          // Force a low temperature for the greeting turn ONLY so the model
+          // says it verbatim instead of paraphrasing/translating it.
+          temperature: 0.6,
+        },
       };
       if (greeting) {
-        responseCreate.response.instructions = `Say exactly this greeting to start the call: "${greeting}". Say it in the original language, naturally, as a phone greeting. Do not add anything else. Do not translate it.`;
+        // Strict, unambiguous instructions. Past versions said "in the original language"
+        // which the model interpreted loosely and would translate Estonian → English.
+        responseCreate.response.instructions =
+          `Your one and ONLY job for this turn is to read the following greeting OUT LOUD, ` +
+          `WORD-FOR-WORD, in the EXACT SAME LANGUAGE it is written in. ` +
+          `Do NOT translate it. Do NOT paraphrase it. Do NOT add anything before or after it. ` +
+          `Do NOT change a single word. Do NOT pronounce any punctuation, brackets, or template syntax. ` +
+          `If the greeting is in Estonian, you MUST speak Estonian. If in Finnish, Finnish. If in English, English. ` +
+          `\n\nGREETING TO SAY VERBATIM:\n"""\n${greeting}\n"""`;
       }
       openaiWs.send(JSON.stringify(responseCreate));
 
