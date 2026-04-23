@@ -339,7 +339,21 @@ export default function CreateAgent() {
       toast.error("Please enter an agent name");
       return;
     }
-    if (!user?.id) {
+    const tenantParam = searchParams.get("tenant");
+    // Resolve owner user_id: prefer logged-in user, otherwise fall back to
+    // an existing agent's owner in the same tenant (so workspace clients
+    // who only authed via the tenant password can still create agents).
+    let ownerUserId: string | null = user?.id ?? null;
+    if (!ownerUserId && tenantParam) {
+      const { data: existing } = await supabase
+        .from("agents")
+        .select("user_id")
+        .eq("tenant_id", tenantParam)
+        .limit(1)
+        .maybeSingle();
+      ownerUserId = (existing as any)?.user_id ?? null;
+    }
+    if (!ownerUserId) {
       toast.error("You must be logged in");
       return;
     }
@@ -431,8 +445,7 @@ export default function CreateAgent() {
         );
         // Stay on the edit page so the user can see persistence immediately.
       } else {
-        const tenantParam = searchParams.get("tenant");
-        const insertPayload: any = { ...agentData, user_id: user.id };
+        const insertPayload: any = { ...agentData, user_id: ownerUserId };
         if (tenantParam) insertPayload.tenant_id = tenantParam;
         const { error } = await supabase
           .from("agents")
