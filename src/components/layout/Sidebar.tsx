@@ -11,7 +11,7 @@ const navigation = [
   { name: "Campaigns", href: "/campaigns", icon: Megaphone },
   { name: "Call Logs", href: "/calls", icon: Phone },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
-  { name: "Tenants Admin", href: "/admin", icon: Building2 },
+  { name: "Tenants Admin", href: "/admin", icon: Building2, adminOnly: true },
   { name: "Settings", href: "/settings/user", icon: Settings },
 ];
 
@@ -45,7 +45,9 @@ export function Sidebar() {
 
         {/* Navigation */}
         <nav className="flex-1 space-y-1 px-3 py-4">
-          {navigation.map((item) => (
+          {navigation
+            .filter((item) => !item.adminOnly || isAdmin)
+            .map((item) => (
             <NavLink
               key={item.name}
               to={item.href}
