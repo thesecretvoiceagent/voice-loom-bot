@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, Info, Shield } from "lucide-react";
+import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, Info, Shield, Building2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { UserMenu } from "./UserMenu";
 
@@ -11,6 +11,7 @@ const navigation = [
   { name: "Campaigns", href: "/campaigns", icon: Megaphone },
   { name: "Call Logs", href: "/calls", icon: Phone },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
+  { name: "Tenants Admin", href: "/admin", icon: Building2 },
   { name: "Settings", href: "/settings/user", icon: Settings },
 ];
 
