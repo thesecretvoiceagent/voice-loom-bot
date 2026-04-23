@@ -89,6 +89,16 @@ const App = () => (
                   <Route path="api-docs" element={<ApiDocsSettings />} />
                 </Route>
               </Route>
+
+              {/* Tenant workspace routes (own password gate, isolated from main) */}
+              <Route path="/:tenantSlug" element={<TenantLayout />}>
+                <Route index element={<TenantDashboard />} />
+                <Route path="agents" element={<TenantAgents />} />
+                <Route path="calls" element={<TenantCalls />} />
+                <Route path="campaigns" element={<TenantDashboard />} />
+                <Route path="analytics" element={<TenantDashboard />} />
+              </Route>
+
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>
