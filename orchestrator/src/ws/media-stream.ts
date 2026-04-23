@@ -951,9 +951,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         },
       };
 
-      if (tools.length > 0) {
-        sessionUpdate.session.tools = tools;
-      }
+      // IMPORTANT: do NOT attach tools yet. Tools are activated only after the
+      // greeting playback completes (see enableTurnDetection). This prevents the
+      // model from auto-calling end_call / lookup_vehicle before the greeting,
+      // which was causing inbound calls to drop with "Thank you, have a great day!".
+      pendingToolsForActivation = tools;
+      toolsActivated = false;
 
       pendingInitialResponse = true;
       openaiWs!.send(JSON.stringify(sessionUpdate));
