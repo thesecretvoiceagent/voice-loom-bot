@@ -39,7 +39,7 @@ export const TenantGate: React.FC<{ children: React.ReactNode }> = ({
     );
   }
 
-  if (authenticated) {
+  if (authenticated || globalGranted) {
     return <>{children}</>;
   }
 
