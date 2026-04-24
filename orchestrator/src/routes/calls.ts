@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { config } from "../config.js";
 import { upsertCall, fetchAgentConfig } from "../supabase.js";
+import { evaluateSchedule, describeScheduleBlock, type AgentSchedule } from "../schedule.js";
 
 export const callsRouter = Router();
 
@@ -56,6 +57,27 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
     let maxRingTime = 60;
     let fromNumber = config.twilio.fromNumber;
     const agentConfig = await fetchAgentConfig(agent_id);
+
+    // SCHEDULE ENFORCEMENT — block calls outside the agent's calling hours/days.
+    // Test calls (variables.call_type === "test") still respect the schedule:
+    // when the user explicitly forces a call they can pass force=true via variables.
+    if (agentConfig) {
+      const schedule = agentConfig.schedule as AgentSchedule;
+      const status = evaluateSchedule(schedule);
+      const force = String((variables as Record<string, string> | undefined)?.force_outside_schedule || "").toLowerCase() === "true";
+      console.log(`[${correlationId}] Schedule check: allowed=${status.allowed} reason=${status.reason} local=${status.localTime} ${status.dayKey} tz=${status.timezone} force=${force}`);
+      if (!status.allowed && !force) {
+        const msg = describeScheduleBlock(status, schedule);
+        return res.json({
+          success: false,
+          status: "out_of_schedule",
+          error: msg,
+          schedule_status: status,
+          correlation_id: correlationId,
+        });
+      }
+    }
+
     if (agentConfig?.settings) {
       const s = agentConfig.settings as Record<string, unknown>;
       if (typeof s.enable_recording === "boolean") enableRecording = s.enable_recording;

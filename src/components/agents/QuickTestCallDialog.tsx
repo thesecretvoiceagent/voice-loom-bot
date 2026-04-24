@@ -105,6 +105,11 @@ export function QuickTestCallDialog({ open, onOpenChange, agentName, agentId }: 
       if (response.success) {
         toast.success(`Test call initiated to ${testNumber}`);
         onOpenChange(false);
+      } else if ((response as any).status === "out_of_schedule") {
+        toast.warning(response.error || "Agent is outside its calling schedule", {
+          description: "Adjust the agent's Schedule tab or wait until the next calling window.",
+          duration: 8000,
+        });
       } else {
         toast.error(response.error || "Failed to start call");
       }

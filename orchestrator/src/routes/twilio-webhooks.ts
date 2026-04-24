@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { config } from "../config.js";
-import { updateCallBySid, updateSmsBySid } from "../supabase.js";
+import { updateCallBySid, updateSmsBySid, fetchAgentByPhoneNumber, fetchAgentConfig } from "../supabase.js";
+import { evaluateSchedule, describeScheduleBlock, type AgentSchedule } from "../schedule.js";
 
 export const twilioWebhookRouter = Router();
 
@@ -8,7 +9,7 @@ export const twilioWebhookRouter = Router();
  * POST /twilio/voice — Twilio voice webhook
  * Returns TwiML that opens a bidirectional Media Stream to /twilio/stream
  */
-twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
+twilioWebhookRouter.post("/voice", async (req: Request, res: Response) => {
   const correlationId = crypto.randomUUID();
   // Detect inbound vs outbound: outbound calls include callId in query (set by /api/calls/start)
   const isInbound = !req.query.callId;
@@ -28,6 +29,38 @@ twilioWebhookRouter.post("/voice", (req: Request, res: Response) => {
   <Hangup/>
 </Response>`;
     return res.type("text/xml").send(twiml);
+  }
+
+  // Inbound schedule enforcement — politely decline calls outside the agent's
+  // calling window. Outbound calls were already filtered by /api/calls/start.
+  if (isInbound) {
+    try {
+      const calledNumber = req.body?.To || "";
+      const agent = agentId
+        ? await fetchAgentConfig(agentId)
+        : (calledNumber ? await fetchAgentByPhoneNumber(calledNumber, "inbound") : null);
+      if (agent) {
+        const status = evaluateSchedule(agent.schedule as AgentSchedule);
+        console.log(`[${correlationId}] Inbound schedule check: agent=${agent.name} allowed=${status.allowed} reason=${status.reason} local=${status.localTime} tz=${status.timezone}`);
+        if (!status.allowed) {
+          const reason = describeScheduleBlock(status, agent.schedule as AgentSchedule);
+          // Voice-friendly message — agents can override later via settings.
+          const closedMsg = "We are currently outside business hours. Please call back during our regular hours. Thank you.";
+          const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">${closedMsg}</Say>
+  <Hangup/>
+</Response>`;
+          console.log(`[${correlationId}] Declining inbound: ${reason}`);
+          return res.type("text/xml").send(twiml);
+        }
+      } else {
+        console.log(`[${correlationId}] No agent matched for inbound — skipping schedule check`);
+      }
+    } catch (err) {
+      // Never block calls because of a schedule lookup error — log and continue.
+      console.error(`[${correlationId}] Inbound schedule check failed:`, err);
+    }
   }
 
   const wsBase = config.publicWsBaseUrl || config.publicBaseUrl.replace("https://", "wss://");
