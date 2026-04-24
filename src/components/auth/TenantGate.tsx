@@ -6,11 +6,15 @@ import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
+import { isAccessGranted } from "@/components/auth/PasswordGate";
 
 export const TenantGate: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const { tenant, loading, authenticated, authenticate } = useTenant();
+  // If the global BeyondCode access password has already been granted,
+  // skip the per-tenant password — admins/operators are inside the trusted area.
+  const globalGranted = isAccessGranted();
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
