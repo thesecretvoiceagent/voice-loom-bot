@@ -346,18 +346,31 @@ export default function CreateAgent() {
     // an existing agent's owner in the same tenant (so workspace clients
     // who only authed via the tenant password can still create agents).
     let ownerUserId: string | null = user?.id ?? null;
-    if (!ownerUserId && tenantParam) {
-      const { data: existing } = await supabase
-        .from("agents")
-        .select("user_id")
-        .eq("tenant_id", tenantParam)
-        .limit(1)
-        .maybeSingle();
-      ownerUserId = (existing as any)?.user_id ?? null;
-    }
-    if (!ownerUserId) {
-      toast.error("You must be logged in");
-      return;
+    // For edits we don't need a user_id (we keep the existing owner).
+    // For inserts, fall back to an existing agent's owner in the same tenant,
+    // or to ANY existing agent's owner (admin gate without Supabase session).
+    if (!editId && !ownerUserId) {
+      if (tenantParam) {
+        const { data: existing } = await supabase
+          .from("agents")
+          .select("user_id")
+          .eq("tenant_id", tenantParam)
+          .limit(1)
+          .maybeSingle();
+        ownerUserId = (existing as any)?.user_id ?? null;
+      }
+      if (!ownerUserId) {
+        const { data: anyAgent } = await supabase
+          .from("agents")
+          .select("user_id")
+          .limit(1)
+          .maybeSingle();
+        ownerUserId = (anyAgent as any)?.user_id ?? null;
+      }
+      if (!ownerUserId) {
+        toast.error("Cannot resolve owner — create at least one agent while signed in first.");
+        return;
+      }
     }
 
     setSaving(true);
