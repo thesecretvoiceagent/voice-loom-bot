@@ -273,6 +273,7 @@ export default function TenantsAdmin() {
     await fetchAll();
   };
 
+  const handleAssignAgent = async (agentId: string, tenantId: string | null) => {
     const { error } = await supabase
       .from("agents")
       .update({ tenant_id: tenantId } as any)
