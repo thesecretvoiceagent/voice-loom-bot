@@ -656,6 +656,75 @@ export default function TenantsAdmin() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Add phone number */}
+      <Dialog open={addPhoneOpen} onOpenChange={setAddPhoneOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add phone number</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Phone number (E.164)</Label>
+              <Input
+                value={newPhone}
+                onChange={(e) => setNewPhone(e.target.value)}
+                placeholder="+37212345678"
+              />
+              <p className="text-xs text-muted-foreground">
+                The number you bought on Twilio (or another provider).
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Label (optional)</Label>
+              <Input
+                value={newPhoneLabel}
+                onChange={(e) => setNewPhoneLabel(e.target.value)}
+                placeholder="EFTA outbound"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Country (optional)</Label>
+              <Input
+                value={newPhoneCountry}
+                onChange={(e) => setNewPhoneCountry(e.target.value)}
+                placeholder="EE"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setAddPhoneOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleAddPhone} disabled={addingPhone}>
+              {addingPhone ? <Loader2 className="h-4 w-4 animate-spin" /> : "Add"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete phone confirm */}
+      <AlertDialog
+        open={!!deletePhone}
+        onOpenChange={(o) => !o && setDeletePhone(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deletePhone?.phone_number}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the number from the pool. Any agent currently using
+              it will have its phone field cleared. You can re-add it later if
+              you keep it on your provider.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeletePhone}>
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
