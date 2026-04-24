@@ -383,25 +383,149 @@ export default function TenantsAdmin() {
           <p className="text-sm text-muted-foreground">No agents found.</p>
         ) : (
           <ul className="divide-y divide-border">
-            {agents.map((a) => (
-              <li key={a.id} className="py-3 flex items-center justify-between gap-4">
-                <span className="font-medium truncate">{a.name}</span>
-                <select
-                  value={a.tenant_id || ""}
-                  onChange={(e) =>
-                    handleAssignAgent(a.id, e.target.value || null)
-                  }
-                  className="bg-background border border-border rounded-md px-3 py-1.5 text-sm"
+            {agents.map((a) => {
+              const assignedPhone = phoneNumbers.find((p) => p.agent_id === a.id);
+              return (
+                <li key={a.id} className="py-3 flex items-center justify-between gap-4 flex-wrap">
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <span className="font-medium truncate">{a.name}</span>
+                    {assignedPhone && (
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <ArrowRight className="h-3.5 w-3.5 text-primary" />
+                        <Phone className="h-3 w-3" />
+                        <span className="font-mono">{assignedPhone.phone_number}</span>
+                        {assignedPhone.label && (
+                          <span className="text-muted-foreground/70">({assignedPhone.label})</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <select
+                    value={a.tenant_id || ""}
+                    onChange={(e) =>
+                      handleAssignAgent(a.id, e.target.value || null)
+                    }
+                    className="bg-background border border-border rounded-md px-3 py-1.5 text-sm"
+                  >
+                    <option value="">— Unassigned —</option>
+                    {tenants.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+
+      {/* Phone numbers pool */}
+      <Card className="p-6">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <Phone className="h-5 w-5" />
+            Phone numbers
+          </h2>
+          <Button size="sm" onClick={() => setAddPhoneOpen(true)}>
+            <Plus className="h-4 w-4 mr-1.5" />
+            Add number
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground mb-4">
+          Numbers you've bought (Twilio etc.). Assign one to an agent — the agent's phone will sync automatically.
+        </p>
+        {loading ? (
+          <Loader2 className="h-5 w-5 animate-spin" />
+        ) : phoneNumbers.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No numbers yet. Click "Add number" once you've purchased one.
+          </p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {phoneNumbers.map((p) => {
+              const assignedAgent = agents.find((a) => a.id === p.agent_id);
+              const assignedTenant = tenants.find(
+                (t) => t.id === (assignedAgent?.tenant_id ?? p.tenant_id)
+              );
+              return (
+                <li
+                  key={p.id}
+                  className="py-3 flex items-center justify-between gap-4 flex-wrap"
                 >
-                  <option value="">— Unassigned —</option>
-                  {tenants.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              </li>
-            ))}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono font-semibold">
+                        {p.phone_number}
+                      </span>
+                      {p.label && (
+                        <Badge variant="outline" className="text-xs">
+                          {p.label}
+                        </Badge>
+                      )}
+                      {p.country && (
+                        <Badge variant="secondary" className="text-xs">
+                          {p.country}
+                        </Badge>
+                      )}
+                      {!p.is_active && (
+                        <Badge variant="destructive" className="text-xs">
+                          inactive
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-1">
+                      {assignedAgent ? (
+                        <>
+                          <ArrowRight className="h-3 w-3 text-primary" />
+                          <Bot className="h-3 w-3" />
+                          <span>{assignedAgent.name}</span>
+                          {assignedTenant && (
+                            <span className="text-muted-foreground/70">
+                              · {assignedTenant.name}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground/60">
+                          Not assigned
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={p.agent_id || ""}
+                      onChange={(e) =>
+                        handleAssignPhoneToAgent(p.id, e.target.value || null)
+                      }
+                      className="bg-background border border-border rounded-md px-3 py-1.5 text-sm"
+                    >
+                      <option value="">— Unassigned —</option>
+                      {agents.map((a) => {
+                        const tenant = tenants.find(
+                          (t) => t.id === a.tenant_id
+                        );
+                        return (
+                          <option key={a.id} value={a.id}>
+                            {a.name}
+                            {tenant ? ` (${tenant.name})` : ""}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setDeletePhone(p)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                    </Button>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </Card>
