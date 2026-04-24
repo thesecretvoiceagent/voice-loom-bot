@@ -80,9 +80,9 @@ export default function TenantAgents() {
   };
 
   const editLink = (agent: AgentRow) =>
-    `/agents/create/${agent.type}?edit=${agent.id}&tenant=${tenant?.id}&tenantSlug=${tenantSlug}`;
+    `/${tenantSlug}/agents/create/${agent.type}?edit=${agent.id}&tenant=${tenant?.id}&tenantSlug=${tenantSlug}`;
   const createLink = (type: "inbound" | "outbound") =>
-    `/agents/create/${type}?tenant=${tenant?.id}&tenantSlug=${tenantSlug}`;
+    `/${tenantSlug}/agents/create/${type}?tenant=${tenant?.id}&tenantSlug=${tenantSlug}`;
 
   return (
     <div className="space-y-8 animate-fade-in">

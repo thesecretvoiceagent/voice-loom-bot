@@ -99,10 +99,11 @@ function formatRelative(dateStr: string | null): string {
 }
 
 export default function AgentCalls() {
-  const { id } = useParams();
+  const { id, tenantSlug } = useParams<{ id: string; tenantSlug?: string }>();
   const { calls, loading, refetch } = useCalls({ agent_id: id, limit: 200 });
   const { agents } = useAgents();
   const agent = agents.find((a) => a.id === id);
+  const backToAgents = tenantSlug ? `/${tenantSlug}/agents` : "/agents";
 
   const [filter, setFilter] = useState("all");
   const [transcriptModal, setTranscriptModal] = useState<CallRow | null>(null);
@@ -172,7 +173,7 @@ export default function AgentCalls() {
       <div className="flex items-center justify-between">
         <div>
           <Link
-            to="/agents"
+            to={backToAgents}
             className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground mb-2"
           >
             <ArrowLeft className="h-4 w-4" />
