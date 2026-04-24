@@ -43,7 +43,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import type { AgentRow } from "@/hooks/useAgents";
 import { KnowledgeBaseTable } from "@/components/agents/KnowledgeBaseTable";
-import { evaluateSchedule, describeScheduleBlock } from "@/lib/agentSchedule";
+import { ScheduleStatusBadge } from "@/components/agents/ScheduleStatusBadge";
 
 const tabs = [
   { id: "instructions", label: "Instructions", icon: MessageSquare },
