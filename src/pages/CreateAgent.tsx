@@ -425,30 +425,37 @@ export default function CreateAgent() {
           .update(agentData as any)
           .eq("id", editId)
           .select("*");
-        if (error) throw error;
+        if (error) {
+          console.error("[CreateAgent] Update error:", error);
+          throw error;
+        }
         if (!data || data.length === 0) {
-          throw new Error("Update affected 0 rows — you may not have permission to edit this agent.");
+          throw new Error(
+            "Update affected 0 rows. You may not have permission, or the agent was deleted. Try refreshing.",
+          );
         }
         const saved = data[0] as any;
+        console.log("[CreateAgent] Saved row:", saved);
+
+        // Re-hydrate ALL editable state from DB so the UI reflects exactly what's stored.
+        setAgentName(saved.name || "");
+        setGreeting(saved.greeting || "");
+        setSystemPrompt(saved.system_prompt || "");
+        setAnalysisPrompt(saved.analysis_prompt || "");
+        setSelectedVoice(saved.voice || "alloy");
+        setSelectedTools(saved.tools || []);
+        if (saved.schedule) {
+          setStartTime(saved.schedule.start_time || "09:00");
+          setEndTime(saved.schedule.end_time || "17:00");
+          setSelectedDays(saved.schedule.days || []);
+          setTimezone(saved.schedule.timezone || "Europe/Tallinn");
+        }
+        if (Array.isArray(saved.knowledge_base)) {
+          setKnowledgeItems(saved.knowledge_base as any[]);
+        }
         const savedSms = Array.isArray(saved?.settings?.sms_messages)
           ? saved.settings.sms_messages
           : [];
-        // Verify SMS round-trip: compare what we sent vs what came back.
-        const sentSms = settingsPayload.sms_messages;
-        const mismatch = savedSms.length !== sentSms.length
-          || sentSms.some((s, i) =>
-            savedSms[i]?.content !== s.content
-            || savedSms[i]?.description !== s.description
-            || savedSms[i]?.name !== s.name
-            || savedSms[i]?.trigger !== s.trigger,
-          );
-        console.log("[CreateAgent] Round-trip check:", { sentSms, savedSms, mismatch });
-        if (mismatch) {
-          toast.error("SMS templates did not round-trip correctly — check console");
-        } else {
-          toast.success(`Saved · ${savedSms.length} SMS template(s) confirmed in DB`);
-        }
-        // Re-hydrate state from DB so the UI reflects exactly what's stored.
         setSmsMessages(
           savedSms.map((m: any, idx: number) => ({
             id: m.id || crypto.randomUUID(),
@@ -458,7 +465,21 @@ export default function CreateAgent() {
             trigger: m.trigger === "after" ? "after" : "during",
           })),
         );
-        // Stay on the edit page so the user can see persistence immediately.
+        // Verify SMS round-trip and report it.
+        const sentSms = settingsPayload.sms_messages;
+        const mismatch = savedSms.length !== sentSms.length
+          || sentSms.some((s, i) =>
+            savedSms[i]?.content !== s.content
+            || savedSms[i]?.description !== s.description
+            || savedSms[i]?.name !== s.name
+            || savedSms[i]?.trigger !== s.trigger,
+          );
+        if (mismatch) {
+          toast.error("SMS templates did not round-trip correctly — check console");
+        } else {
+          toast.success(`Saved · all fields confirmed in DB`);
+        }
+        // Stay on the edit page.
       } else {
         const insertPayload: any = { ...agentData, user_id: ownerUserId };
         if (tenantParam) insertPayload.tenant_id = tenantParam;
@@ -467,11 +488,11 @@ export default function CreateAgent() {
           .insert(insertPayload);
         if (error) throw error;
         toast.success("Agent created");
-        // Return to wherever we came from (tenant workspace or main)
         const tenantSlug = searchParams.get("tenantSlug");
         navigate(tenantSlug ? `/${tenantSlug}/agents` : "/agents");
       }
     } catch (err) {
+      console.error("[CreateAgent] Save failed:", err);
       toast.error(err instanceof Error ? err.message : "Failed to save agent");
     } finally {
       setSaving(false);
