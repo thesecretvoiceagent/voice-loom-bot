@@ -17,7 +17,8 @@ import { useState } from "react";
 export default function Analytics() {
   const [dateRange, setDateRange] = useState("30d");
   const navigate = useNavigate();
-  const { calls: allCalls, loading } = useCalls({ limit: 1000 });
+  // Global across ALL workspaces (no tenant filter) — admin analytics view.
+  const { calls: allCalls, loading } = useCalls({ limit: 5000 });
   const { campaigns } = useCampaigns();
   const { agents } = useAgents();
 
