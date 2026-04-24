@@ -24,7 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Plus, KeyRound, Trash2, Copy, Bot, ExternalLink } from "lucide-react";
+import { Loader2, Plus, KeyRound, Trash2, Copy, Bot, ExternalLink, Phone, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 
 interface TenantRow {
@@ -39,6 +39,18 @@ interface AgentLite {
   id: string;
   name: string;
   tenant_id: string | null;
+}
+
+interface PhoneNumberRow {
+  id: string;
+  phone_number: string;
+  label: string | null;
+  provider: string | null;
+  country: string | null;
+  tenant_id: string | null;
+  agent_id: string | null;
+  notes: string | null;
+  is_active: boolean;
 }
 
 export default function TenantsAdmin() {
