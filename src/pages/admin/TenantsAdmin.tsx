@@ -98,7 +98,7 @@ export default function TenantsAdmin() {
     ]);
     setTenants((tData as TenantRow[]) || []);
     setAgents((aData as AgentLite[]) || []);
-    setPhoneNumbers((pData as PhoneNumberRow[]) || []);
+    setPhoneNumbers(((pData as unknown) as PhoneNumberRow[]) || []);
     setLoading(false);
   };
 
