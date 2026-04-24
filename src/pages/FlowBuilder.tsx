@@ -33,11 +33,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { QuickTestCallDialog } from "@/components/agents/QuickTestCallDialog";
 
 function FlowBuilderInner() {
-  const { id: agentId } = useParams<{ id: string }>();
+  const { id: agentId, tenantSlug } = useParams<{ id: string; tenantSlug?: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
   const { agents } = useAgents();
   const agent = agents.find((a) => a.id === agentId);
+  const backToAgents = tenantSlug ? `/${tenantSlug}/agents` : "/agents";
   const { flow, loading, saving, lastSaved, createFlow, saveFlow, publishFlow, scheduleAutoSave } = useAgentFlow(agentId!);
   const [testCallOpen, setTestCallOpen] = useState(false);
 
@@ -237,7 +238,7 @@ function FlowBuilderInner() {
   if (!flow) {
     return (
       <div className="h-[calc(100vh-64px)] flex flex-col items-center justify-center bg-background p-8">
-        <Button variant="ghost" className="absolute top-4 left-4 gap-2" onClick={() => navigate("/agents")}>
+        <Button variant="ghost" className="absolute top-4 left-4 gap-2" onClick={() => navigate(backToAgents)}>
           <ArrowLeft className="h-4 w-4" /> Back
         </Button>
         <h1 className="text-2xl font-bold text-foreground mb-2">Create Flow for {agent?.name || "Agent"}</h1>
@@ -263,7 +264,7 @@ function FlowBuilderInner() {
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-card/60 backdrop-blur-sm shrink-0">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => navigate("/agents")}>
+          <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => navigate(backToAgents)}>
             <ArrowLeft className="h-4 w-4" /> Back
           </Button>
           <div className="h-5 w-px bg-border" />
