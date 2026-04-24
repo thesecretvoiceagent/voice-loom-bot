@@ -43,6 +43,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import type { AgentRow } from "@/hooks/useAgents";
 import { KnowledgeBaseTable } from "@/components/agents/KnowledgeBaseTable";
+import { evaluateSchedule, describeScheduleBlock } from "@/lib/agentSchedule";
 
 const tabs = [
   { id: "instructions", label: "Instructions", icon: MessageSquare },
@@ -1066,9 +1067,14 @@ export default function CreateAgent() {
                 <Calendar className="h-5 w-5 text-blue-500" />
               </div>
               <div className="flex-1 space-y-6">
-                <div>
-                  <h3 className="font-semibold text-foreground">Campaign Schedule</h3>
-                  <p className="text-sm text-muted-foreground">When your AI agent can make/receive calls</p>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="font-semibold text-foreground">Campaign Schedule</h3>
+                    <p className="text-sm text-muted-foreground">When your AI agent can make/receive calls</p>
+                  </div>
+                  <ScheduleStatusBadge
+                    schedule={{ start_time: startTime, end_time: endTime, days: selectedDays, timezone }}
+                  />
                 </div>
 
                 <div className="grid md:grid-cols-2 gap-8">
