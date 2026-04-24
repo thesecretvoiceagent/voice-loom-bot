@@ -57,6 +57,7 @@ export default function TenantsAdmin() {
   const { isAdmin, loading: authLoading, user } = useAuth();
   const [tenants, setTenants] = useState<TenantRow[]>([]);
   const [agents, setAgents] = useState<AgentLite[]>([]);
+  const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumberRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Add tenant dialog
@@ -78,14 +79,26 @@ export default function TenantsAdmin() {
   const [customPwTenant, setCustomPwTenant] = useState<TenantRow | null>(null);
   const [customPw, setCustomPw] = useState("");
 
+  // Add phone number dialog
+  const [addPhoneOpen, setAddPhoneOpen] = useState(false);
+  const [newPhone, setNewPhone] = useState("");
+  const [newPhoneLabel, setNewPhoneLabel] = useState("");
+  const [newPhoneCountry, setNewPhoneCountry] = useState("");
+  const [addingPhone, setAddingPhone] = useState(false);
+
+  // Delete phone confirm
+  const [deletePhone, setDeletePhone] = useState<PhoneNumberRow | null>(null);
+
   const fetchAll = async () => {
     setLoading(true);
-    const [{ data: tData }, { data: aData }] = await Promise.all([
+    const [{ data: tData }, { data: aData }, { data: pData }] = await Promise.all([
       supabase.from("tenants").select("*").order("name"),
       supabase.from("agents").select("id, name, tenant_id").order("name"),
+      supabase.from("phone_numbers" as any).select("*").order("phone_number"),
     ]);
     setTenants((tData as TenantRow[]) || []);
     setAgents((aData as AgentLite[]) || []);
+    setPhoneNumbers((pData as PhoneNumberRow[]) || []);
     setLoading(false);
   };
 
