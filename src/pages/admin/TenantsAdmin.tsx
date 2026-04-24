@@ -208,7 +208,71 @@ export default function TenantsAdmin() {
     await fetchAll();
   };
 
-  const handleAssignAgent = async (agentId: string, tenantId: string | null) => {
+  const handleAddPhone = async () => {
+    const number = newPhone.trim();
+    if (!number) {
+      toast.error("Phone number required");
+      return;
+    }
+    if (!/^\+?[1-9]\d{6,14}$/.test(number.replace(/\s/g, ""))) {
+      toast.error("Use E.164 format, e.g. +37212345678");
+      return;
+    }
+    setAddingPhone(true);
+    const { error } = await supabase.from("phone_numbers" as any).insert({
+      phone_number: number,
+      label: newPhoneLabel.trim() || null,
+      country: newPhoneCountry.trim() || null,
+    } as any);
+    setAddingPhone(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success(`Added ${number}`);
+    setAddPhoneOpen(false);
+    setNewPhone("");
+    setNewPhoneLabel("");
+    setNewPhoneCountry("");
+    await fetchAll();
+  };
+
+  const handleDeletePhone = async () => {
+    if (!deletePhone) return;
+    const { error } = await supabase
+      .from("phone_numbers" as any)
+      .delete()
+      .eq("id", deletePhone.id);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success(`Deleted ${deletePhone.phone_number}`);
+    setDeletePhone(null);
+    await fetchAll();
+  };
+
+  const handleAssignPhoneToAgent = async (
+    phoneId: string,
+    agentId: string | null
+  ) => {
+    // Get the agent's tenant so we mirror the link
+    const agent = agents.find((a) => a.id === agentId);
+    const { error } = await supabase
+      .from("phone_numbers" as any)
+      .update({
+        agent_id: agentId,
+        tenant_id: agent?.tenant_id ?? null,
+      } as any)
+      .eq("id", phoneId);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success("Number assignment updated");
+    await fetchAll();
+  };
+
     const { error } = await supabase
       .from("agents")
       .update({ tenant_id: tenantId } as any)
