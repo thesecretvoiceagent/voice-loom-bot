@@ -6,15 +6,13 @@ import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
-import { isAccessGranted } from "@/components/auth/PasswordGate";
-
 export const TenantGate: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const { tenant, loading, authenticated, authenticate } = useTenant();
-  // If the global BeyondCode access password has already been granted,
-  // skip the per-tenant password — admins/operators are inside the trusted area.
-  const globalGranted = isAccessGranted();
+  // Each workspace ALWAYS requires its own password, regardless of any
+  // global BeyondCode admin access. This ensures published tenant sublinks
+  // (e.g. /eftalegal, /swedbank) are protected on their own.
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -39,7 +37,7 @@ export const TenantGate: React.FC<{ children: React.ReactNode }> = ({
     );
   }
 
-  if (authenticated || globalGranted) {
+  if (authenticated) {
     return <>{children}</>;
   }
 
