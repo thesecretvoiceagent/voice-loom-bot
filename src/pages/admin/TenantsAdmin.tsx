@@ -24,7 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Plus, KeyRound, Trash2, Copy, Bot, ExternalLink } from "lucide-react";
+import { Loader2, Plus, KeyRound, Trash2, Copy, Bot, ExternalLink, Phone, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 
 interface TenantRow {
@@ -41,10 +41,23 @@ interface AgentLite {
   tenant_id: string | null;
 }
 
+interface PhoneNumberRow {
+  id: string;
+  phone_number: string;
+  label: string | null;
+  provider: string | null;
+  country: string | null;
+  tenant_id: string | null;
+  agent_id: string | null;
+  notes: string | null;
+  is_active: boolean;
+}
+
 export default function TenantsAdmin() {
   const { isAdmin, loading: authLoading, user } = useAuth();
   const [tenants, setTenants] = useState<TenantRow[]>([]);
   const [agents, setAgents] = useState<AgentLite[]>([]);
+  const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumberRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Add tenant dialog
@@ -66,14 +79,26 @@ export default function TenantsAdmin() {
   const [customPwTenant, setCustomPwTenant] = useState<TenantRow | null>(null);
   const [customPw, setCustomPw] = useState("");
 
+  // Add phone number dialog
+  const [addPhoneOpen, setAddPhoneOpen] = useState(false);
+  const [newPhone, setNewPhone] = useState("");
+  const [newPhoneLabel, setNewPhoneLabel] = useState("");
+  const [newPhoneCountry, setNewPhoneCountry] = useState("");
+  const [addingPhone, setAddingPhone] = useState(false);
+
+  // Delete phone confirm
+  const [deletePhone, setDeletePhone] = useState<PhoneNumberRow | null>(null);
+
   const fetchAll = async () => {
     setLoading(true);
-    const [{ data: tData }, { data: aData }] = await Promise.all([
+    const [{ data: tData }, { data: aData }, { data: pData }] = await Promise.all([
       supabase.from("tenants").select("*").order("name"),
       supabase.from("agents").select("id, name, tenant_id").order("name"),
+      supabase.from("phone_numbers" as any).select("*").order("phone_number"),
     ]);
     setTenants((tData as TenantRow[]) || []);
     setAgents((aData as AgentLite[]) || []);
+    setPhoneNumbers(((pData as unknown) as PhoneNumberRow[]) || []);
     setLoading(false);
   };
 
@@ -180,6 +205,71 @@ export default function TenantsAdmin() {
     toast.success(`Password set for ${customPwTenant.name}`);
     setCustomPwTenant(null);
     setCustomPw("");
+    await fetchAll();
+  };
+
+  const handleAddPhone = async () => {
+    const number = newPhone.trim();
+    if (!number) {
+      toast.error("Phone number required");
+      return;
+    }
+    if (!/^\+?[1-9]\d{6,14}$/.test(number.replace(/\s/g, ""))) {
+      toast.error("Use E.164 format, e.g. +37212345678");
+      return;
+    }
+    setAddingPhone(true);
+    const { error } = await supabase.from("phone_numbers" as any).insert({
+      phone_number: number,
+      label: newPhoneLabel.trim() || null,
+      country: newPhoneCountry.trim() || null,
+    } as any);
+    setAddingPhone(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success(`Added ${number}`);
+    setAddPhoneOpen(false);
+    setNewPhone("");
+    setNewPhoneLabel("");
+    setNewPhoneCountry("");
+    await fetchAll();
+  };
+
+  const handleDeletePhone = async () => {
+    if (!deletePhone) return;
+    const { error } = await supabase
+      .from("phone_numbers" as any)
+      .delete()
+      .eq("id", deletePhone.id);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success(`Deleted ${deletePhone.phone_number}`);
+    setDeletePhone(null);
+    await fetchAll();
+  };
+
+  const handleAssignPhoneToAgent = async (
+    phoneId: string,
+    agentId: string | null
+  ) => {
+    // Get the agent's tenant so we mirror the link
+    const agent = agents.find((a) => a.id === agentId);
+    const { error } = await supabase
+      .from("phone_numbers" as any)
+      .update({
+        agent_id: agentId,
+        tenant_id: agent?.tenant_id ?? null,
+      } as any)
+      .eq("id", phoneId);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success("Number assignment updated");
     await fetchAll();
   };
 
@@ -293,25 +383,149 @@ export default function TenantsAdmin() {
           <p className="text-sm text-muted-foreground">No agents found.</p>
         ) : (
           <ul className="divide-y divide-border">
-            {agents.map((a) => (
-              <li key={a.id} className="py-3 flex items-center justify-between gap-4">
-                <span className="font-medium truncate">{a.name}</span>
-                <select
-                  value={a.tenant_id || ""}
-                  onChange={(e) =>
-                    handleAssignAgent(a.id, e.target.value || null)
-                  }
-                  className="bg-background border border-border rounded-md px-3 py-1.5 text-sm"
+            {agents.map((a) => {
+              const assignedPhone = phoneNumbers.find((p) => p.agent_id === a.id);
+              return (
+                <li key={a.id} className="py-3 flex items-center justify-between gap-4 flex-wrap">
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <span className="font-medium truncate">{a.name}</span>
+                    {assignedPhone && (
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <ArrowRight className="h-3.5 w-3.5 text-primary" />
+                        <Phone className="h-3 w-3" />
+                        <span className="font-mono">{assignedPhone.phone_number}</span>
+                        {assignedPhone.label && (
+                          <span className="text-muted-foreground/70">({assignedPhone.label})</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <select
+                    value={a.tenant_id || ""}
+                    onChange={(e) =>
+                      handleAssignAgent(a.id, e.target.value || null)
+                    }
+                    className="bg-background border border-border rounded-md px-3 py-1.5 text-sm"
+                  >
+                    <option value="">— Unassigned —</option>
+                    {tenants.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+
+      {/* Phone numbers pool */}
+      <Card className="p-6">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <Phone className="h-5 w-5" />
+            Phone numbers
+          </h2>
+          <Button size="sm" onClick={() => setAddPhoneOpen(true)}>
+            <Plus className="h-4 w-4 mr-1.5" />
+            Add number
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground mb-4">
+          Numbers you've bought (Twilio etc.). Assign one to an agent — the agent's phone will sync automatically.
+        </p>
+        {loading ? (
+          <Loader2 className="h-5 w-5 animate-spin" />
+        ) : phoneNumbers.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No numbers yet. Click "Add number" once you've purchased one.
+          </p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {phoneNumbers.map((p) => {
+              const assignedAgent = agents.find((a) => a.id === p.agent_id);
+              const assignedTenant = tenants.find(
+                (t) => t.id === (assignedAgent?.tenant_id ?? p.tenant_id)
+              );
+              return (
+                <li
+                  key={p.id}
+                  className="py-3 flex items-center justify-between gap-4 flex-wrap"
                 >
-                  <option value="">— Unassigned —</option>
-                  {tenants.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              </li>
-            ))}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono font-semibold">
+                        {p.phone_number}
+                      </span>
+                      {p.label && (
+                        <Badge variant="outline" className="text-xs">
+                          {p.label}
+                        </Badge>
+                      )}
+                      {p.country && (
+                        <Badge variant="secondary" className="text-xs">
+                          {p.country}
+                        </Badge>
+                      )}
+                      {!p.is_active && (
+                        <Badge variant="destructive" className="text-xs">
+                          inactive
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-1">
+                      {assignedAgent ? (
+                        <>
+                          <ArrowRight className="h-3 w-3 text-primary" />
+                          <Bot className="h-3 w-3" />
+                          <span>{assignedAgent.name}</span>
+                          {assignedTenant && (
+                            <span className="text-muted-foreground/70">
+                              · {assignedTenant.name}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground/60">
+                          Not assigned
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={p.agent_id || ""}
+                      onChange={(e) =>
+                        handleAssignPhoneToAgent(p.id, e.target.value || null)
+                      }
+                      className="bg-background border border-border rounded-md px-3 py-1.5 text-sm"
+                    >
+                      <option value="">— Unassigned —</option>
+                      {agents.map((a) => {
+                        const tenant = tenants.find(
+                          (t) => t.id === a.tenant_id
+                        );
+                        return (
+                          <option key={a.id} value={a.id}>
+                            {a.name}
+                            {tenant ? ` (${tenant.name})` : ""}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setDeletePhone(p)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                    </Button>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </Card>
@@ -439,6 +653,75 @@ export default function TenantsAdmin() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Add phone number */}
+      <Dialog open={addPhoneOpen} onOpenChange={setAddPhoneOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add phone number</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Phone number (E.164)</Label>
+              <Input
+                value={newPhone}
+                onChange={(e) => setNewPhone(e.target.value)}
+                placeholder="+37212345678"
+              />
+              <p className="text-xs text-muted-foreground">
+                The number you bought on Twilio (or another provider).
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Label (optional)</Label>
+              <Input
+                value={newPhoneLabel}
+                onChange={(e) => setNewPhoneLabel(e.target.value)}
+                placeholder="EFTA outbound"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Country (optional)</Label>
+              <Input
+                value={newPhoneCountry}
+                onChange={(e) => setNewPhoneCountry(e.target.value)}
+                placeholder="EE"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setAddPhoneOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleAddPhone} disabled={addingPhone}>
+              {addingPhone ? <Loader2 className="h-4 w-4 animate-spin" /> : "Add"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete phone confirm */}
+      <AlertDialog
+        open={!!deletePhone}
+        onOpenChange={(o) => !o && setDeletePhone(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deletePhone?.phone_number}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the number from the pool. Any agent currently using
+              it will have its phone field cleared. You can re-add it later if
+              you keep it on your provider.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeletePhone}>
+              Delete
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
