@@ -7,10 +7,19 @@ import { Lock, Shield } from "lucide-react";
 import { toast } from "sonner";
 
 const ACCESS_PASSWORD = "Kuh26uTa!";
-const STORAGE_KEY = "bc_access_granted_v1";
+// Bump the version suffix any time you want to force every device to re-enter
+// the password (e.g. password change, suspected leak). Old keys are also
+// proactively cleared below.
+const STORAGE_KEY = "bc_access_granted_v2";
+const LEGACY_STORAGE_KEYS = ["bc_access_granted_v1"];
 
 export function isAccessGranted(): boolean {
   try {
+    // Clear any legacy keys so old sessions cannot bypass the new gate.
+    for (const k of LEGACY_STORAGE_KEYS) {
+      try { localStorage.removeItem(k); } catch { /* ignore */ }
+      try { sessionStorage.removeItem(k); } catch { /* ignore */ }
+    }
     return sessionStorage.getItem(STORAGE_KEY) === "1" || localStorage.getItem(STORAGE_KEY) === "1";
   } catch {
     return false;
