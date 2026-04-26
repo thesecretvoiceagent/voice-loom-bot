@@ -552,26 +552,34 @@ export default function CreateAgent() {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="glass-card rounded-xl p-2">
-        <div className="flex gap-2">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={cn(
-                "flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-all",
-                activeTab === tab.id
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-              )}
-            >
-              <tab.icon className="h-4 w-4" />
-              {tab.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* Tabs — hide "Knowledge Base" for the If Insurance tenant */}
+      {(() => {
+        const currentTenantSlug = searchParams.get("tenantSlug");
+        const visibleTabs = tabs.filter(
+          (t) => !(currentTenantSlug === "if-insurance" && t.id === "knowledge")
+        );
+        return (
+          <div className="glass-card rounded-xl p-2">
+            <div className="flex gap-2">
+              {visibleTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-all",
+                    activeTab === tab.id
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                  )}
+                >
+                  <tab.icon className="h-4 w-4" />
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Tab Content */}
       <div className="space-y-6">

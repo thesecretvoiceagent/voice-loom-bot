@@ -25,6 +25,11 @@ function TenantSidebar() {
   const { tenantSlug } = useParams<{ tenantSlug: string }>();
   if (!tenant) return null;
 
+  // Hide "Campaigns" nav for the If Insurance tenant.
+  const visibleNav = tenantNav.filter(
+    (item) => !(tenantSlug === "if-insurance" && item.to === "campaigns")
+  );
+
   return (
     <aside className="fixed left-0 top-0 z-40 h-screen w-64 border-r border-sidebar-border bg-sidebar">
       <div className="flex h-full flex-col">
@@ -43,7 +48,7 @@ function TenantSidebar() {
         </div>
 
         <nav className="flex-1 space-y-1 px-3 py-4">
-          {tenantNav.map((item) => (
+          {visibleNav.map((item) => (
             <NavLink
               key={item.name}
               to={item.to ? `/${tenantSlug}/${item.to}` : `/${tenantSlug}`}
