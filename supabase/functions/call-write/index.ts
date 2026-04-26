@@ -19,27 +19,52 @@ serve(async (req) => {
     const body = await req.json();
     const { action } = body;
 
+    // Helper: resolve a tenant_id from an agent_id (so tenant scoping works
+    // automatically for every call written through this function).
+    const resolveTenantId = async (agentId: string | null | undefined): Promise<string | null> => {
+      if (!agentId) return null;
+      const { data: agent } = await supabase
+        .from("agents")
+        .select("tenant_id")
+        .eq("id", agentId)
+        .maybeSingle();
+      return (agent?.tenant_id as string | null) ?? null;
+    };
+
     // CREATE or UPDATE a call record
     if (action === "upsert_call") {
       const { call_id, data } = body;
-      
+
+      // Auto-fill tenant_id from the agent if not already provided.
+      const incoming = { ...(data || {}) } as Record<string, unknown>;
+      if (!incoming.tenant_id && incoming.agent_id) {
+        const tid = await resolveTenantId(incoming.agent_id as string);
+        if (tid) incoming.tenant_id = tid;
+      }
+
       // Check if call exists
       const { data: existing } = await supabase
         .from("calls")
-        .select("id")
+        .select("id, agent_id, tenant_id")
         .eq("id", call_id)
         .maybeSingle();
 
       if (existing) {
+        // Backfill tenant_id on update if the row is missing one.
+        if (!incoming.tenant_id && !existing.tenant_id) {
+          const agentId = (incoming.agent_id as string) || existing.agent_id;
+          const tid = await resolveTenantId(agentId);
+          if (tid) incoming.tenant_id = tid;
+        }
         const { error } = await supabase
           .from("calls")
-          .update(data)
+          .update(incoming)
           .eq("id", call_id);
         if (error) throw error;
       } else {
         const { error } = await supabase
           .from("calls")
-          .insert({ id: call_id, ...data });
+          .insert({ id: call_id, ...incoming });
         if (error) throw error;
       }
 
