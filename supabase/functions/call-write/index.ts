@@ -76,9 +76,23 @@ serve(async (req) => {
     // UPDATE call status/recording/transcript
     if (action === "update_call") {
       const { call_id, data } = body;
+      const incoming = { ...(data || {}) } as Record<string, unknown>;
+
+      // Backfill tenant_id from agent if the row is missing one.
+      const { data: existingRow } = await supabase
+        .from("calls")
+        .select("agent_id, tenant_id")
+        .eq("id", call_id)
+        .maybeSingle();
+      if (existingRow && !existingRow.tenant_id && !incoming.tenant_id) {
+        const agentId = (incoming.agent_id as string) || existingRow.agent_id;
+        const tid = await resolveTenantId(agentId);
+        if (tid) incoming.tenant_id = tid;
+      }
+
       const { error } = await supabase
         .from("calls")
-        .update(data)
+        .update(incoming)
         .eq("id", call_id);
       if (error) throw error;
 
@@ -90,18 +104,24 @@ serve(async (req) => {
     // UPDATE call by Twilio SID (for status callbacks)
     if (action === "update_call_by_sid") {
       const { twilio_call_sid, data } = body;
-      
+      const incoming = { ...(data || {}) } as Record<string, unknown>;
+
       // Try to find and update by SID
       const { data: existing } = await supabase
         .from("calls")
-        .select("id")
+        .select("id, agent_id, tenant_id")
         .eq("twilio_call_sid", twilio_call_sid)
         .maybeSingle();
 
       if (existing) {
+        if (!existing.tenant_id && !incoming.tenant_id) {
+          const agentId = (incoming.agent_id as string) || existing.agent_id;
+          const tid = await resolveTenantId(agentId);
+          if (tid) incoming.tenant_id = tid;
+        }
         const { error } = await supabase
           .from("calls")
-          .update(data)
+          .update(incoming)
           .eq("id", existing.id);
         if (error) throw error;
       } else {
