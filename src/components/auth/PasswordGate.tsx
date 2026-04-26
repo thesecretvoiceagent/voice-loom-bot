@@ -15,6 +15,11 @@ const LEGACY_STORAGE_KEYS = ["bc_access_granted_v1"];
 
 export function isAccessGranted(): boolean {
   try {
+    // Clear any legacy keys so old sessions cannot bypass the new gate.
+    for (const k of LEGACY_STORAGE_KEYS) {
+      try { localStorage.removeItem(k); } catch { /* ignore */ }
+      try { sessionStorage.removeItem(k); } catch { /* ignore */ }
+    }
     return sessionStorage.getItem(STORAGE_KEY) === "1" || localStorage.getItem(STORAGE_KEY) === "1";
   } catch {
     return false;
