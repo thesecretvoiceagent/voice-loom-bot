@@ -19,27 +19,52 @@ serve(async (req) => {
     const body = await req.json();
     const { action } = body;
 
+    // Helper: resolve a tenant_id from an agent_id (so tenant scoping works
+    // automatically for every call written through this function).
+    const resolveTenantId = async (agentId: string | null | undefined): Promise<string | null> => {
+      if (!agentId) return null;
+      const { data: agent } = await supabase
+        .from("agents")
+        .select("tenant_id")
+        .eq("id", agentId)
+        .maybeSingle();
+      return (agent?.tenant_id as string | null) ?? null;
+    };
+
     // CREATE or UPDATE a call record
     if (action === "upsert_call") {
       const { call_id, data } = body;
-      
+
+      // Auto-fill tenant_id from the agent if not already provided.
+      const incoming = { ...(data || {}) } as Record<string, unknown>;
+      if (!incoming.tenant_id && incoming.agent_id) {
+        const tid = await resolveTenantId(incoming.agent_id as string);
+        if (tid) incoming.tenant_id = tid;
+      }
+
       // Check if call exists
       const { data: existing } = await supabase
         .from("calls")
-        .select("id")
+        .select("id, agent_id, tenant_id")
         .eq("id", call_id)
         .maybeSingle();
 
       if (existing) {
+        // Backfill tenant_id on update if the row is missing one.
+        if (!incoming.tenant_id && !existing.tenant_id) {
+          const agentId = (incoming.agent_id as string) || existing.agent_id;
+          const tid = await resolveTenantId(agentId);
+          if (tid) incoming.tenant_id = tid;
+        }
         const { error } = await supabase
           .from("calls")
-          .update(data)
+          .update(incoming)
           .eq("id", call_id);
         if (error) throw error;
       } else {
         const { error } = await supabase
           .from("calls")
-          .insert({ id: call_id, ...data });
+          .insert({ id: call_id, ...incoming });
         if (error) throw error;
       }
 
@@ -51,9 +76,23 @@ serve(async (req) => {
     // UPDATE call status/recording/transcript
     if (action === "update_call") {
       const { call_id, data } = body;
+      const incoming = { ...(data || {}) } as Record<string, unknown>;
+
+      // Backfill tenant_id from agent if the row is missing one.
+      const { data: existingRow } = await supabase
+        .from("calls")
+        .select("agent_id, tenant_id")
+        .eq("id", call_id)
+        .maybeSingle();
+      if (existingRow && !existingRow.tenant_id && !incoming.tenant_id) {
+        const agentId = (incoming.agent_id as string) || existingRow.agent_id;
+        const tid = await resolveTenantId(agentId);
+        if (tid) incoming.tenant_id = tid;
+      }
+
       const { error } = await supabase
         .from("calls")
-        .update(data)
+        .update(incoming)
         .eq("id", call_id);
       if (error) throw error;
 
@@ -65,18 +104,24 @@ serve(async (req) => {
     // UPDATE call by Twilio SID (for status callbacks)
     if (action === "update_call_by_sid") {
       const { twilio_call_sid, data } = body;
-      
+      const incoming = { ...(data || {}) } as Record<string, unknown>;
+
       // Try to find and update by SID
       const { data: existing } = await supabase
         .from("calls")
-        .select("id")
+        .select("id, agent_id, tenant_id")
         .eq("twilio_call_sid", twilio_call_sid)
         .maybeSingle();
 
       if (existing) {
+        if (!existing.tenant_id && !incoming.tenant_id) {
+          const agentId = (incoming.agent_id as string) || existing.agent_id;
+          const tid = await resolveTenantId(agentId);
+          if (tid) incoming.tenant_id = tid;
+        }
         const { error } = await supabase
           .from("calls")
-          .update(data)
+          .update(incoming)
           .eq("id", existing.id);
         if (error) throw error;
       } else {
