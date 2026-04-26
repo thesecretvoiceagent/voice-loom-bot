@@ -48,7 +48,7 @@ function TenantSidebar() {
         </div>
 
         <nav className="flex-1 space-y-1 px-3 py-4">
-          {tenantNav.map((item) => (
+          {visibleNav.map((item) => (
             <NavLink
               key={item.name}
               to={item.to ? `/${tenantSlug}/${item.to}` : `/${tenantSlug}`}
