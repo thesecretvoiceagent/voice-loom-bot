@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Lock, Shield } from "lucide-react";
 import { toast } from "sonner";
 
-const ACCESS_PASSWORD = "beyondcodeAIKuh26uTa!";
+const ACCESS_PASSWORD = "Kuh26uTa!";
 const STORAGE_KEY = "bc_access_granted_v1";
 
 export function isAccessGranted(): boolean {
