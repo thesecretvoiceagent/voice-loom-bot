@@ -292,7 +292,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const normalized = normalizeTranscript(text);
     if (/form2_link|callback|tagasihelist/.test(text) || /callback|tagasihelist/.test(normalized)) return "callback";
     if (/location_link/.test(text) || /location|asukoht/.test(normalized)) return "location";
-    if (/form_link/.test(text) || /registration|registreerimis|numbrim[aä]rk/.test(normalized)) return "registration";
+    if (/form1_link|form_link/.test(text) || /registration|registreerimis|numbrim[aä]rk/.test(normalized)) return "registration";
     return "unknown";
   };
 
@@ -624,10 +624,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
         const formPath = isLovableLike ? "/form" : "/form.html";
         const baseFormUrl = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
-        // form_link  → SMS #1: ask for car registration number only (mode=reg)
-        // form2_link → SMS #3: ask for callback phone number only (mode=phone)
+        // form1_link / form_link → SMS #1: ask for car registration number only (mode=reg)
+        // form2_link             → SMS #3: ask for callback phone number only (mode=phone)
+        callVariables.form1_link = `${baseFormUrl}&mode=reg`;
         callVariables.form_link = `${baseFormUrl}&mode=reg`;
         callVariables.form2_link = `${baseFormUrl}&mode=phone`;
+        console.log(`[MediaStream] form1_link built: ${callVariables.form1_link}`);
         console.log(`[MediaStream] form_link built: ${callVariables.form_link}`);
         console.log(`[MediaStream] form2_link built: ${callVariables.form2_link}`);
       } catch (err) {
@@ -919,7 +921,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - If asked about something outside your scope, briefly redirect back to the topic.
 - ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.
 - LIVE DATA HARD RULE: You do NOT have a registration number or callback phone number unless it is present in runtime variables, returned by lookup_vehicle, or arrives in a [SYSTEM EVENT: form_submitted] field. A caller asking “did you get it?” or saying they opened/sent the link is NOT data. If the system event has not arrived, say you do not see it yet and ask them to submit the form.
-- SMS LINK HARD RULE: registration SMS must use the template containing {{form_link}}; callback-number SMS must use the template containing {{form2_link}}. Never use the registration SMS for callback number collection.`;
+- SMS LINK HARD RULE: registration SMS must use the template containing {{form1_link}} (legacy {{form_link}} also resolves to the same reg-only page); callback-number SMS must use the template containing {{form2_link}}. Never use the registration SMS for callback number collection.`;
 
       // Inject SMS catalog so the AI knows which named SMSes are available, when to use them, and what they say.
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
