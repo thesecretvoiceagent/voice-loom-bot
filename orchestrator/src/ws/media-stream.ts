@@ -1238,6 +1238,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
 
               const tplPurpose = tpl ? classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) : "unknown";
+              if (tpl && tplPurpose === "registration" && !tpl.content.includes("{{form1_link}}")) {
+                console.warn(`[MediaStream] send_sms guard: registration template "${tpl.name}" did not contain {{form1_link}}; forcing reg-only link text (callId=${callId})`);
+                tpl = { ...tpl, content: `Palun sisestage oma numbrimärk: {{form1_link}}` };
+              }
               if (tplPurpose === "registration" && submittedRegistrationNumber) {
                 const callbackTpl = findDuringSmsByPurpose("callback");
                 if (callbackTpl) {
