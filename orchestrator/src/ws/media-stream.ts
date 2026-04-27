@@ -285,6 +285,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseCreatedCount = 0;
   let responseDoneCount = 0;
   let responseErrorCount = 0;
+  let pendingUserResponseTimer: ReturnType<typeof setTimeout> | null = null;
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
   let twilioOutboundFrames = 0;
@@ -303,6 +304,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       clearTimeout(turnDetectionEnableTimer);
       turnDetectionEnableTimer = null;
     }
+  };
+
+  const clearPendingUserResponseTimer = () => {
+    if (pendingUserResponseTimer) {
+      clearTimeout(pendingUserResponseTimer);
+      pendingUserResponseTimer = null;
+    }
+  };
+
+  const sendResponseCreate = (reason: string, response?: Record<string, unknown>) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
+    responseCreateSentCount += 1;
+    console.log(`[Diag] response.create sent #${responseCreateSentCount} reason=${reason} (callId=${callId})`);
+    openaiWs.send(JSON.stringify(response ? { type: "response.create", response } : { type: "response.create" }));
+    return true;
   };
 
   const normalizeTranscript = (txt: string) =>
@@ -339,6 +355,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
+        create_response: true,      // Server VAD must create the assistant turn after caller speech
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
@@ -700,7 +717,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       content: [{ type: "input_text", text: sysMsg }],
                     },
                   }));
-                  openaiWs.send(JSON.stringify({ type: "response.create" }));
+                  sendResponseCreate("system-event");
                 }
               },
             )
@@ -748,7 +765,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-                    openaiWs.send(JSON.stringify({ type: "response.create" }));
+                    sendResponseCreate("system-event");
                   }
                 }
 
@@ -774,7 +791,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-                    openaiWs.send(JSON.stringify({ type: "response.create" }));
+                    sendResponseCreate("system-event");
                   }
                 }
               },
@@ -844,7 +861,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           `If the greeting is in Estonian, you MUST speak Estonian. If in Finnish, Finnish. If in English, English. ` +
           `\n\nGREETING TO SAY VERBATIM:\n"""\n${greeting}\n"""`;
       }
-      openaiWs.send(JSON.stringify(responseCreate));
+      sendResponseCreate("initial-greeting", responseCreate.response);
 
       // Treat the initial response as speaking immediately so anti-barge-in stays active until playback is confirmed done.
       aiIsSpeaking = true;
@@ -1053,6 +1070,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "response.created":
+            clearPendingUserResponseTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
             responsePlaybackMarkName = null;
@@ -1149,6 +1167,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
+            if (!greetingInProgress && !activeResponseId) {
+              clearPendingUserResponseTimer();
+              pendingUserResponseTimer = setTimeout(() => {
+                pendingUserResponseTimer = null;
+                if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId || greetingInProgress) return;
+                console.warn(`[Diag] No assistant response after user transcript; forcing response.create (callId=${callId})`);
+                sendResponseCreate("transcript-fallback");
+              }, 1200);
+            }
             break;
 
           case "response.function_call_arguments.done": {
@@ -1182,7 +1209,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     }),
                   },
                 }));
-                openaiWs!.send(JSON.stringify({ type: "response.create" }));
+                sendResponseCreate("tool-result");
                 break;
               }
 
@@ -1198,7 +1225,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 },
               };
               openaiWs!.send(JSON.stringify(toolResult));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              sendResponseCreate("tool-result");
 
               setTimeout(() => {
                 console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
@@ -1225,7 +1252,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   output: JSON.stringify(output),
                 },
               }));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              sendResponseCreate("tool-result");
               transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
             }
 
@@ -1285,7 +1312,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     : { success: false, error: result.error, instruction: `Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent.` }),
                 },
               }));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              sendResponseCreate("tool-result");
             }
             break;
           }
@@ -1384,6 +1411,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "input_audio_buffer.committed":
             bufferCommittedCount += 1;
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
+            if (!greetingInProgress) {
+              clearPendingUserResponseTimer();
+              pendingUserResponseTimer = setTimeout(() => {
+                pendingUserResponseTimer = null;
+                if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId || greetingInProgress) return;
+                console.warn(`[Diag] No assistant response after audio commit; forcing response.create (callId=${callId})`);
+                sendResponseCreate("commit-fallback");
+              }, 1500);
+            }
             break;
 
           case "response.error":
@@ -1407,6 +1443,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }
       clearMarkFallback();
       clearTurnDetectionEnableTimer();
+      clearPendingUserResponseTimer();
       console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
       openaiWs = null;
       finalizeCall();
@@ -1441,6 +1478,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
+    clearPendingUserResponseTimer();
     if (diagnosticSnapshotTimer) {
       clearInterval(diagnosticSnapshotTimer);
       diagnosticSnapshotTimer = null;
