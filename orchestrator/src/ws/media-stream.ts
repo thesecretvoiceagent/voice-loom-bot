@@ -1108,6 +1108,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       toolsActivated = false;
 
       pendingInitialResponse = true;
+      lastSessionConfigSent = {
+        model: config.openai.realtimeModel,
+        modalities: sessionUpdate.session.modalities,
+        input_audio_format: sessionUpdate.session.input_audio_format,
+        output_audio_format: sessionUpdate.session.output_audio_format,
+        voice: sessionUpdate.session.voice,
+        turn_detection: sessionUpdate.session.turn_detection,
+        input_audio_transcription: sessionUpdate.session.input_audio_transcription,
+        tools_count: tools.length,
+      };
+      console.log(`[Diag-OpenAI-Config] callId=${callId} ${JSON.stringify(lastSessionConfigSent)}`);
       openaiWs!.send(JSON.stringify(sessionUpdate));
 
       initialResponseFallbackTimer = setTimeout(() => {
