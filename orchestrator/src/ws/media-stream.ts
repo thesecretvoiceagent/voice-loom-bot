@@ -355,8 +355,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
-        create_response: true,      // Ensure caller speech automatically triggers assistant audio
-        interrupt_response: false,  // Greeting/turn completion is controlled by our own playback state
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
@@ -1444,6 +1442,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }
       clearMarkFallback();
       clearTurnDetectionEnableTimer();
+      clearPendingUserResponseTimer();
       console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
       openaiWs = null;
       finalizeCall();
@@ -1478,6 +1477,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
+    clearPendingUserResponseTimer();
     if (diagnosticSnapshotTimer) {
       clearInterval(diagnosticSnapshotTimer);
       diagnosticSnapshotTimer = null;
