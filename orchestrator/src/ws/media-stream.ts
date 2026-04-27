@@ -781,6 +781,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   const phone = isUsableSubmittedValue(row.form_callback_phone_number)
                     ? row.form_callback_phone_number.toString().slice(0, 20)
                     : "";
+                  if (reg) submittedRegistrationNumber = reg;
+                  if (phone) submittedCallbackPhoneNumber = phone;
                   console.log(`[MediaStream] Form submitted (callId=${callId}): reg="${reg}" phone="${phone}"`);
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
@@ -1221,9 +1223,28 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
               console.log(`[MediaStream] send_sms INVOKED (callId=${callId}) requestedName="${requestedName}" callDirection=${callDirection} fromNumber="${fromNumber}" calledNumber="${calledNumber}" recipient="${recipient}" availableTemplates=[${smsMessages.map((m) => `${m.name}(${m.trigger})`).join(", ")}]`);
 
-              // Look up the configured during-call template by exact name.
-              // We NEVER use AI-supplied content — only the verbatim configured template.
-              const tpl = resolveDuringSmsTemplate(requestedName);
+              const requestedPurpose = classifySmsPurpose(requestedName);
+              let tpl = resolveDuringSmsTemplate(requestedName);
+              if (requestedPurpose !== "unknown") {
+                const purposeTpl = findDuringSmsByPurpose(requestedPurpose);
+                if (purposeTpl && purposeTpl.name !== tpl?.name) {
+                  console.warn(`[MediaStream] send_sms purpose override requested="${requestedName}" purpose=${requestedPurpose}: using configured template="${purposeTpl.name}" instead of "${tpl?.name || "none"}" (callId=${callId})`);
+                  tpl = purposeTpl;
+                }
+              }
+
+              const tplPurpose = tpl ? classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) : "unknown";
+              if (tplPurpose === "registration" && submittedRegistrationNumber) {
+                const callbackTpl = findDuringSmsByPurpose("callback");
+                if (callbackTpl) {
+                  console.warn(`[MediaStream] send_sms guard: registration already submitted (${submittedRegistrationNumber}); switching to callback SMS "${callbackTpl.name}" (callId=${callId})`);
+                  tpl = callbackTpl;
+                }
+              }
+              if (tpl && classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) === "callback" && !tpl.content.includes("{{form2_link}}")) {
+                console.warn(`[MediaStream] send_sms guard: callback template "${tpl.name}" did not contain {{form2_link}}; forcing phone-only link text (callId=${callId})`);
+                tpl = { ...tpl, content: `Palun sisestage oma tagasihelistamise number siin lingil: {{form2_link}}` };
+              }
 
               let result: { ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string };
               let bodyForLog = "";
