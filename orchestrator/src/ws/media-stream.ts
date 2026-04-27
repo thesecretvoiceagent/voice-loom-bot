@@ -1204,6 +1204,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.created":
             clearPendingUserSpeechResponseTimer();
+            clearResponseAudioDoneFallback();
             activeResponseId = event.response?.id || null;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
@@ -1225,6 +1226,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             responseHasAudio = true;
             pendingUserResponseRetry = false;
+            clearResponseAudioDoneFallback();
+            responseAudioDoneFallbackTimer = setTimeout(() => {
+              if (!activeResponseId || responseAudioDone || !responseDoneReceived) return;
+              console.warn(`[MediaStream] response.audio.done missing after audio; force-completing audio state (callId=${callId}, responseId=${activeResponseId})`);
+              responseAudioDone = true;
+              maybeCompleteAiTurn("response.audio.done-fallback");
+            }, 1200);
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
               // OpenAI sends large audio chunks (~200ms). Twilio Media Streams plays smoothest
               // when each `media` event carries ~20ms of ulaw audio (160 bytes @ 8kHz).
