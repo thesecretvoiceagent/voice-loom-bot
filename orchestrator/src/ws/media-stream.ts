@@ -1362,6 +1362,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
             if (responseDoneReceived && !responsePlaybackMarkName) {
               maybeCompleteAiTurn("response.audio.done(already-done)");
+              break;
             }
 
             if (!responsePlaybackMarkName && streamSid && twilioWs.readyState === WebSocket.OPEN) {
