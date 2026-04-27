@@ -1469,6 +1469,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
 
+            clearResponseAudioDoneFallback();
+
             responseAudioDone = true;
 
             if (!responseHasAudio) {
