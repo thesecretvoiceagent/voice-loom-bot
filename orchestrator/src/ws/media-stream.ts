@@ -283,6 +283,28 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return !/^(0+|null|undefined|n\/a|na|-|—)$/i.test(normalized);
   };
 
+  const normalizeSmsTemplateName = (value: string) => normalizeTranscript(value).replace(/sms$/i, "").trim();
+
+  const resolveDuringSmsTemplate = (requestedName: string): SmsMessage | undefined => {
+    const during = smsMessages.filter((m) => m.trigger === "during");
+    const exact = during.find((m) => m.name === requestedName);
+    if (exact) return exact;
+
+    const normalized = normalizeSmsTemplateName(requestedName);
+    const aliasMap: Record<string, RegExp> = {
+      "tagasihelistamise numbri": /callback|tagasihelist/i,
+      "callback number": /callback|tagasihelist/i,
+      "retrieval of callback number through": /callback|tagasihelist/i,
+      "registreerimisnumbri": /registration|registreerimis|numbrim[aä]rk/i,
+      "registration number": /registration|registreerimis|numbrim[aä]rk/i,
+      "asukoha": /location|asukoht/i,
+      "location": /location|asukoht/i,
+    };
+    const matcher = aliasMap[normalized];
+    if (!matcher) return undefined;
+    return during.find((m) => matcher.test(`${m.name} ${m.description || ""} ${m.content}`));
+  };
+
   const startInboundAudioCooldown = (ms: number, reason: string) => {
     inboundAudioCooldownUntil = Math.max(inboundAudioCooldownUntil, Date.now() + ms);
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
@@ -1180,9 +1202,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
               // Look up the configured during-call template by exact name.
               // We NEVER use AI-supplied content — only the verbatim configured template.
-              const tpl = smsMessages.find(
-                (m) => m.trigger === "during" && m.name === requestedName,
-              );
+              const tpl = resolveDuringSmsTemplate(requestedName);
 
               let result: { ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string };
               let bodyForLog = "";
