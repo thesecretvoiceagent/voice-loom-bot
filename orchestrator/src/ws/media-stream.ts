@@ -288,6 +288,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseDoneCount = 0;
   let responseErrorCount = 0;
   let pendingUserResponseTimer: ReturnType<typeof setTimeout> | null = null;
+  let callerSpeechWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingUserResponseReason: string | null = null;
   let pendingUserResponseAttempts = 0;
   let pendingUserResponseTranscript: string | null = null;
@@ -398,6 +399,33 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   };
 
+  const clearCallerSpeechWatchdog = () => {
+    if (callerSpeechWatchdogTimer) {
+      clearTimeout(callerSpeechWatchdogTimer);
+      callerSpeechWatchdogTimer = null;
+    }
+  };
+
+  const commitAudioAndCreateResponse = (reason: string, delayMs = 80) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
+      console.warn(`[Diag] audio commit skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} (callId=${callId})`);
+      return;
+    }
+    console.warn(`[Diag] input_audio_buffer.commit sent reason=${reason} (callId=${callId})`);
+    openaiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+    scheduleUserResponseCreate(reason, delayMs);
+  };
+
+  const armCallerSpeechWatchdog = (reason: string, timeoutMs = 2600) => {
+    clearCallerSpeechWatchdog();
+    callerSpeechWatchdogTimer = setTimeout(() => {
+      callerSpeechWatchdogTimer = null;
+      if (activeResponseId || greetingInProgress) return;
+      console.warn(`[Diag] caller speech watchdog fired reason=${reason}; forcing commit + response.create (callId=${callId})`);
+      commitAudioAndCreateResponse(`watchdog-${reason}`, 120);
+    }, timeoutMs);
+  };
+
   const sendResponseCreate = (reason: string, response?: Record<string, unknown>) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
       console.warn(`[Diag] response.create skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`);
@@ -488,7 +516,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.6,             // Slightly less strict so quieter callers still trigger
         prefix_padding_ms: 400,
         silence_duration_ms: 700,   // Faster end-of-turn detection
-        create_response: true,      // CRITICAL: ensure OpenAI auto-creates assistant response on turn end
+        create_response: false,     // Deterministic bridge: we commit audio and send response.create ourselves
         interrupt_response: true,   // Allow caller to barge in on assistant audio
       },
     };
