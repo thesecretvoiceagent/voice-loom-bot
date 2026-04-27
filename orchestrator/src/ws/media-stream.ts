@@ -1756,8 +1756,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           twilioInboundFramesAfterGreeting += 1;
           if (!firstInboundAudioAfterGreetingLogged) {
             firstInboundAudioAfterGreetingLogged = true;
+            firstCallerMediaAfterGreetingAt = new Date().toISOString();
             const sinceGreeting = greetingCompletedAt ? Date.now() - greetingCompletedAt : -1;
-            console.log(`[Diag] FIRST inbound media frame after greeting (callId=${callId}) msSinceGreetingComplete=${sinceGreeting} totalSinceStart=${twilioInboundFrames}`);
+            console.log(`[Diag-Twilio] first caller media timestamp after greeting=${firstCallerMediaAfterGreetingAt} msSinceGreetingComplete=${sinceGreeting} totalSinceStart=${twilioInboundFrames} (callId=${callId})`);
+            sendTwilioBridgeSelfTestTone("first-caller-media-after-greeting");
+          }
+          if (greetingCompletedAt && Date.now() - greetingCompletedAt <= 5000) {
+            console.log(`[Diag-Gate] caller media within first 5s after greeting frame=${twilioInboundFramesAfterGreeting} callId=${callId} ${diagState()}`);
           }
           // Short cooldown after AI speech finishes — prevents the model from hearing its
           // own just-played audio (echo loop) and re-triggering the same response.
