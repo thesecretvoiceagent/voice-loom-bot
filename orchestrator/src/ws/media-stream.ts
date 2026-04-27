@@ -624,10 +624,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
         const formPath = isLovableLike ? "/form" : "/form.html";
         const baseFormUrl = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
-        // form1_link / form_link → SMS #1: ask for car registration number only (mode=reg)
-        // form2_link             → SMS #3: ask for callback phone number only (mode=phone)
-        callVariables.form1_link = `${baseFormUrl}&mode=reg`;
-        callVariables.form_link = `${baseFormUrl}&mode=reg`;
+        const regFormUrl = config.supabase.url
+          ? `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/iizi-reg-form?caseId=${encodeURIComponent(callId)}&token=${formToken}`
+          : `${baseFormUrl}&mode=reg`;
+        // form1_link / form_link → SMS #1: registration number only via dedicated edge form.
+        // form2_link             → SMS #3: callback phone number only (mode=phone)
+        callVariables.form1_link = regFormUrl;
+        callVariables.form_link = regFormUrl;
         callVariables.form2_link = `${baseFormUrl}&mode=phone`;
         console.log(`[MediaStream] form1_link built: ${callVariables.form1_link}`);
         console.log(`[MediaStream] form_link built: ${callVariables.form_link}`);
