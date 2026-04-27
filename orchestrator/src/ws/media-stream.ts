@@ -260,6 +260,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseDoneReceived = false;
   let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let callerHasSpokenSinceGreeting = false;
+  let callerSubstantiveTurnCount = 0;
 
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
@@ -365,6 +366,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       openaiWs.send(JSON.stringify({
         type: "response.create",
         response: {
+          modalities: ["text", "audio"],
+          tool_choice: "none",
           instructions: callerHasSpokenSinceGreeting
             ? "Respond now to the caller's latest message. Continue the normal intake script in the caller's language. Do not stay silent."
             : "The caller has started speaking. Respond now in the caller's language and continue the normal intake script. Do not stay silent.",
@@ -381,7 +384,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const sessionPatch: any = {
       turn_detection: {
         type: "server_vad",
-        threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
+        threshold: 0.55,            // Balanced for phone audio; 0.7 was missing quiet callers.
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
         create_response: false,     // We create responses manually after transcription; avoids tool-only/no-audio turns.
