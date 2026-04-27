@@ -1338,7 +1338,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 },
               };
               openaiWs!.send(JSON.stringify(toolResult));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              openaiWs!.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
 
               setTimeout(() => {
                 console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
@@ -1365,7 +1365,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   output: JSON.stringify(output),
                 },
               }));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              openaiWs!.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
               transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
             }
 
@@ -1465,7 +1465,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     : { success: false, error: result.error, template_name: tpl?.name || requestedName, instruction: `The SMS could not be sent. Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent. Do NOT say "saatsin" or "I sent". Suggest trying again in a moment.` }),
                 },
               }));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              openaiWs!.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
             }
             break;
           }
