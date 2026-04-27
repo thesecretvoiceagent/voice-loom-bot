@@ -1504,7 +1504,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   response: {
                     modalities: ["text", "audio"],
                     tool_choice: "none",
-                    instructions: "You produced no audio. Speak now in Estonian. Ask one concise next intake question for IIZI autoabi and do not call any tool in this turn.",
                   },
                 }));
               }, 150);
