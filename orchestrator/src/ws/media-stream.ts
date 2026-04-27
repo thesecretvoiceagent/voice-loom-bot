@@ -1360,11 +1360,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
 
-            if (responseDoneReceived && !responsePlaybackMarkName) {
-              maybeCompleteAiTurn("response.audio.done(already-done)");
-              break;
-            }
-
             if (!responsePlaybackMarkName && streamSid && twilioWs.readyState === WebSocket.OPEN) {
               responsePlaybackMarkName = `response-playback:${responseId}:${Date.now()}`;
               console.log(`[MediaStream] Response audio complete, waiting for Twilio playback mark (callId=${callId}, responseId=${responseId}, mark=${responsePlaybackMarkName})`);
