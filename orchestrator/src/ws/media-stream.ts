@@ -1193,6 +1193,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "response.created":
+            clearPendingUserSpeechResponseTimer();
             activeResponseId = event.response?.id || null;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
@@ -1265,14 +1266,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
-          case "conversation.item.input_audio_transcription.completed":
-            console.log(`[MediaStream] User said (callId=${callId}): ${event.transcript}`);
-            transcriptLines.push(`[User]: ${event.transcript}`);
+          case "conversation.item.input_audio_transcription.completed": {
+            const userTranscript = (event.transcript || "").toString();
+            console.log(`[MediaStream] User said (callId=${callId}): ${userTranscript}`);
+            transcriptLines.push(`[User]: ${userTranscript}`);
             // Real user speech resets the repeat counter.
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
+            if (normalizeTranscript(userTranscript)) {
+              scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 450);
+            }
             break;
+          }
 
           case "response.function_call_arguments.done": {
             const fnName = event.name;
@@ -1490,6 +1496,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             maybeCompleteAiTurn("response.done");
             break;
           }
+
+          case "input_audio_buffer.speech_stopped":
+            scheduleManualResponseAfterUserSpeech("speech_stopped", 700);
+            break;
 
           case "input_audio_buffer.speech_started":
             // If greeting is in progress, completely ignore user speech and clear any buffered audio
