@@ -1573,7 +1573,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "input_audio_buffer.committed":
             lastUserAudioItemId = event.item_id || lastUserAudioItemId || null;
-            console.log(`[MediaStream] Caller audio committed (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}, previous=${event.previous_item_id || "none"})`);
+            console.log(`[MediaStream] Caller audio committed; Realtime will auto-create the response (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}, previous=${event.previous_item_id || "none"})`);
             break;
 
           case "input_audio_buffer.speech_started":
@@ -1603,7 +1603,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
               openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
             } else {
-              console.log(`[MediaStream] Speech started (no active response — waiting for VAD commit, then manual response) (callId=${callId}, itemId=${event.item_id || "unknown"})`);
+              console.log(`[MediaStream] Speech started (no active response — waiting for Realtime VAD auto-response) (callId=${callId}, itemId=${event.item_id || "unknown"})`);
             }
             break;
 
