@@ -38,10 +38,32 @@ wss.on("error", (err) => {
 });
 
 server.listen(config.port, () => {
+  // Build / deploy provenance — proves which commit Railway is actually running.
+  const gitSha =
+    process.env.RAILWAY_GIT_COMMIT_SHA ||
+    process.env.SOURCE_COMMIT ||
+    process.env.GIT_COMMIT ||
+    process.env.COMMIT_SHA ||
+    "(unknown)";
+  const gitBranch = process.env.RAILWAY_GIT_BRANCH || "(unknown)";
+  const deployId =
+    process.env.RAILWAY_DEPLOYMENT_ID ||
+    process.env.RAILWAY_REPLICA_ID ||
+    "(unknown)";
+  const serviceName = process.env.RAILWAY_SERVICE_NAME || "(unknown)";
+  const projectName = process.env.RAILWAY_PROJECT_NAME || "(unknown)";
+  const apiKeyTail = config.openai.apiKey
+    ? `…${config.openai.apiKey.slice(-6)} (len=${config.openai.apiKey.length})`
+    : "(missing)";
+
   console.log(`\n🚀 Orchestrator running on port ${config.port}`);
   console.log(`   Environment: ${config.nodeEnv}`);
-  console.log(`   Twilio:      ${config.twilio.isConfigured ? "✅ configured" : "❌ not configured"}`);
-  console.log(`   OpenAI:      ${config.openai.isConfigured ? "✅ configured" : "❌ not configured"}`);
-  console.log(`   Supabase:    ${config.supabase.isConfigured ? "✅ configured" : "❌ not configured"}`);
+  console.log(`   Build:       commit=${gitSha} branch=${gitBranch}`);
+  console.log(`   Railway:     project=${projectName} service=${serviceName} deployment=${deployId}`);
+  console.log(`   Twilio:      ${config.twilio.isConfigured ? "✅ configured" : "❌ not configured"} from=${config.twilio.fromNumber || "(none)"}`);
+  console.log(`   OpenAI:      ${config.openai.isConfigured ? "✅ configured" : "❌ not configured"} model=${config.openai.realtimeModel} key=${apiKeyTail}`);
+  console.log(`   Supabase:    ${config.supabase.isConfigured ? "✅ configured" : "❌ not configured"} url=${config.supabase.url || "(none)"}`);
+  console.log(`   PublicBase:  ${config.publicBaseUrl || "(none)"}`);
+  console.log(`   PublicWS:    ${config.publicWsBaseUrl || "(none)"}`);
   console.log(`   WS path:     /twilio/stream\n`);
 });

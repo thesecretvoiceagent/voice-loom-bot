@@ -263,6 +263,34 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseDoneReceived = false;
   let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // ---- Diagnostic counters (A–E from runbook) ----
+  // A. Twilio inbound caller audio
+  let twilioInboundFrames = 0;
+  let twilioInboundFramesDropGreeting = 0;
+  let twilioInboundFramesDropCooldown = 0;
+  let twilioInboundFramesDropAntiBargein = 0;
+  let twilioInboundFramesForwarded = 0;
+  let twilioInboundFramesAfterGreeting = 0;
+  let firstInboundAudioAfterGreetingLogged = false;
+  // B. OpenAI session
+  let openaiSessionCreatedAt: number | null = null;
+  let openaiSessionUpdatedAt: number | null = null;
+  // C. User turn detection
+  let speechStartedCount = 0;
+  let speechStoppedCount = 0;
+  let bufferCommittedCount = 0;
+  let userTranscriptCount = 0;
+  // D. Assistant response creation
+  let responseCreateSentCount = 0;
+  let responseCreatedCount = 0;
+  let responseDoneCount = 0;
+  let responseErrorCount = 0;
+  // E. Assistant audio back to Twilio
+  let assistantAudioDeltaCount = 0;
+  let twilioOutboundFrames = 0;
+  let twilioOutboundSendErrors = 0;
+  let diagnosticSnapshotTimer: ReturnType<typeof setInterval> | null = null;
+
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
       clearTimeout(markFallbackTimer);
@@ -1009,29 +1037,33 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
         switch (event.type) {
           case "session.created":
-            console.log(`[MediaStream] OpenAI session created (callId=${callId})`);
+            openaiSessionCreatedAt = Date.now();
+            console.log(`[Diag] OpenAI session.created (callId=${callId}) model=${config.openai.realtimeModel}`);
             break;
 
           case "session.updated":
+            openaiSessionUpdatedAt = Date.now();
             if (!sessionConfigured) {
               sessionConfigured = true;
-              console.log(`[MediaStream] OpenAI session configured (callId=${callId})`);
+              console.log(`[Diag] OpenAI session.updated — INITIAL configured (callId=${callId}) modalities=text+audio audioFormat=g711_ulaw`);
               maybeStartInitialResponse();
             } else {
-              console.log(`[MediaStream] OpenAI session updated (callId=${callId})`);
+              console.log(`[Diag] OpenAI session.updated — patch applied (callId=${callId})`);
             }
             break;
 
           case "response.created":
+            responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
             responseAudioDone = false;
             responseDoneReceived = false;
             ignoreAudioUntilNextResponse = false;
-            aiIsSpeaking = true; // Keep this true until Twilio confirms playback completion.
+            aiIsSpeaking = true;
             lastResponseFinishReason = null;
             lastResponseOutputTokens = null;
+            console.log(`[Diag] response.created #${responseCreatedCount} responseId=${activeResponseId} (callId=${callId})`);
             break;
 
           case "response.audio.delta": {
@@ -1042,30 +1074,41 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
             }
+            assistantAudioDeltaCount += 1;
             responseHasAudio = true;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
-              // OpenAI sends large audio chunks (~200ms). Twilio Media Streams plays smoothest
-              // when each `media` event carries ~20ms of ulaw audio (160 bytes @ 8kHz).
-              // Splitting prevents underruns/overruns that are heard as static/clicks.
               try {
                 const raw = Buffer.from(event.delta, "base64");
                 const FRAME = 160; // 20ms @ 8kHz mu-law
                 for (let offset = 0; offset < raw.length; offset += FRAME) {
                   const chunk = raw.subarray(offset, Math.min(offset + FRAME, raw.length));
+                  try {
+                    twilioWs.send(JSON.stringify({
+                      event: "media",
+                      streamSid,
+                      media: { payload: chunk.toString("base64") },
+                    }));
+                    twilioOutboundFrames += 1;
+                  } catch (sendErr) {
+                    twilioOutboundSendErrors += 1;
+                    console.error(`[Diag] Twilio send error (callId=${callId}, twilioState=${twilioWs.readyState}):`, sendErr);
+                  }
+                }
+              } catch (e) {
+                try {
                   twilioWs.send(JSON.stringify({
                     event: "media",
                     streamSid,
-                    media: { payload: chunk.toString("base64") },
+                    media: { payload: event.delta },
                   }));
+                  twilioOutboundFrames += 1;
+                } catch (sendErr) {
+                  twilioOutboundSendErrors += 1;
+                  console.error(`[Diag] Twilio send error (fallback path) (callId=${callId}):`, sendErr);
                 }
-              } catch (e) {
-                // Fallback: forward as-is if buffer ops fail
-                twilioWs.send(JSON.stringify({
-                  event: "media",
-                  streamSid,
-                  media: { payload: event.delta },
-                }));
               }
+            } else {
+              console.warn(`[Diag] Cannot forward assistant audio: streamSid=${streamSid?"set":"empty"} twilioState=${twilioWs.readyState} hasDelta=${!!event.delta} (callId=${callId})`);
             }
             break;
           }
@@ -1096,7 +1139,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
 
           case "conversation.item.input_audio_transcription.completed":
-            console.log(`[MediaStream] User said (callId=${callId}): ${event.transcript}`);
+            userTranscriptCount += 1;
+            console.log(`[Diag] user_transcript #${userTranscriptCount} (callId=${callId}): "${event.transcript}"`);
             transcriptLines.push(`[User]: ${event.transcript}`);
             if (typeof event.transcript === "string" && event.transcript.trim().length > 0) {
               userUtteranceCount += 1;
@@ -1301,21 +1345,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastResponseOutputTokens = outputTokens;
 
             responseDoneReceived = true;
+            responseDoneCount += 1;
             console.log(
-              `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens}`
+              `[Diag] response.done #${responseDoneCount} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} hasAudio=${responseHasAudio} audioDeltas=${assistantAudioDeltaCount} (callId=${callId})`
             );
             maybeCompleteAiTurn("response.done");
             break;
           }
 
           case "input_audio_buffer.speech_started":
-            // If greeting is in progress, completely ignore user speech and clear any buffered audio
+            speechStartedCount += 1;
+            console.log(`[Diag] speech_started #${speechStartedCount} (callId=${callId}) state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},antiBargein=${antiBargeinEnabled}}`);
             if (greetingInProgress) {
               console.log(`[MediaStream] Ignoring interruption during greeting, clearing buffer (callId=${callId})`);
               openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
               break;
             }
-            // If anti-barge-in is enabled and AI is speaking, ignore and clear buffered audio
             if (antiBargeinEnabled && aiIsSpeaking) {
               console.log(`[MediaStream] Anti-barge-in: ignoring interruption, clearing buffer (callId=${callId})`);
               openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
@@ -1331,8 +1376,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
             break;
 
+          case "input_audio_buffer.speech_stopped":
+            speechStoppedCount += 1;
+            console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
+            break;
+
+          case "input_audio_buffer.committed":
+            bufferCommittedCount += 1;
+            console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
+            break;
+
+          case "response.error":
           case "error":
-            console.error(`[MediaStream] OpenAI error (callId=${callId}):`, event.error);
+            responseErrorCount += 1;
+            console.error(`[Diag] OpenAI error #${responseErrorCount} (callId=${callId}):`, JSON.stringify(event.error || event));
             break;
 
           default:
@@ -1384,6 +1441,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
+    if (diagnosticSnapshotTimer) {
+      clearInterval(diagnosticSnapshotTimer);
+      diagnosticSnapshotTimer = null;
+    }
+    // Final diagnostic summary — single line so it's easy to grep per call.
+    console.log(
+      `[Diag-Final] callId=${callId} ` +
+      `inFrames=${twilioInboundFrames}(fwd=${twilioInboundFramesForwarded},dropG=${twilioInboundFramesDropGreeting},dropC=${twilioInboundFramesDropCooldown},dropAB=${twilioInboundFramesDropAntiBargein},postGreeting=${twilioInboundFramesAfterGreeting}) ` +
+      `vad{started=${speechStartedCount},stopped=${speechStoppedCount},committed=${bufferCommittedCount},transcripts=${userTranscriptCount}} ` +
+      `resp{created=${responseCreatedCount},done=${responseDoneCount},sent=${responseCreateSentCount},err=${responseErrorCount}} ` +
+      `audio{deltas=${assistantAudioDeltaCount},twilioOut=${twilioOutboundFrames},sendErr=${twilioOutboundSendErrors}} ` +
+      `session{created=${openaiSessionCreatedAt?"yes":"no"},updated=${openaiSessionUpdatedAt?"yes":"no"},greetingCompletedAt=${greetingCompletedAt?"yes":"no"}}`
+    );
 
     // Stop listening for inbound SMS replies for this call
     if (inboundSmsChannel) {
@@ -1489,21 +1559,43 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
           console.log(`[MediaStream] Stream started: streamSid=${streamSid} callId=${callId} agentId=${agentId} callSid=${callSid}`);
 
+          // Periodic diagnostic snapshot — proves end-to-end media flow.
+          diagnosticSnapshotTimer = setInterval(() => {
+            console.log(
+              `[Diag-Snapshot] callId=${callId} ` +
+              `inFrames=${twilioInboundFrames}(fwd=${twilioInboundFramesForwarded},dropG=${twilioInboundFramesDropGreeting},dropC=${twilioInboundFramesDropCooldown},dropAB=${twilioInboundFramesDropAntiBargein},postGreeting=${twilioInboundFramesAfterGreeting}) ` +
+              `vad{started=${speechStartedCount},stopped=${speechStoppedCount},committed=${bufferCommittedCount},transcripts=${userTranscriptCount}} ` +
+              `resp{created=${responseCreatedCount},done=${responseDoneCount},sent=${responseCreateSentCount},err=${responseErrorCount}} ` +
+              `audio{deltas=${assistantAudioDeltaCount},twilioOut=${twilioOutboundFrames},sendErr=${twilioOutboundSendErrors}} ` +
+              `state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},sessionCfg=${sessionConfigured},twilioState=${twilioWs.readyState},openaiState=${openaiWs?.readyState ?? "null"},cooldownLeftMs=${Math.max(0, inboundAudioCooldownUntil - Date.now())}}`
+            );
+          }, 5000);
+
           connectToOpenAI();
           break;
 
         case "media":
+          twilioInboundFrames += 1;
           // Don't forward audio to OpenAI during greeting (prevents VAD triggering)
           if (greetingInProgress) {
+            twilioInboundFramesDropGreeting += 1;
             break;
+          }
+          twilioInboundFramesAfterGreeting += 1;
+          if (!firstInboundAudioAfterGreetingLogged) {
+            firstInboundAudioAfterGreetingLogged = true;
+            const sinceGreeting = greetingCompletedAt ? Date.now() - greetingCompletedAt : -1;
+            console.log(`[Diag] FIRST inbound media frame after greeting (callId=${callId}) msSinceGreetingComplete=${sinceGreeting} totalSinceStart=${twilioInboundFrames}`);
           }
           // Short cooldown after AI speech finishes — prevents the model from hearing its
           // own just-played audio (echo loop) and re-triggering the same response.
           if (Date.now() < inboundAudioCooldownUntil) {
+            twilioInboundFramesDropCooldown += 1;
             break;
           }
           // Don't forward audio when anti-barge-in is active and AI is speaking
           if (antiBargeinEnabled && aiIsSpeaking) {
+            twilioInboundFramesDropAntiBargein += 1;
             break;
           }
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN && sessionConfigured) {
@@ -1511,6 +1603,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               type: "input_audio_buffer.append",
               audio: msg.media.payload,
             }));
+            twilioInboundFramesForwarded += 1;
+          } else if (twilioInboundFrames % 50 === 0) {
+            console.warn(`[Diag] Cannot forward inbound media: openaiState=${openaiWs?.readyState ?? "null"} sessionConfigured=${sessionConfigured} (callId=${callId})`);
           }
           break;
 
