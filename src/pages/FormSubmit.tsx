@@ -16,7 +16,7 @@ export default function FormSubmit() {
   const token = params.get("token") || "";
   const modeParam = (params.get("mode") || "").toLowerCase();
   const mode: "both" | "reg" | "phone" =
-    modeParam === "reg" ? "reg" : modeParam === "phone" ? "phone" : "both";
+    modeParam === "phone" ? "phone" : modeParam === "both" ? "both" : "reg";
   const showReg = mode === "both" || mode === "reg";
   const showPhone = mode === "both" || mode === "phone";
 
