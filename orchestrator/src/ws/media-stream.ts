@@ -305,9 +305,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let conversationItemCreatedCount = 0;
   let lastSessionConfigSent: Record<string, unknown> | null = null;
   let loadedAgentName = "(none)";
+  let bridgeSelfTest = "";
 
   const diagState = () =>
     `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
+
+  const logCallDeploymentIdentity = () => {
+    const d = getDeploymentIdentity();
+    console.log(`[Diag-Deploy] callId=${callId} gitSha=${d.gitSha} railwayDeploymentId=${d.railwayDeploymentId} NODE_ENV=${d.nodeEnv} realtimeModel=${d.realtimeModel}`);
+    console.log(`[Diag-Deploy] callId=${callId} twilioVoiceWebhook=${d.expectedTwilioVoiceWebhook} expectedPublicBaseUrl=${d.publicBaseUrl} expectedStreamUrl=${d.expectedTwilioStreamUrl}`);
+  };
 
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
