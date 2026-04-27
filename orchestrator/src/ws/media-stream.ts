@@ -408,6 +408,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       return false;
     }
     responseCreateSentCount += 1;
+    if (reason !== "initial-greeting") userResponseCreateSentCount += 1;
+    lastResponseCreateReason = reason;
     console.log(`[Diag] response.create sent #${responseCreateSentCount} reason=${reason} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`);
     openaiWs.send(JSON.stringify(response ? { type: "response.create", response } : { type: "response.create" }));
     return true;
