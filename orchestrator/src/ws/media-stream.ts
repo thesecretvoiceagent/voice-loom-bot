@@ -1317,6 +1317,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               callerHasSpokenSinceGreeting = true;
               callerSubstantiveTurnCount += 1;
             }
+            scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 50);
             break;
           }
 
@@ -1571,10 +1572,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
 
           case "input_audio_buffer.speech_stopped":
+            console.log(`[MediaStream] Speech stopped (callId=${callId}, itemId=${event.item_id || "unknown"})`);
+            setTimeout(() => sendManualInputCommit("speech_stopped"), 80);
             break;
 
           case "input_audio_buffer.committed":
-            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 1800);
+            lastUserAudioItemId = event.item_id || lastUserAudioItemId || null;
+            console.log(`[MediaStream] Caller audio committed (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}, previous=${event.previous_item_id || "none"})`);
+            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 80);
             break;
 
           case "input_audio_buffer.speech_started":
