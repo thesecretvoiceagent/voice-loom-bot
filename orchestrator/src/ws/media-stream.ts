@@ -1288,6 +1288,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             pendingRecoveryCooldownMs = 0;
             if (normalizeTranscript(userTranscript)) {
               callerHasSpokenSinceGreeting = true;
+              callerSubstantiveTurnCount += 1;
               scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 450);
             }
             break;
@@ -1303,6 +1304,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const args = JSON.parse(event.arguments);
                 reason = args.reason || reason;
               } catch {}
+
+              if (isIiziRoadsideAgent && callerSubstantiveTurnCount < 2) {
+                console.warn(`[MediaStream] Blocked premature end_call for IIZI (callId=${callId}, userTurns=${callerSubstantiveTurnCount}, reason=${reason})`);
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({ success: false, error: "Premature end_call blocked. Continue the intake; ask how you can help or ask the next required question." }),
+                  },
+                }));
+                openaiWs!.send(JSON.stringify({
+                  type: "response.create",
+                  response: {
+                    modalities: ["text", "audio"],
+                    tool_choice: "none",
+                    instructions: "Do not end the call. Respond to the caller now in Estonian and continue the autoabi intake with the next necessary question.",
+                  },
+                }));
+                break;
+              }
 
               console.log(`[MediaStream] END CALL requested: ${reason} (callId=${callId})`);
               transcriptLines.push(`[System]: Call ended — ${reason}`);
