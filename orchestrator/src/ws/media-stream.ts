@@ -353,21 +353,28 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     clearMarkFallback();
   };
 
+  const sendUserTurnResponseCreate = (source: string) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
+    if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return false;
+    console.warn(`[MediaStream] Creating AI response after user speech (${source}) (callId=${callId})`);
+    pendingUserResponseRetry = true;
+    openaiWs.send(JSON.stringify({
+      type: "response.create",
+      response: {
+        modalities: ["text", "audio"],
+        tool_choice: "auto",
+      },
+    }));
+    return true;
+  };
+
   const scheduleManualResponseAfterUserSpeech = (source: string, delayMs = 700) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
     if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
     clearPendingUserSpeechResponseTimer();
     pendingUserSpeechResponseTimer = setTimeout(() => {
       pendingUserSpeechResponseTimer = null;
-      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-      if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
-      console.warn(`[MediaStream] Manual response.create fallback after user speech (${source}) (callId=${callId})`);
-      const response: Record<string, unknown> = {
-        modalities: ["text", "audio"],
-      };
-      if (!callerHasSpokenSinceGreeting) response.tool_choice = "none";
-      pendingUserResponseRetry = true;
-      openaiWs.send(JSON.stringify({ type: "response.create", response }));
+      sendUserTurnResponseCreate(source);
     }, delayMs);
   };
 
