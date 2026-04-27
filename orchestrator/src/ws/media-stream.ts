@@ -1285,6 +1285,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             const assistantTranscript = (event.transcript || "").toString();
             console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
             transcriptLines.push(`[Agent]: ${assistantTranscript}`);
+            if (!greetingInProgress) {
+              postGreetingAssistantTurnCount += 1;
+            }
 
             // Detect the model repeating itself (echo loop). If it says effectively the
             // same line twice in a row without the user speaking in between, extend the
@@ -1579,7 +1582,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "input_audio_buffer.committed":
             lastUserAudioItemId = event.item_id || lastUserAudioItemId || null;
-            console.log(`[MediaStream] Caller audio committed; Realtime will auto-create the response (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}, previous=${event.previous_item_id || "none"})`);
+            console.log(`[MediaStream] Caller audio committed; scheduling manual response (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}, previous=${event.previous_item_id || "none"})`);
+            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 900);
             break;
 
           case "input_audio_buffer.speech_started":
@@ -1609,7 +1613,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
               openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
             } else {
-              console.log(`[MediaStream] Speech started (no active response — waiting for Realtime VAD auto-response) (callId=${callId}, itemId=${event.item_id || "unknown"})`);
+              console.log(`[MediaStream] Speech started (no active response — waiting for VAD commit, then manual response) (callId=${callId}, itemId=${event.item_id || "unknown"})`);
             }
             break;
 
