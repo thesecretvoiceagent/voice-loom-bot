@@ -289,7 +289,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let pendingUserResponseReason: string | null = null;
   let pendingUserResponseAttempts = 0;
   let pendingUserResponseTranscript: string | null = null;
-  let lastInjectedUserTranscript = "";
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
   let assistantOutputAudioDeltaCount = 0;
