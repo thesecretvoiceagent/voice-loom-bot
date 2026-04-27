@@ -1082,7 +1082,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
       const tools: any[] = [];
 
-      if (agentTools.includes("end_call")) {
+      // Do not expose end_call in the live Realtime session. In practice the
+      // model can call tools without speaking first, which makes the phone
+      // appear to hang up right after the caller says something. Calls still
+      // end normally via caller hangup, Twilio status, or max_call_duration.
+      if (false && agentTools.includes("end_call")) {
         tools.push({
           type: "function",
           name: "end_call",
