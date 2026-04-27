@@ -402,7 +402,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.55,            // Balanced for phone audio; 0.7 was missing quiet callers.
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
-        create_response: false,     // We create exactly one response ourselves on input_audio_buffer.committed.
+        create_response: true,      // Let Realtime behave like a normal voicebot after each caller turn.
         interrupt_response: false,  // Barge-in is guarded manually below to avoid invalid response.cancel calls.
       },
     };
@@ -1314,14 +1314,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (normalizeTranscript(userTranscript)) {
               callerHasSpokenSinceGreeting = true;
               callerSubstantiveTurnCount += 1;
-              scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 50);
             }
             break;
           }
 
           case "conversation.item.input_audio_transcription.failed":
             console.warn(`[MediaStream] User transcription failed (callId=${callId}):`, event.error || event);
-            scheduleManualResponseAfterUserSpeech("input_audio_transcription.failed", 250);
             break;
 
           case "response.function_call_arguments.done": {
