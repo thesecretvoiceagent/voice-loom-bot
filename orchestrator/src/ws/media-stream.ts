@@ -286,6 +286,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseDoneCount = 0;
   let responseErrorCount = 0;
   let pendingUserResponseTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingUserResponseReason: string | null = null;
+  let pendingUserResponseAttempts = 0;
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
   let twilioOutboundFrames = 0;
@@ -322,13 +324,34 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const scheduleUserResponseCreate = (reason: string, delayMs: number) => {
-    if (greetingInProgress) return;
+    pendingUserResponseReason = pendingUserResponseReason || reason;
     clearPendingUserResponseTimer();
     pendingUserResponseTimer = setTimeout(() => {
       pendingUserResponseTimer = null;
-      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId || greetingInProgress) return;
-      console.warn(`[Diag] No assistant response after ${reason}; forcing response.create (callId=${callId})`);
-      sendResponseCreate(reason);
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+
+      const cooldownLeftMs = Math.max(0, inboundAudioCooldownUntil - Date.now());
+      if (activeResponseId || greetingInProgress || cooldownLeftMs > 0) {
+        pendingUserResponseAttempts += 1;
+        if (pendingUserResponseAttempts <= 120) {
+          const waitMs = Math.max(150, Math.min(500, cooldownLeftMs || 250));
+          if (pendingUserResponseAttempts === 1 || pendingUserResponseAttempts % 10 === 0) {
+            console.warn(`[Diag] Deferring response.create after ${pendingUserResponseReason} — activeResponse=${activeResponseId || "none"} greeting=${greetingInProgress} cooldownLeftMs=${cooldownLeftMs} attempt=${pendingUserResponseAttempts} (callId=${callId})`);
+          }
+          scheduleUserResponseCreate(pendingUserResponseReason || reason, waitMs);
+        } else {
+          console.error(`[Diag] Gave up forcing assistant response after ${pendingUserResponseReason} because previous response never cleared (callId=${callId})`);
+          pendingUserResponseReason = null;
+          pendingUserResponseAttempts = 0;
+        }
+        return;
+      }
+
+      const finalReason = pendingUserResponseReason || reason;
+      pendingUserResponseReason = null;
+      pendingUserResponseAttempts = 0;
+      console.warn(`[Diag] No assistant response after ${finalReason}; forcing response.create (callId=${callId})`);
+      sendResponseCreate(finalReason, { modalities: ["text", "audio"] });
     }, delayMs);
   };
 
