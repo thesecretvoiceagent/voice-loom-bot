@@ -1708,6 +1708,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           break;
 
         case "start":
+          twilioStartReceived = true;
           streamSid = msg.start.streamSid;
           callId = msg.start.customParameters?.callId || "";
           agentId = msg.start.customParameters?.agentId || "";
@@ -1716,6 +1717,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           callDirection = (msg.start.customParameters?.direction === "inbound" ? "inbound" : "outbound");
           callSid = msg.start.customParameters?.callSid || "";
           campaignId = msg.start.customParameters?.campaignId || "";
+          bridgeSelfTest = msg.start.customParameters?.bridgeSelfTest || "";
+          logCallDeploymentIdentity();
           // Parse call variables
           const varsParam = msg.start.customParameters?.variables || "";
           if (varsParam) {
@@ -1726,7 +1729,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.warn(`[MediaStream] Failed to parse variables param (callId=${callId})`);
             }
           }
-          console.log(`[MediaStream] Stream started: streamSid=${streamSid} callId=${callId} agentId=${agentId} callSid=${callSid}`);
+          console.log(`[Diag-Twilio] twilio.start received callId=${callId} streamSid=${streamSid} agentId=${agentId || "(resolve-by-number)"} callSid=${callSid} direction=${callDirection} bridgeSelfTest=${bridgeSelfTest || "none"}`);
 
           // Periodic diagnostic snapshot — proves end-to-end media flow.
           diagnosticSnapshotTimer = setInterval(() => {
@@ -1735,8 +1738,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               `inFrames=${twilioInboundFrames}(fwd=${twilioInboundFramesForwarded},dropG=${twilioInboundFramesDropGreeting},dropC=${twilioInboundFramesDropCooldown},dropAB=${twilioInboundFramesDropAntiBargein},postGreeting=${twilioInboundFramesAfterGreeting}) ` +
               `vad{started=${speechStartedCount},stopped=${speechStoppedCount},committed=${bufferCommittedCount},transcripts=${userTranscriptCount}} ` +
               `resp{created=${responseCreatedCount},done=${responseDoneCount},sent=${responseCreateSentCount},err=${responseErrorCount}} ` +
-              `audio{deltas=${assistantAudioDeltaCount},twilioOut=${twilioOutboundFrames},sendErr=${twilioOutboundSendErrors}} ` +
-              `state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},sessionCfg=${sessionConfigured},twilioState=${twilioWs.readyState},openaiState=${openaiWs?.readyState ?? "null"},cooldownLeftMs=${Math.max(0, inboundAudioCooldownUntil - Date.now())}}`
+              `audio{response.audio.delta=${assistantAudioDeltaCount},response.output_audio.delta=${assistantOutputAudioDeltaCount},bytes=${totalAssistantAudioBytes},twilioOut=${twilioOutboundFrames},sendErr=${twilioOutboundSendErrors}} ` +
+              diagState() + ` sessionCfg=${sessionConfigured} cooldownLeftMs=${Math.max(0, inboundAudioCooldownUntil - Date.now())}`
             );
           }, 5000);
 
