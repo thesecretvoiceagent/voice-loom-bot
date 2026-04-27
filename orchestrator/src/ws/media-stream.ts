@@ -419,6 +419,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }));
   };
 
+  const sendManualInputCommit = (source: string) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
+    console.warn(`[MediaStream] Manually committing caller audio after ${source} (callId=${callId})`);
+    openaiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+  };
+
   const maybeCompleteAiTurn = (source: string) => {
     if (!responseDoneReceived) return;
     if (responseHasAudio && !responseAudioDone) return;
