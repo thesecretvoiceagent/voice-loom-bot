@@ -981,10 +981,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         },
       };
       if (greeting) {
-        // Pass the configured greeting through verbatim — no extra prompt rules.
-        // The agent's "Voice agent instructions" prompt is the sole source of behavior.
+        // Pass the configured greeting through verbatim. The instruction is
+        // written to NOT leak language: we don't tell the model "in English",
+        // and we wrap the greeting in delimiters so the model treats it as
+        // literal text to speak. The greeting's own language defines the
+        // call's language going forward.
         responseCreate.response.instructions =
-          `Say the following greeting now, exactly as written:\n${greeting}`;
+          `<<SPEAK_VERBATIM>>\n${greeting}\n<<END>>\n` +
+          `Speak the text between <<SPEAK_VERBATIM>> and <<END>> exactly as written, in its original language. Do not translate. Do not add anything before or after. After speaking it, stop and wait silently for the caller to respond. Do not call any tool.`;
       }
       openaiWs.send(JSON.stringify(responseCreate));
 
