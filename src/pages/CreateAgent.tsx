@@ -768,8 +768,9 @@ export default function CreateAgent() {
                       <p className="text-sm text-muted-foreground">
                         Configure exact SMS texts. The AI sends them verbatim — never rewrites the content. Use{" "}
                         {"{{caller_name}}"}, {"{{caller_reg_no}}"}, {"{{first_name}}"} for variable substitution.
-                        Use <code className="text-xs">{"{{location_link}}"}</code> for the location confirmation link
-                        and <code className="text-xs">{"{{form_link}}"}</code> for the registration-number + callback
+                        Use <code className="text-xs">{"{{location_link}}"}</code> for the location confirmation link,
+                        <code className="text-xs">{"{{form1_link}}"}</code> for the registration-number form,
+                        and <code className="text-xs">{"{{form2_link}}"}</code> for the callback-number form.
                         info form. Order matters: AI references SMSes by <strong>name</strong>, and after-call SMSes
                         are sent in this order.
                       </p>
@@ -868,12 +869,12 @@ export default function CreateAgent() {
                               </Button>
                             </div>
                             {(() => {
-                              const linkMatch = sms.content.match(/\{\{(location_link|form_link|form2_link)\}\}/);
+                              const linkMatch = sms.content.match(/\{\{(location_link|form1_link|form_link|form2_link)\}\}/);
                               if (!linkMatch) return null;
                               const token = linkMatch[1];
                               const path = token === "location_link" ? "/location" : "/form";
                               const modeQuery =
-                                token === "form_link"
+                                token === "form1_link" || token === "form_link"
                                   ? "&mode=reg"
                                   : token === "form2_link"
                                     ? "&mode=phone"

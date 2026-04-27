@@ -22,6 +22,7 @@ function substituteVars(template: string, caseId: string, locationToken: string)
 
   return template
     .replaceAll("{{location_link}}", locationLink)
+    .replaceAll("{{form1_link}}", formLink)
     .replaceAll("{{form_link}}", formLink)
     .replaceAll("{{form2_link}}", form2Link)
     .replaceAll("{{caller_name}}", "Henri-Georg Eiche")
