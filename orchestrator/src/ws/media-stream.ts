@@ -397,8 +397,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const scheduleUserResponseCreate = (reason: string, delayMs: number, transcript?: string) => {
     const cleanTranscript = typeof transcript === "string" ? transcript.trim() : "";
     if (cleanTranscript) pendingUserResponseTranscript = cleanTranscript;
+    if (pendingUserResponseTimer) {
+      console.log(`[Diag] response.create schedule skipped reason=${reason} skip=already_pending pendingReason=${pendingUserResponseReason || "none"} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
+      return;
+    }
     pendingUserResponseReason = pendingUserResponseReason || reason;
-    clearPendingUserResponseTimer();
     pendingUserResponseTimer = setTimeout(() => {
       pendingUserResponseTimer = null;
       if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
