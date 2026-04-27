@@ -871,13 +871,14 @@ export default function CreateAgent() {
                               const linkMatch = sms.content.match(/\{\{(location_link|form_link|form2_link)\}\}/);
                               if (!linkMatch) return null;
                               const token = linkMatch[1];
-                              const path =
-                                token === "location_link"
-                                  ? "/location"
-                                  : token === "form_link"
-                                    ? "/form"
-                                    : "/form2";
-                              const previewUrl = `${path}?caseId=${crypto.randomUUID()}&token=preview`;
+                              const path = token === "location_link" ? "/location" : "/form";
+                              const modeQuery =
+                                token === "form_link"
+                                  ? "&mode=reg"
+                                  : token === "form2_link"
+                                    ? "&mode=phone"
+                                    : "";
+                              const previewUrl = `${path}?caseId=${crypto.randomUUID()}&token=preview${modeQuery}`;
                               return (
                                 <Button
                                   type="button"
