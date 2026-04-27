@@ -316,6 +316,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(`[Diag-Deploy] callId=${callId} twilioVoiceWebhook=${d.expectedTwilioVoiceWebhook} expectedPublicBaseUrl=${d.publicBaseUrl} expectedStreamUrl=${d.expectedTwilioStreamUrl}`);
   };
 
+  const sendTwilioBridgeSelfTestTone = (reason: string) => {
+    if (bridgeSelfTest !== "twilio-outbound") return;
+    if (!streamSid || twilioWs.readyState !== WebSocket.OPEN) {
+      console.warn(`[Diag-TestB] skipped reason=${reason} streamSid=${streamSid || "empty"} twilioState=${twilioWs.readyState} (callId=${callId})`);
+      return;
+    }
+    const frames = 60;
+    const payload = Buffer.alloc(160, 0xff).toString("base64");
+    console.warn(`[Diag-TestB] sending hardcoded outbound Twilio media tone frames=${frames} reason=${reason} (callId=${callId})`);
+    for (let i = 0; i < frames; i += 1) {
+      try {
+        twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload } }));
+        twilioOutboundFrames += 1;
+        if (!firstTwilioOutboundAt) firstTwilioOutboundAt = new Date().toISOString();
+      } catch (sendErr) {
+        twilioOutboundSendErrors += 1;
+        console.error(`[Diag-TestB] Twilio outbound self-test send error (callId=${callId}, twilioState=${twilioWs.readyState}):`, sendErr);
+      }
+    }
+  };
+
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
       clearTimeout(markFallbackTimer);
