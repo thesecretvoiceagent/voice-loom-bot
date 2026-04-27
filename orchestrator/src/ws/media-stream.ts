@@ -542,6 +542,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       return text.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
     };
 
+    const normalizeRegistrationSmsLink = (text: string): string => {
+      if (!text || !config.supabase.url) return text;
+      const edgeBase = `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/iizi-reg-form`;
+      return text.replace(/https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})&mode=reg/gi, (_match, caseIdValue, tokenValue) => {
+        return `${edgeBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}`;
+      }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?src=https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})/gi, (_match, caseIdValue, tokenValue) => {
+        return `${edgeBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}`;
+      }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?src=https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})&mode=reg/gi, (_match, caseIdValue, tokenValue) => {
+        return `${edgeBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}`;
+      });
+    };
+
     // Inject location confirmation link variable so SMS templates can use {{location_link}}.
     // Token = HMAC-SHA256(callId, LOCATION_TOKEN_SECRET) — verified server-side
     // either by Railway /api/location/confirm OR by Lovable edge function `location-confirm`.
@@ -624,10 +636,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
         const formPath = isLovableLike ? "/form" : "/form.html";
         const baseFormUrl = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
-        // form1_link / form_link → SMS #1: ask for car registration number only (mode=reg)
-        // form2_link             → SMS #3: ask for callback phone number only (mode=phone)
-        callVariables.form1_link = `${baseFormUrl}&mode=reg`;
-        callVariables.form_link = `${baseFormUrl}&mode=reg`;
+        const regFormUrl = config.supabase.url
+          ? `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/iizi-reg-form?caseId=${encodeURIComponent(callId)}&token=${formToken}`
+          : `${baseFormUrl}&mode=reg`;
+        // form1_link / form_link → SMS #1: registration number only via dedicated edge form.
+        // form2_link             → SMS #3: callback phone number only (mode=phone)
+        callVariables.form1_link = regFormUrl;
+        callVariables.form_link = regFormUrl;
         callVariables.form2_link = `${baseFormUrl}&mode=phone`;
         console.log(`[MediaStream] form1_link built: ${callVariables.form1_link}`);
         console.log(`[MediaStream] form_link built: ${callVariables.form_link}`);
@@ -1264,7 +1279,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const allowed = smsMessages.filter((m) => m.trigger === "during").map((m) => m.name).join(", ");
                 result = { ok: false, error: `Unknown template_name "${requestedName}". Allowed: ${allowed || "(none)"}` };
               } else {
-                bodyForLog = substituteVarsRef(tpl.content);
+                bodyForLog = normalizeRegistrationSmsLink(substituteVarsRef(tpl.content));
                 result = await sendSms(recipient, bodyForLog);
                 if (result.ok) {
                   smsSentNames.add(tpl.name);
