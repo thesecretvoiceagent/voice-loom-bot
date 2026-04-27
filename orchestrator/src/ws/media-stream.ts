@@ -1523,6 +1523,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(
               `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens}`
             );
+            if (responseHasAudio && !responseAudioDone) {
+              clearResponseAudioDoneFallback();
+              responseAudioDoneFallbackTimer = setTimeout(() => {
+                if (!activeResponseId || responseAudioDone) return;
+                console.warn(`[MediaStream] response.done arrived without response.audio.done; force-completing audio state (callId=${callId}, responseId=${activeResponseId})`);
+                responseAudioDone = true;
+                maybeCompleteAiTurn("response.done-audio-fallback");
+              }, 1200);
+            }
             if (!responseHasAudio && pendingUserResponseRetry && !greetingInProgress) {
               pendingUserResponseRetry = false;
               console.warn(`[MediaStream] Post-user response completed with no audio; retrying once with tools disabled (callId=${callId}, responseId=${responseId})`);
