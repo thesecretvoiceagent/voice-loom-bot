@@ -1053,7 +1053,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "end_call",
-          description: "End the current phone call. STRICT RULES: (1) Never call this during or immediately after the greeting. (2) Never call this before the caller has spoken at least one substantive sentence to you. (3) Only call this AFTER the caller has clearly said goodbye (e.g. 'aitäh, head aega', 'tšau', 'bye'), OR the caller explicitly asked to hang up, OR all required intake information has been collected AND you have confirmed the next step with the caller. If you are unsure, do NOT call this — keep the conversation going.",
+          description: "End the current phone call. Use only when the conversation is finished according to your instructions.",
           parameters: {
             type: "object",
             properties: {
