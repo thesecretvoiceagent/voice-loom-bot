@@ -353,21 +353,28 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     clearMarkFallback();
   };
 
+  const sendUserTurnResponseCreate = (source: string) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
+    if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return false;
+    console.warn(`[MediaStream] Creating AI response after user speech (${source}) (callId=${callId})`);
+    pendingUserResponseRetry = true;
+    openaiWs.send(JSON.stringify({
+      type: "response.create",
+      response: {
+        modalities: ["text", "audio"],
+        tool_choice: "auto",
+      },
+    }));
+    return true;
+  };
+
   const scheduleManualResponseAfterUserSpeech = (source: string, delayMs = 700) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
     if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
     clearPendingUserSpeechResponseTimer();
     pendingUserSpeechResponseTimer = setTimeout(() => {
       pendingUserSpeechResponseTimer = null;
-      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-      if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
-      console.warn(`[MediaStream] Manual response.create fallback after user speech (${source}) (callId=${callId})`);
-      const response: Record<string, unknown> = {
-        modalities: ["text", "audio"],
-      };
-      if (!callerHasSpokenSinceGreeting) response.tool_choice = "none";
-      pendingUserResponseRetry = true;
-      openaiWs.send(JSON.stringify({ type: "response.create", response }));
+      sendUserTurnResponseCreate(source);
     }, delayMs);
   };
 
@@ -382,7 +389,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.55,            // Balanced for phone audio; 0.7 was missing quiet callers.
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
-        create_response: false,     // We create responses manually after transcription; avoids tool-only/no-audio turns.
+        create_response: true,      // Let Realtime answer immediately after VAD commits the caller turn.
         interrupt_response: false,  // Barge-in is guarded manually below to avoid invalid response.cancel calls.
       },
     };
@@ -1268,7 +1275,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (normalizeTranscript(userTranscript)) {
               callerHasSpokenSinceGreeting = true;
               callerSubstantiveTurnCount += 1;
-              scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 450);
             }
             break;
           }
@@ -1513,11 +1519,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
 
           case "input_audio_buffer.speech_stopped":
-            scheduleManualResponseAfterUserSpeech("speech_stopped", 700);
             break;
 
           case "input_audio_buffer.committed":
-            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 900);
+            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 1800);
             break;
 
           case "input_audio_buffer.speech_started":
