@@ -217,6 +217,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   type SmsMessage = { id?: string; name: string; description?: string; content: string; trigger: "during" | "after"; order?: number };
   let smsMessages: SmsMessage[] = [];
   const smsSentNames = new Set<string>();
+  let submittedRegistrationNumber = "";
+  let submittedCallbackPhoneNumber = "";
   let inboundSmsChannel: RealtimeChannel | null = null;
   let locationConfirmChannel: RealtimeChannel | null = null;
   let resolvedAgentIdRef: string | null = null;
@@ -285,10 +287,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const normalizeSmsTemplateName = (value: string) => normalizeTranscript(value).replace(/sms$/i, "").trim();
 
+  type SmsPurpose = "registration" | "callback" | "location" | "unknown";
+  const classifySmsPurpose = (text: string): SmsPurpose => {
+    const normalized = normalizeTranscript(text);
+    if (/form2_link|callback|tagasihelist/.test(text) || /callback|tagasihelist/.test(normalized)) return "callback";
+    if (/location_link/.test(text) || /location|asukoht/.test(normalized)) return "location";
+    if (/form_link/.test(text) || /registration|registreerimis|numbrim[aä]rk/.test(normalized)) return "registration";
+    return "unknown";
+  };
+
+  const findDuringSmsByPurpose = (purpose: SmsPurpose): SmsMessage | undefined => {
+    if (purpose === "unknown") return undefined;
+    return smsMessages
+      .filter((m) => m.trigger === "during")
+      .find((m) => classifySmsPurpose(`${m.name} ${m.description || ""} ${m.content}`) === purpose);
+  };
+
   const resolveDuringSmsTemplate = (requestedName: string): SmsMessage | undefined => {
     const during = smsMessages.filter((m) => m.trigger === "during");
     const exact = during.find((m) => m.name === requestedName);
     if (exact) return exact;
+
+    const sameNormalizedName = during.find((m) => normalizeSmsTemplateName(m.name) === normalizeSmsTemplateName(requestedName));
+    if (sameNormalizedName) return sameNormalizedName;
 
     const normalized = normalizeSmsTemplateName(requestedName);
     const aliasMap: Record<string, RegExp> = {
