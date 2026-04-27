@@ -288,6 +288,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseDoneCount = 0;
   let responseErrorCount = 0;
   let pendingUserResponseTimer: ReturnType<typeof setTimeout> | null = null;
+  let callerSpeechWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingUserResponseReason: string | null = null;
   let pendingUserResponseAttempts = 0;
   let pendingUserResponseTranscript: string | null = null;
@@ -398,6 +399,33 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   };
 
+  const clearCallerSpeechWatchdog = () => {
+    if (callerSpeechWatchdogTimer) {
+      clearTimeout(callerSpeechWatchdogTimer);
+      callerSpeechWatchdogTimer = null;
+    }
+  };
+
+  const commitAudioAndCreateResponse = (reason: string, delayMs = 80) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
+      console.warn(`[Diag] audio commit skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} (callId=${callId})`);
+      return;
+    }
+    console.warn(`[Diag] input_audio_buffer.commit sent reason=${reason} (callId=${callId})`);
+    openaiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+    scheduleUserResponseCreate(reason, delayMs);
+  };
+
+  const armCallerSpeechWatchdog = (reason: string, timeoutMs = 2600) => {
+    clearCallerSpeechWatchdog();
+    callerSpeechWatchdogTimer = setTimeout(() => {
+      callerSpeechWatchdogTimer = null;
+      if (activeResponseId || greetingInProgress) return;
+      console.warn(`[Diag] caller speech watchdog fired reason=${reason}; forcing commit + response.create (callId=${callId})`);
+      commitAudioAndCreateResponse(`watchdog-${reason}`, 120);
+    }, timeoutMs);
+  };
+
   const sendResponseCreate = (reason: string, response?: Record<string, unknown>) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
       console.warn(`[Diag] response.create skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`);
@@ -488,7 +516,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.6,             // Slightly less strict so quieter callers still trigger
         prefix_padding_ms: 400,
         silence_duration_ms: 700,   // Faster end-of-turn detection
-        create_response: true,      // CRITICAL: ensure OpenAI auto-creates assistant response on turn end
+        create_response: false,     // Deterministic bridge: we commit audio and send response.create ourselves
         interrupt_response: true,   // Allow caller to barge in on assistant audio
       },
     };
@@ -1342,6 +1370,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
 
           case "conversation.item.input_audio_transcription.completed":
+            clearCallerSpeechWatchdog();
             userTranscriptCount += 1;
             console.log(`[Diag] user_transcript #${userTranscriptCount} (callId=${callId}): "${event.transcript}"`);
             transcriptLines.push(`[User]: ${event.transcript}`);
@@ -1561,6 +1590,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "input_audio_buffer.speech_started":
             speechStartedCount += 1;
+            armCallerSpeechWatchdog("speech-started");
             console.log(`[Diag] speech_started #${speechStartedCount} (callId=${callId}) state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},antiBargein=${antiBargeinEnabled}}`);
             if (greetingInProgress) {
               console.log(`[MediaStream] Ignoring interruption during greeting, clearing buffer (callId=${callId})`);
@@ -1581,8 +1611,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "input_audio_buffer.speech_stopped":
             speechStoppedCount += 1;
+            clearCallerSpeechWatchdog();
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
-            scheduleUserResponseCreate("speech-stopped", 1400);
+            commitAudioAndCreateResponse("speech-stopped", 120);
             break;
 
           case "input_audio_buffer.committed":
@@ -1613,6 +1644,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       clearMarkFallback();
       clearTurnDetectionEnableTimer();
       clearPendingUserResponseTimer();
+      clearCallerSpeechWatchdog();
       console.log(`[Diag-OpenAI] OpenAI websocket close code=${code} reason=${reason?.toString() || ""} (callId=${callId})`);
       openaiWs = null;
       finalizeCall();
@@ -1650,6 +1682,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
     clearPendingUserResponseTimer();
+    clearCallerSpeechWatchdog();
     if (diagnosticSnapshotTimer) {
       clearInterval(diagnosticSnapshotTimer);
       diagnosticSnapshotTimer = null;
