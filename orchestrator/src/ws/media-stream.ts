@@ -1304,6 +1304,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "conversation.item.input_audio_transcription.completed": {
             const userTranscript = (event.transcript || "").toString();
+            lastUserAudioItemId = event.item_id || lastUserAudioItemId || null;
             console.log(`[MediaStream] User said (callId=${callId}): ${userTranscript}`);
             transcriptLines.push(`[User]: ${userTranscript}`);
             // Real user speech resets the repeat counter.
@@ -1313,6 +1314,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (normalizeTranscript(userTranscript)) {
               callerHasSpokenSinceGreeting = true;
               callerSubstantiveTurnCount += 1;
+              scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 50);
             }
             break;
           }
@@ -1574,7 +1576,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "input_audio_buffer.committed":
             lastUserAudioItemId = event.item_id || lastUserAudioItemId || null;
             console.log(`[MediaStream] Caller audio committed (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}, previous=${event.previous_item_id || "none"})`);
-            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 80);
             break;
 
           case "input_audio_buffer.speech_started":
