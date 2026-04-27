@@ -363,16 +363,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
       if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
       console.warn(`[MediaStream] Manual response.create fallback after user speech (${source}) (callId=${callId})`);
-      openaiWs.send(JSON.stringify({
-        type: "response.create",
-        response: {
-          modalities: ["text", "audio"],
-          tool_choice: "none",
-          instructions: callerHasSpokenSinceGreeting
-            ? "Respond now to the caller's latest message. Continue the normal intake script in the caller's language. Do not stay silent."
-            : "The caller has started speaking. Respond now in the caller's language and continue the normal intake script. Do not stay silent.",
-        },
-      }));
+      const response: Record<string, unknown> = {
+        modalities: ["text", "audio"],
+        instructions: callerHasSpokenSinceGreeting
+          ? "Respond now to the caller's latest message. Continue the normal intake script in the caller's language. Do not stay silent."
+          : "The caller may have spoken but transcription was empty. Say briefly in Estonian that you did not hear clearly and ask them to repeat how you can help. Do not stay silent.",
+      };
+      if (!callerHasSpokenSinceGreeting) response.tool_choice = "none";
+      openaiWs.send(JSON.stringify({ type: "response.create", response }));
     }, delayMs);
   };
 
