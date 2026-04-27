@@ -1292,6 +1292,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
+          case "conversation.item.input_audio_transcription.failed":
+            console.warn(`[MediaStream] User transcription failed (callId=${callId}):`, event.error || event);
+            scheduleManualResponseAfterUserSpeech("input_audio_transcription.failed", 250);
+            break;
+
           case "response.function_call_arguments.done": {
             const fnName = event.name;
             console.log(`[MediaStream] Tool called: ${fnName} (callId=${callId})`, event.arguments);
@@ -1532,6 +1537,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "input_audio_buffer.speech_stopped":
             scheduleManualResponseAfterUserSpeech("speech_stopped", 700);
+            break;
+
+          case "input_audio_buffer.committed":
+            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 900);
             break;
 
           case "input_audio_buffer.speech_started":
