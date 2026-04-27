@@ -1811,6 +1811,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           // own just-played audio (echo loop) and re-triggering the same response.
           if (Date.now() < inboundAudioCooldownUntil) {
             twilioInboundFramesDropCooldown += 1;
+            if (twilioInboundFramesDropCooldown === 1 || twilioInboundFramesDropCooldown % 25 === 0) {
+              console.warn(`[Diag-Drop] caller frame dropped during cooldown count=${twilioInboundFramesDropCooldown} cooldownLeftMs=${inboundAudioCooldownUntil - Date.now()} (callId=${callId})`);
+            }
             break;
           }
           // Don't forward audio when anti-barge-in is active and AI is speaking
