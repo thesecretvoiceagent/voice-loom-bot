@@ -1585,6 +1585,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
+    clearPendingUserSpeechResponseTimer();
 
     // Stop listening for inbound SMS replies for this call
     if (inboundSmsChannel) {
