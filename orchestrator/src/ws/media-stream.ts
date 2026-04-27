@@ -374,11 +374,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }
 
       const finalReason = pendingUserResponseReason || reason;
-      injectTranscriptFallbackIfNeeded(finalReason);
       pendingUserResponseReason = null;
       pendingUserResponseTranscript = null;
       pendingUserResponseAttempts = 0;
-      console.warn(`[Diag] No assistant response after ${finalReason}; forcing response.create (callId=${callId})`);
+      console.warn(`[Diag] No assistant response after ${finalReason}; sending single response.create (callId=${callId})`);
       sendResponseCreate(finalReason, { modalities: ["text", "audio"] });
     }, delayMs);
   };
