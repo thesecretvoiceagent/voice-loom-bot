@@ -261,6 +261,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let callerHasSpokenSinceGreeting = false;
   let callerSubstantiveTurnCount = 0;
+  let pendingUserResponseRetry = false;
 
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
@@ -370,6 +371,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           : "The caller may have spoken but transcription was empty. Say briefly in Estonian that you did not hear clearly and ask them to repeat how you can help. Do not stay silent.",
       };
       if (!callerHasSpokenSinceGreeting) response.tool_choice = "none";
+      pendingUserResponseRetry = true;
       openaiWs.send(JSON.stringify({ type: "response.create", response }));
     }, delayMs);
   };
