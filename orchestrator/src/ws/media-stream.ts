@@ -1071,17 +1071,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "lookup_vehicle",
-          description: "Look up a vehicle in the CRM. Call this ONLY when the caller has SPOKEN one of the following out loud during the live conversation: (a) a registration plate (e.g. '484DLC'), or (b) a free-text description of the car (make/model/color/year, e.g. 'must BMW 535D 2006'). DO NOT call this just because you know the caller's phone number — the system already attempted a phone-based match before connecting you. DO NOT call this during or immediately after the greeting. DO NOT call this before the caller has actually spoken to you. Returns owner name, vehicle, insurer, cover type/status. If no match, returns found:false.",
+          description: "Look up a vehicle in the CRM by registration plate or free-text description. Returns owner name, vehicle, insurer, cover type/status, or found:false if no match.",
           parameters: {
             type: "object",
             properties: {
               reg_no: {
                 type: "string",
-                description: "Estonian registration plate the caller spoke aloud, e.g. '495BJS'. Strip spaces, uppercase. Pass even if you are not 100% sure — server does fuzzy matching.",
+                description: "Registration plate, e.g. '495BJS'.",
               },
               description: {
                 type: "string",
-                description: "Free-text vehicle description the caller spoke aloud, in any language (Estonian preferred), e.g. 'must BMW 535D 2006' or 'punane Saab 9-5'. Use when caller describes the car instead of giving the plate.",
+                description: "Free-text vehicle description, e.g. 'must BMW 535D 2006'.",
               },
             },
           },
