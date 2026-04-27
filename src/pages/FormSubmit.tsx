@@ -103,11 +103,13 @@ export default function FormSubmit() {
     <div className="bg-background flex flex-col" style={{ minHeight: "100dvh" }}>
       <header className="px-5 pt-6 pb-3 space-y-2 shrink-0">
         <h1 className="text-2xl font-semibold text-foreground leading-tight">
-          Sisesta oma andmed
+          {mode === "both" ? "Sisesta oma andmed" : "Sisesta oma sõiduki andmed"}
         </h1>
-        <p className="text-sm text-muted-foreground">
-          AI assistent loeb need vestluses tagasi ja kasutab edaspidi.
-        </p>
+        {mode === "both" && (
+          <p className="text-sm text-muted-foreground">
+            AI assistent loeb need vestluses tagasi ja kasutab edaspidi.
+          </p>
+        )}
       </header>
 
       <form
