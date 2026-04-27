@@ -364,9 +364,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.warn(`[MediaStream] Manual response.create fallback after user speech (${source}) (callId=${callId})`);
       const response: Record<string, unknown> = {
         modalities: ["text", "audio"],
-        instructions: callerHasSpokenSinceGreeting
-          ? "Respond now to the caller's latest message. Continue the normal intake script in the caller's language. Do not stay silent."
-          : "The caller may have spoken but transcription was empty. Say briefly in Estonian that you did not hear clearly and ask them to repeat how you can help. Do not stay silent.",
       };
       if (!callerHasSpokenSinceGreeting) response.tool_choice = "none";
       pendingUserResponseRetry = true;
