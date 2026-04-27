@@ -542,6 +542,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       return text.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
     };
 
+    const normalizeRegistrationSmsLink = (text: string): string => {
+      if (!text || !config.supabase.url) return text;
+      const edgeBase = `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/iizi-reg-form`;
+      return text.replace(/https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})&mode=reg/gi, (_match, caseIdValue, tokenValue) => {
+        return `${edgeBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}`;
+      }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?src=https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})/gi, (_match, caseIdValue, tokenValue) => {
+        return `${edgeBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}`;
+      }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?src=https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})&mode=reg/gi, (_match, caseIdValue, tokenValue) => {
+        return `${edgeBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}`;
+      });
+    };
+
     // Inject location confirmation link variable so SMS templates can use {{location_link}}.
     // Token = HMAC-SHA256(callId, LOCATION_TOKEN_SECRET) — verified server-side
     // either by Railway /api/location/confirm OR by Lovable edge function `location-confirm`.
@@ -1267,7 +1279,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const allowed = smsMessages.filter((m) => m.trigger === "during").map((m) => m.name).join(", ");
                 result = { ok: false, error: `Unknown template_name "${requestedName}". Allowed: ${allowed || "(none)"}` };
               } else {
-                bodyForLog = substituteVarsRef(tpl.content);
+                bodyForLog = normalizeRegistrationSmsLink(substituteVarsRef(tpl.content));
                 result = await sendSms(recipient, bodyForLog);
                 if (result.ok) {
                   smsSentNames.add(tpl.name);
