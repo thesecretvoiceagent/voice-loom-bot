@@ -288,6 +288,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let pendingUserResponseTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingUserResponseReason: string | null = null;
   let pendingUserResponseAttempts = 0;
+  let pendingUserResponseTranscript: string | null = null;
+  let lastInjectedUserTranscript = "";
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
   let twilioOutboundFrames = 0;
@@ -323,7 +325,45 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return true;
   };
 
-  const scheduleUserResponseCreate = (reason: string, delayMs: number) => {
+  const injectTranscriptFallbackIfNeeded = (reason: string) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    if (!reason.includes("transcript") && !reason.includes("audio-commit") && !reason.includes("speech-stopped")) return;
+
+    const transcript = (pendingUserResponseTranscript || "").trim();
+    if (transcript) {
+      const normalized = normalizeTranscript(transcript);
+      if (normalized && normalized !== lastInjectedUserTranscript) {
+        lastInjectedUserTranscript = normalized;
+        console.warn(`[Diag] Injecting transcript fallback as user text before response.create reason=${reason} text="${transcript.slice(0, 120)}" (callId=${callId})`);
+        openaiWs.send(JSON.stringify({
+          type: "conversation.item.create",
+          item: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: transcript }],
+          },
+        }));
+      }
+      return;
+    }
+
+    console.warn(`[Diag] Caller speech detected but transcript empty; injecting repeat-request fallback before response.create reason=${reason} (callId=${callId})`);
+    openaiWs.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [{
+          type: "input_text",
+          text: "[SYSTEM EVENT: caller_speech_unclear] The caller just spoke, but the speech-to-text result was empty or unclear. Do not mention this system tag. Briefly apologize in the caller's language and ask them to repeat what happened.",
+        }],
+      },
+    }));
+  };
+
+  const scheduleUserResponseCreate = (reason: string, delayMs: number, transcript?: string) => {
+    const cleanTranscript = typeof transcript === "string" ? transcript.trim() : "";
+    if (cleanTranscript) pendingUserResponseTranscript = cleanTranscript;
     pendingUserResponseReason = pendingUserResponseReason || reason;
     clearPendingUserResponseTimer();
     pendingUserResponseTimer = setTimeout(() => {
@@ -342,13 +382,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         } else {
           console.error(`[Diag] Gave up forcing assistant response after ${pendingUserResponseReason} because previous response never cleared (callId=${callId})`);
           pendingUserResponseReason = null;
+          pendingUserResponseTranscript = null;
           pendingUserResponseAttempts = 0;
         }
         return;
       }
 
       const finalReason = pendingUserResponseReason || reason;
+      injectTranscriptFallbackIfNeeded(finalReason);
       pendingUserResponseReason = null;
+      pendingUserResponseTranscript = null;
       pendingUserResponseAttempts = 0;
       console.warn(`[Diag] No assistant response after ${finalReason}; forcing response.create (callId=${callId})`);
       sendResponseCreate(finalReason, { modalities: ["text", "audio"] });
@@ -1204,7 +1247,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
-            scheduleUserResponseCreate("user-transcript", 250);
+            scheduleUserResponseCreate("user-transcript", 150, event.transcript);
             break;
 
           case "response.function_call_arguments.done": {
@@ -1368,16 +1411,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 mark: { name: responsePlaybackMarkName },
               }));
 
-              // Safety fallback: if Twilio never sends the mark back within 10 seconds,
-              // force-complete the turn to prevent the call from hanging forever.
+              // Safety fallback: if Twilio never sends the mark back, force-complete the turn.
+              // For the initial greeting this must be short; otherwise the caller's first
+              // real answer after the greeting is dropped while greetingInProgress remains true.
+              const markTimeoutMs = greetingInProgress ? 1800 : 10000;
               clearMarkFallback();
               markFallbackTimer = setTimeout(() => {
                 if (responsePlaybackMarkName) {
-                  console.warn(`[MediaStream] Mark fallback triggered — Twilio mark not received in 10s, force-completing turn (callId=${callId}, mark=${responsePlaybackMarkName})`);
+                  console.warn(`[MediaStream] Mark fallback triggered — Twilio mark not received in ${markTimeoutMs}ms, force-completing turn (callId=${callId}, mark=${responsePlaybackMarkName})`);
                   responsePlaybackMarkName = null;
                   maybeCompleteAiTurn("mark-fallback-timeout");
                 }
-              }, 10000);
+              }, markTimeoutMs);
             }
             break;
           }
@@ -1432,13 +1477,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "input_audio_buffer.speech_stopped":
             speechStoppedCount += 1;
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
-            scheduleUserResponseCreate("speech-stopped", 1100);
+            scheduleUserResponseCreate("speech-stopped", 1400);
             break;
 
           case "input_audio_buffer.committed":
             bufferCommittedCount += 1;
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
-            scheduleUserResponseCreate("audio-commit", 650);
+            scheduleUserResponseCreate("audio-commit", 1200);
             break;
 
           case "response.error":
