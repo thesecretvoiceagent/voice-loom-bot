@@ -1345,21 +1345,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastResponseOutputTokens = outputTokens;
 
             responseDoneReceived = true;
+            responseDoneCount += 1;
             console.log(
-              `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens}`
+              `[Diag] response.done #${responseDoneCount} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} hasAudio=${responseHasAudio} audioDeltas=${assistantAudioDeltaCount} (callId=${callId})`
             );
             maybeCompleteAiTurn("response.done");
             break;
           }
 
           case "input_audio_buffer.speech_started":
-            // If greeting is in progress, completely ignore user speech and clear any buffered audio
+            speechStartedCount += 1;
+            console.log(`[Diag] speech_started #${speechStartedCount} (callId=${callId}) state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},antiBargein=${antiBargeinEnabled}}`);
             if (greetingInProgress) {
               console.log(`[MediaStream] Ignoring interruption during greeting, clearing buffer (callId=${callId})`);
               openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
               break;
             }
-            // If anti-barge-in is enabled and AI is speaking, ignore and clear buffered audio
             if (antiBargeinEnabled && aiIsSpeaking) {
               console.log(`[MediaStream] Anti-barge-in: ignoring interruption, clearing buffer (callId=${callId})`);
               openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
@@ -1375,8 +1376,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
             break;
 
+          case "input_audio_buffer.speech_stopped":
+            speechStoppedCount += 1;
+            console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
+            break;
+
+          case "input_audio_buffer.committed":
+            bufferCommittedCount += 1;
+            console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
+            break;
+
+          case "response.error":
           case "error":
-            console.error(`[MediaStream] OpenAI error (callId=${callId}):`, event.error);
+            responseErrorCount += 1;
+            console.error(`[Diag] OpenAI error #${responseErrorCount} (callId=${callId}):`, JSON.stringify(event.error || event));
             break;
 
           default:
