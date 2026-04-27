@@ -260,6 +260,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseDoneReceived = false;
   let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let callerHasSpokenSinceGreeting = false;
+  let callerSubstantiveTurnCount = 0;
+  let pendingUserResponseRetry = false;
 
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
@@ -362,14 +364,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
       if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
       console.warn(`[MediaStream] Manual response.create fallback after user speech (${source}) (callId=${callId})`);
-      openaiWs.send(JSON.stringify({
-        type: "response.create",
-        response: {
-          instructions: callerHasSpokenSinceGreeting
-            ? "Respond now to the caller's latest message. Continue the normal intake script in the caller's language. Do not stay silent."
-            : "The caller has started speaking. Respond now in the caller's language and continue the normal intake script. Do not stay silent.",
-        },
-      }));
+      const response: Record<string, unknown> = {
+        modalities: ["text", "audio"],
+        instructions: callerHasSpokenSinceGreeting
+          ? "Respond now to the caller's latest message. Continue the normal intake script in the caller's language. Do not stay silent."
+          : "The caller may have spoken but transcription was empty. Say briefly in Estonian that you did not hear clearly and ask them to repeat how you can help. Do not stay silent.",
+      };
+      if (!callerHasSpokenSinceGreeting) response.tool_choice = "none";
+      pendingUserResponseRetry = true;
+      openaiWs.send(JSON.stringify({ type: "response.create", response }));
     }, delayMs);
   };
 
@@ -381,7 +384,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const sessionPatch: any = {
       turn_detection: {
         type: "server_vad",
-        threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
+        threshold: 0.55,            // Balanced for phone audio; 0.7 was missing quiet callers.
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
         create_response: false,     // We create responses manually after transcription; avoids tool-only/no-audio turns.
@@ -1223,6 +1226,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
             responseHasAudio = true;
+            pendingUserResponseRetry = false;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
               // OpenAI sends large audio chunks (~200ms). Twilio Media Streams plays smoothest
               // when each `media` event carries ~20ms of ulaw audio (160 bytes @ 8kHz).
@@ -1285,10 +1289,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             pendingRecoveryCooldownMs = 0;
             if (normalizeTranscript(userTranscript)) {
               callerHasSpokenSinceGreeting = true;
+              callerSubstantiveTurnCount += 1;
               scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 450);
             }
             break;
           }
+
+          case "conversation.item.input_audio_transcription.failed":
+            console.warn(`[MediaStream] User transcription failed (callId=${callId}):`, event.error || event);
+            scheduleManualResponseAfterUserSpeech("input_audio_transcription.failed", 250);
+            break;
 
           case "response.function_call_arguments.done": {
             const fnName = event.name;
@@ -1300,6 +1310,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const args = JSON.parse(event.arguments);
                 reason = args.reason || reason;
               } catch {}
+
+              if (isIiziRoadsideAgent && callerSubstantiveTurnCount < 2) {
+                console.warn(`[MediaStream] Blocked premature end_call for IIZI (callId=${callId}, userTurns=${callerSubstantiveTurnCount}, reason=${reason})`);
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({ success: false, error: "Premature end_call blocked. Continue the intake; ask how you can help or ask the next required question." }),
+                  },
+                }));
+                openaiWs!.send(JSON.stringify({
+                  type: "response.create",
+                  response: {
+                    modalities: ["text", "audio"],
+                    tool_choice: "none",
+                    instructions: "Do not end the call. Respond to the caller now in Estonian and continue the autoabi intake with the next necessary question.",
+                  },
+                }));
+                break;
+              }
 
               console.log(`[MediaStream] END CALL requested: ${reason} (callId=${callId})`);
               transcriptLines.push(`[System]: Call ended — ${reason}`);
@@ -1313,7 +1344,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 },
               };
               openaiWs!.send(JSON.stringify(toolResult));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              openaiWs!.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
 
               setTimeout(() => {
                 console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
@@ -1340,7 +1371,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   output: JSON.stringify(output),
                 },
               }));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              openaiWs!.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
               transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
             }
 
@@ -1440,7 +1471,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     : { success: false, error: result.error, template_name: tpl?.name || requestedName, instruction: `The SMS could not be sent. Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent. Do NOT say "saatsin" or "I sent". Suggest trying again in a moment.` }),
                 },
               }));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              openaiWs!.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
             }
             break;
           }
@@ -1503,12 +1534,31 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(
               `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens}`
             );
+            if (!responseHasAudio && pendingUserResponseRetry && !greetingInProgress) {
+              pendingUserResponseRetry = false;
+              console.warn(`[MediaStream] Post-user response completed with no audio; retrying once with tools disabled (callId=${callId}, responseId=${responseId})`);
+              setTimeout(() => {
+                if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId) return;
+                openaiWs.send(JSON.stringify({
+                  type: "response.create",
+                  response: {
+                    modalities: ["text", "audio"],
+                    tool_choice: "none",
+                    instructions: "You produced no audio. Speak now in Estonian. Ask one concise next intake question for IIZI autoabi and do not call any tool in this turn.",
+                  },
+                }));
+              }, 150);
+            }
             maybeCompleteAiTurn("response.done");
             break;
           }
 
           case "input_audio_buffer.speech_stopped":
             scheduleManualResponseAfterUserSpeech("speech_stopped", 700);
+            break;
+
+          case "input_audio_buffer.committed":
+            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 900);
             break;
 
           case "input_audio_buffer.speech_started":
