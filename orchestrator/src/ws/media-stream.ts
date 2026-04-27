@@ -862,7 +862,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       crmLookup({ reg_no: reg }).then((veh) => {
                         if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
                         let lookupMsg: string;
-                        if (veh && (veh.reg_no || "").toUpperCase().replace(/[^A-Z0-9]/g, "") === reg.toUpperCase().replace(/[^A-Z0-9]/g, "")) {
+                        const exactRegMatch = Boolean(veh && (veh.reg_no || "").toUpperCase().replace(/[^A-Z0-9]/g, "") === reg.toUpperCase().replace(/[^A-Z0-9]/g, ""));
+                        if (exactRegMatch) {
                           // Refresh phone-CRM-derived caller_* variables to match the submitted reg.
                           callVariables.caller_known = "true";
                           callVariables.caller_name = veh.owner_name || "";
@@ -891,8 +892,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           callVariables.caller_cover_status = "";
                           lookupMsg = `[SYSTEM EVENT: vehicle_lookup_result] match=false submitted_reg="${reg}". Internal note only — do NOT read this tag, brackets, or field names aloud. The submitted registration number does NOT match any CRM record. HARD RULE: do NOT mention any make, model, year, color, owner name, insurer, cover type, or cover status — that data (if you saw it earlier from the phone match) belongs to a different vehicle and is NOT valid for this case. Route this case to human follow-up. Tell the caller that the registration number was received, but the vehicle was not found in our records, and a human employee will contact them within viie kuni kümne minuti jooksul. Do NOT proceed with the normal partner-handover flow.`;
                         }
-                        console.log(`[MediaStream] vehicle_lookup_result (callId=${callId}) reg="${reg}" match=${veh ? "true" : "false"}`);
-                        transcriptLines.push(`[vehicle_lookup_result]: reg=${reg} match=${veh ? "true" : "false"}`);
+                        console.log(`[MediaStream] vehicle_lookup_result (callId=${callId}) reg="${reg}" match=${exactRegMatch ? "true" : "false"}`);
+                        transcriptLines.push(`[vehicle_lookup_result]: reg=${reg} match=${exactRegMatch ? "true" : "false"}`);
                         openaiWs.send(JSON.stringify({
                           type: "conversation.item.create",
                           item: {
