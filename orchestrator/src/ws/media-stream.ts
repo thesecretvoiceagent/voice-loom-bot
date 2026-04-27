@@ -1326,6 +1326,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   tpl = callbackTpl;
                 }
               }
+              // Extra safety: if we already sent the registration SMS at least once and the
+              // model is asking for it again WITHOUT a submitted reg, it almost certainly
+              // intends the next-stage callback SMS (common LLM confusion between "send
+              // registration link again" vs "send the next link"). If a callback template
+              // exists and has not been sent yet, switch.
+              {
+                const tplPurposeNow = tpl ? classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) : "unknown";
+                if (tplPurposeNow === "registration" && tpl && smsSentNames.has(tpl.name)) {
+                  const callbackTpl = findDuringSmsByPurpose("callback");
+                  if (callbackTpl && !smsSentNames.has(callbackTpl.name)) {
+                    console.warn(`[MediaStream] send_sms guard: registration template "${tpl.name}" already sent; switching to unsent callback SMS "${callbackTpl.name}" (callId=${callId})`);
+                    tpl = callbackTpl;
+                  }
+                }
+              }
               if (tpl && classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) === "callback" && !tpl.content.includes("{{form2_link}}")) {
                 console.warn(`[MediaStream] send_sms guard: callback template "${tpl.name}" did not contain {{form2_link}}; forcing phone-only link text (callId=${callId})`);
                 tpl = { ...tpl, content: `Palun sisestage oma tagasihelistamise number siin lingil: {{form2_link}}` };
