@@ -1441,6 +1441,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
+    if (diagnosticSnapshotTimer) {
+      clearInterval(diagnosticSnapshotTimer);
+      diagnosticSnapshotTimer = null;
+    }
+    // Final diagnostic summary — single line so it's easy to grep per call.
+    console.log(
+      `[Diag-Final] callId=${callId} ` +
+      `inFrames=${twilioInboundFrames}(fwd=${twilioInboundFramesForwarded},dropG=${twilioInboundFramesDropGreeting},dropC=${twilioInboundFramesDropCooldown},dropAB=${twilioInboundFramesDropAntiBargein},postGreeting=${twilioInboundFramesAfterGreeting}) ` +
+      `vad{started=${speechStartedCount},stopped=${speechStoppedCount},committed=${bufferCommittedCount},transcripts=${userTranscriptCount}} ` +
+      `resp{created=${responseCreatedCount},done=${responseDoneCount},sent=${responseCreateSentCount},err=${responseErrorCount}} ` +
+      `audio{deltas=${assistantAudioDeltaCount},twilioOut=${twilioOutboundFrames},sendErr=${twilioOutboundSendErrors}} ` +
+      `session{created=${openaiSessionCreatedAt?"yes":"no"},updated=${openaiSessionUpdatedAt?"yes":"no"},greetingCompletedAt=${greetingCompletedAt?"yes":"no"}}`
+    );
 
     // Stop listening for inbound SMS replies for this call
     if (inboundSmsChannel) {
