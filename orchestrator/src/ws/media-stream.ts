@@ -1370,6 +1370,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
 
           case "conversation.item.input_audio_transcription.completed":
+            clearCallerSpeechWatchdog();
             userTranscriptCount += 1;
             console.log(`[Diag] user_transcript #${userTranscriptCount} (callId=${callId}): "${event.transcript}"`);
             transcriptLines.push(`[User]: ${event.transcript}`);
@@ -1589,6 +1590,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "input_audio_buffer.speech_started":
             speechStartedCount += 1;
+            armCallerSpeechWatchdog("speech-started");
             console.log(`[Diag] speech_started #${speechStartedCount} (callId=${callId}) state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},antiBargein=${antiBargeinEnabled}}`);
             if (greetingInProgress) {
               console.log(`[MediaStream] Ignoring interruption during greeting, clearing buffer (callId=${callId})`);
@@ -1609,8 +1611,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "input_audio_buffer.speech_stopped":
             speechStoppedCount += 1;
+            clearCallerSpeechWatchdog();
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
-            scheduleUserResponseCreate("speech-stopped", 1400);
+            commitAudioAndCreateResponse("speech-stopped", 120);
             break;
 
           case "input_audio_buffer.committed":
