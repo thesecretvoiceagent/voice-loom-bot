@@ -1070,30 +1070,41 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
             }
+            assistantAudioDeltaCount += 1;
             responseHasAudio = true;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
-              // OpenAI sends large audio chunks (~200ms). Twilio Media Streams plays smoothest
-              // when each `media` event carries ~20ms of ulaw audio (160 bytes @ 8kHz).
-              // Splitting prevents underruns/overruns that are heard as static/clicks.
               try {
                 const raw = Buffer.from(event.delta, "base64");
                 const FRAME = 160; // 20ms @ 8kHz mu-law
                 for (let offset = 0; offset < raw.length; offset += FRAME) {
                   const chunk = raw.subarray(offset, Math.min(offset + FRAME, raw.length));
+                  try {
+                    twilioWs.send(JSON.stringify({
+                      event: "media",
+                      streamSid,
+                      media: { payload: chunk.toString("base64") },
+                    }));
+                    twilioOutboundFrames += 1;
+                  } catch (sendErr) {
+                    twilioOutboundSendErrors += 1;
+                    console.error(`[Diag] Twilio send error (callId=${callId}, twilioState=${twilioWs.readyState}):`, sendErr);
+                  }
+                }
+              } catch (e) {
+                try {
                   twilioWs.send(JSON.stringify({
                     event: "media",
                     streamSid,
-                    media: { payload: chunk.toString("base64") },
+                    media: { payload: event.delta },
                   }));
+                  twilioOutboundFrames += 1;
+                } catch (sendErr) {
+                  twilioOutboundSendErrors += 1;
+                  console.error(`[Diag] Twilio send error (fallback path) (callId=${callId}):`, sendErr);
                 }
-              } catch (e) {
-                // Fallback: forward as-is if buffer ops fail
-                twilioWs.send(JSON.stringify({
-                  event: "media",
-                  streamSid,
-                  media: { payload: event.delta },
-                }));
               }
+            } else {
+              console.warn(`[Diag] Cannot forward assistant audio: streamSid=${streamSid?"set":"empty"} twilioState=${twilioWs.readyState} hasDelta=${!!event.delta} (callId=${callId})`);
             }
             break;
           }
@@ -1124,7 +1135,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
 
           case "conversation.item.input_audio_transcription.completed":
-            console.log(`[MediaStream] User said (callId=${callId}): ${event.transcript}`);
+            userTranscriptCount += 1;
+            console.log(`[Diag] user_transcript #${userTranscriptCount} (callId=${callId}): "${event.transcript}"`);
             transcriptLines.push(`[User]: ${event.transcript}`);
             if (typeof event.transcript === "string" && event.transcript.trim().length > 0) {
               userUtteranceCount += 1;
