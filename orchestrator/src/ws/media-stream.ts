@@ -1321,19 +1321,33 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.created":
             clearPendingUserSpeechResponseTimer();
+            clearResponseCreateWatchdog();
             clearResponseAudioDoneFallback();
+            clearResponseAudioWatchdog();
             activeResponseId = event.response?.id || null;
+            assistantResponding = true;
+            responseCreateInFlight = false;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
             responseAudioDone = false;
             responseDoneReceived = false;
+            currentResponseCreatedAt = Date.now();
+            currentResponseAudioDeltaCount = 0;
+            currentResponseOutboundFrameCount = 0;
             ignoreAudioUntilNextResponse = false;
             aiIsSpeaking = true; // Keep this true until Twilio confirms playback completion.
             lastResponseFinishReason = null;
             lastResponseOutputTokens = null;
+            console.log(`[MediaStream] <<< response.created (callId=${callId}, responseId=${activeResponseId || "unknown"})`);
+            responseAudioWatchdogTimer = setTimeout(() => {
+              if (assistantResponding && activeResponseId && !responseHasAudio) {
+                console.error(`[MediaStream] HARD ERROR: response.created but no assistant audio delta within 5s (callId=${callId}, responseId=${activeResponseId})`);
+              }
+            }, 5000);
             break;
 
-          case "response.audio.delta": {
+          case "response.audio.delta":
+          case "response.output_audio.delta": {
             const responseId = event.response_id || activeResponseId || null;
             if (ignoreAudioUntilNextResponse) {
               break;
@@ -1343,6 +1357,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             responseHasAudio = true;
             pendingUserResponseRetry = false;
+            currentResponseAudioDeltaCount += 1;
+            if (currentResponseAudioDeltaCount === 1) {
+              clearResponseAudioWatchdog();
+              console.log(`[MediaStream] First assistant audio delta received (callId=${callId}, responseId=${responseId}, event=${event.type})`);
+            }
             clearResponseAudioDoneFallback();
             responseAudioDoneFallbackTimer = setTimeout(() => {
               if (!activeResponseId || responseAudioDone || !responseDoneReceived) return;
@@ -1359,20 +1378,28 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const FRAME = 160; // 20ms @ 8kHz mu-law
                 for (let offset = 0; offset < raw.length; offset += FRAME) {
                   const chunk = raw.subarray(offset, Math.min(offset + FRAME, raw.length));
+                  currentResponseOutboundFrameCount += 1;
                   twilioWs.send(JSON.stringify({
                     event: "media",
                     streamSid,
                     media: { payload: chunk.toString("base64") },
-                  }));
+                  }), (err) => {
+                    if (err) console.error(`[MediaStream] Twilio outbound media send error (callId=${callId}, responseId=${responseId}):`, err);
+                  });
                 }
               } catch (e) {
                 // Fallback: forward as-is if buffer ops fail
+                currentResponseOutboundFrameCount += 1;
                 twilioWs.send(JSON.stringify({
                   event: "media",
                   streamSid,
                   media: { payload: event.delta },
-                }));
+                }), (err) => {
+                  if (err) console.error(`[MediaStream] Twilio outbound media send error (fallback) (callId=${callId}, responseId=${responseId}):`, err);
+                });
               }
+            } else {
+              console.error(`[MediaStream] HARD ERROR: assistant audio delta received but no Twilio media sent (callId=${callId}, responseId=${responseId}, streamSid=${streamSid || "none"}, twilioReadyState=${twilioWs.readyState}, hasDelta=${Boolean(event.delta)})`);
             }
             break;
           }
