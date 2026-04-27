@@ -286,6 +286,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseDoneCount = 0;
   let responseErrorCount = 0;
   let pendingUserResponseTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingUserResponseReason: string | null = null;
+  let pendingUserResponseAttempts = 0;
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
   let twilioOutboundFrames = 0;
@@ -322,13 +324,34 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const scheduleUserResponseCreate = (reason: string, delayMs: number) => {
-    if (greetingInProgress) return;
+    pendingUserResponseReason = pendingUserResponseReason || reason;
     clearPendingUserResponseTimer();
     pendingUserResponseTimer = setTimeout(() => {
       pendingUserResponseTimer = null;
-      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId || greetingInProgress) return;
-      console.warn(`[Diag] No assistant response after ${reason}; forcing response.create (callId=${callId})`);
-      sendResponseCreate(reason);
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+
+      const cooldownLeftMs = Math.max(0, inboundAudioCooldownUntil - Date.now());
+      if (activeResponseId || greetingInProgress || cooldownLeftMs > 0) {
+        pendingUserResponseAttempts += 1;
+        if (pendingUserResponseAttempts <= 120) {
+          const waitMs = Math.max(150, Math.min(500, cooldownLeftMs || 250));
+          if (pendingUserResponseAttempts === 1 || pendingUserResponseAttempts % 10 === 0) {
+            console.warn(`[Diag] Deferring response.create after ${pendingUserResponseReason} — activeResponse=${activeResponseId || "none"} greeting=${greetingInProgress} cooldownLeftMs=${cooldownLeftMs} attempt=${pendingUserResponseAttempts} (callId=${callId})`);
+          }
+          scheduleUserResponseCreate(pendingUserResponseReason || reason, waitMs);
+        } else {
+          console.error(`[Diag] Gave up forcing assistant response after ${pendingUserResponseReason} because previous response never cleared (callId=${callId})`);
+          pendingUserResponseReason = null;
+          pendingUserResponseAttempts = 0;
+        }
+        return;
+      }
+
+      const finalReason = pendingUserResponseReason || reason;
+      pendingUserResponseReason = null;
+      pendingUserResponseAttempts = 0;
+      console.warn(`[Diag] No assistant response after ${finalReason}; forcing response.create (callId=${callId})`);
+      sendResponseCreate(finalReason, { modalities: ["text", "audio"] });
     }, delayMs);
   };
 
@@ -414,6 +437,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
     startInboundAudioCooldown(recoveryCooldownMs, source);
+    if (!greetingInProgress && pendingUserResponseReason) {
+      console.log(`[Diag] AI turn completed while user response pending (${pendingUserResponseReason}); scheduling response after cooldown (callId=${callId})`);
+      scheduleUserResponseCreate(pendingUserResponseReason, recoveryCooldownMs + 150);
+    }
 
     if (greetingInProgress) {
       greetingInProgress = false;
@@ -727,7 +754,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       content: [{ type: "input_text", text: sysMsg }],
                     },
                   }));
-                  sendResponseCreate("system-event");
+                  scheduleUserResponseCreate("system-event", 50);
                 }
               },
             )
@@ -775,7 +802,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-                    sendResponseCreate("system-event");
+                    scheduleUserResponseCreate("system-event", 50);
                   }
                 }
 
@@ -801,7 +828,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-                    sendResponseCreate("system-event");
+                    scheduleUserResponseCreate("system-event", 50);
                   }
                 }
               },
@@ -1211,7 +1238,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     }),
                   },
                 }));
-                sendResponseCreate("tool-result");
+                scheduleUserResponseCreate("tool-result", 50);
                 break;
               }
 
@@ -1227,7 +1254,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 },
               };
               openaiWs!.send(JSON.stringify(toolResult));
-              sendResponseCreate("tool-result");
+              scheduleUserResponseCreate("tool-result", 50);
 
               setTimeout(() => {
                 console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
@@ -1254,7 +1281,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   output: JSON.stringify(output),
                 },
               }));
-              sendResponseCreate("tool-result");
+              scheduleUserResponseCreate("tool-result", 50);
               transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
             }
 
@@ -1314,7 +1341,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     : { success: false, error: result.error, instruction: `Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent.` }),
                 },
               }));
-              sendResponseCreate("tool-result");
+              scheduleUserResponseCreate("tool-result", 50);
             }
             break;
           }
@@ -1411,7 +1438,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "input_audio_buffer.committed":
             bufferCommittedCount += 1;
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
-            scheduleUserResponseCreate("audio-commit", 250);
+            scheduleUserResponseCreate("audio-commit", 650);
             break;
 
           case "response.error":
