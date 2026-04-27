@@ -177,9 +177,17 @@ export default function FormSubmit() {
           >
             <div className="font-semibold">Andmed saadetud</div>
             <div className="text-sm opacity-90">
-              Reg: <span className="font-mono">{submit.reg}</span>
-              <br />
-              Tel: <span className="font-mono">{submit.phone}</span>
+              {showReg && (
+                <>
+                  Reg: <span className="font-mono">{submit.reg}</span>
+                  {showPhone && <br />}
+                </>
+              )}
+              {showPhone && (
+                <>
+                  Tel: <span className="font-mono">{submit.phone}</span>
+                </>
+              )}
             </div>
             <div className="text-xs opacity-75">
               AI assistent loeb need sulle vestluses tagasi.
@@ -188,7 +196,11 @@ export default function FormSubmit() {
         ) : (
           <button
             type="submit"
-            disabled={disabled || !regNo.trim() || !phone.trim()}
+            disabled={
+              disabled ||
+              (showReg && !regNo.trim()) ||
+              (showPhone && !phone.trim())
+            }
             className="w-full h-14 rounded-lg bg-primary text-primary-foreground text-lg font-semibold shadow-md active:scale-[0.99] transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {submit.kind === "loading" ? "Saadan…" : "Saada"}
