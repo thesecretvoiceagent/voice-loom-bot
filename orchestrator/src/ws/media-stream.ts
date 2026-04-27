@@ -1098,6 +1098,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "conversation.item.input_audio_transcription.completed":
             console.log(`[MediaStream] User said (callId=${callId}): ${event.transcript}`);
             transcriptLines.push(`[User]: ${event.transcript}`);
+            if (typeof event.transcript === "string" && event.transcript.trim().length > 0) {
+              userUtteranceCount += 1;
+            }
             // Real user speech resets the repeat counter.
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
