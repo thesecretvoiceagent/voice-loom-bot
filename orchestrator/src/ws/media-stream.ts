@@ -1634,6 +1634,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             clearResponseAudioDoneFallback();
 
             responseAudioDone = true;
+            console.log(`[MediaStream] response.audio.done (callId=${callId}, responseId=${responseId}, audioDeltas=${currentResponseAudioDeltaCount}, outboundTwilioFrames=${currentResponseOutboundFrameCount})`);
 
             if (!responseHasAudio) {
               maybeCompleteAiTurn("response.audio.done(no-audio)");
@@ -1683,7 +1684,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
             responseDoneReceived = true;
             console.log(
-              `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens}`
+              `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens} audioDeltas=${currentResponseAudioDeltaCount} outboundTwilioFrames=${currentResponseOutboundFrameCount}`
             );
             if (responseHasAudio && !responseAudioDone) {
               clearResponseAudioDoneFallback();
@@ -1718,7 +1719,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "input_audio_buffer.committed":
             lastUserAudioItemId = event.item_id || lastUserAudioItemId || null;
-            console.log(`[MediaStream] Caller audio committed; scheduling manual response (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}, previous=${event.previous_item_id || "none"})`);
+            pendingUserTurn = { id: lastUserAudioItemId || `commit:${Date.now()}`, source: "input_audio_buffer.committed", createdAt: Date.now() };
+            console.log(`[MediaStream] input_audio_buffer.committed; queued user turn (callId=${callId}, itemId=${pendingUserTurn.id}, previous=${event.previous_item_id || "none"})`);
             scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 900);
             break;
 
@@ -1755,6 +1757,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "error":
             console.error(`[MediaStream] OpenAI error (callId=${callId}):`, event.error);
+            if (responseCreateInFlight) {
+              console.error(`[MediaStream] response.error after response.create (callId=${callId}):`, event.error);
+              responseCreateInFlight = false;
+              clearResponseCreateWatchdog();
+            }
             break;
 
           default:
