@@ -1606,6 +1606,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         initialResponseFallbackTimer = null;
       }
       clearMarkFallback();
+      clearResponseAudioDoneFallback();
       clearTurnDetectionEnableTimer();
       console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
       openaiWs = null;
@@ -1642,6 +1643,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
     clearPendingUserSpeechResponseTimer();
+    clearResponseAudioDoneFallback();
 
     // Stop listening for inbound SMS replies for this call
     if (inboundSmsChannel) {
