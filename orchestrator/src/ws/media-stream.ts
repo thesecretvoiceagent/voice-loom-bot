@@ -259,6 +259,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let callerHasSpokenSinceGreeting = false;
   let callerSubstantiveTurnCount = 0;
+  let postGreetingAssistantTurnCount = 0;
   let pendingUserResponseRetry = false;
   let lastUserAudioItemId: string | null = null;
   let lastRespondedUserAudioItemId: string | null = null;
@@ -371,12 +372,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     lastRespondedUserAudioItemId = lastUserAudioItemId;
     console.warn(`[MediaStream] Creating AI response after user speech (${source}) (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"})`);
     pendingUserResponseRetry = true;
+    const response: Record<string, unknown> = {
+      instructions: "Follow the session instructions and respond out loud to the caller's latest message. Do not stay silent.",
+    };
+    if (postGreetingAssistantTurnCount === 0) {
+      response.tool_choice = "none";
+    }
     openaiWs.send(JSON.stringify({
       type: "response.create",
-      response: {
-        modalities: ["text", "audio"],
-        tool_choice: "auto",
-      },
+      response,
     }));
     return true;
   };
