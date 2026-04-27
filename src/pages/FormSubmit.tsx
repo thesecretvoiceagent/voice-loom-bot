@@ -14,6 +14,11 @@ export default function FormSubmit() {
   const [params] = useSearchParams();
   const caseId = params.get("caseId") || "";
   const token = params.get("token") || "";
+  const modeParam = (params.get("mode") || "").toLowerCase();
+  const mode: "both" | "reg" | "phone" =
+    modeParam === "reg" ? "reg" : modeParam === "phone" ? "phone" : "both";
+  const showReg = mode === "both" || mode === "reg";
+  const showPhone = mode === "both" || mode === "phone";
 
   const [regNo, setRegNo] = useState("");
   const [phone, setPhone] = useState("");
