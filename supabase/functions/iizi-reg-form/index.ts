@@ -8,7 +8,9 @@ const corsHeaders = {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REG_NO_RE = /^[A-Z0-9 \-]{2,12}$/i;
-const FRONTEND_BASE_URL = (Deno.env.get("FRONTEND_BASE_URL") || "https://app.beyondcode.ai").replace(/\/+$/, "");
+function esc(value: string): string {
+  return value.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch] || ch));
+}
 
 function html(body: string, status = 200): Response {
   return new Response(`<!doctype html><html lang="et"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Registreerimisnumber</title><style>body{margin:0;background:#050308;color:#f4f0f6;font-family:Arial,sans-serif}.wrap{padding:24px 20px;max-width:520px}.muted{color:#9c94a8}.field{display:block;margin:22px 0 8px;font-size:14px;font-weight:700}input{box-sizing:border-box;width:100%;height:52px;border:1px solid #342e3d;border-radius:8px;background:#24202d;color:#fff;font-size:18px;padding:0 14px;text-transform:uppercase;letter-spacing:.08em}button{width:100%;height:56px;margin-top:18px;border:0;border-radius:8px;background:#23966f;color:#07100d;font-size:17px;font-weight:800}.err{margin-top:16px;color:#ffb4ab}.ok{margin-top:20px;color:#91f3c3;font-weight:800}</style></head><body><main class="wrap">${body}</main></body></html>`, {
@@ -48,12 +50,8 @@ async function verifyToken(caseId: string, token: string): Promise<boolean> {
   return timingSafeHexEqual(token.toLowerCase(), expected.toLowerCase());
 }
 
-function redirectToFrontendForm(caseId: string, token: string): Response {
-  const location = `${FRONTEND_BASE_URL}/form?caseId=${encodeURIComponent(caseId)}&token=${encodeURIComponent(token)}&mode=reg`;
-  return new Response(null, {
-    status: 302,
-    headers: { ...corsHeaders, Location: location, "Cache-Control": "no-store" },
-  });
+function regForm(caseId: string, token: string, message = ""): Response {
+  return html(`<h1>Sisesta oma sõiduki andmed</h1><form method="post"><input type="hidden" name="caseId" value="${esc(caseId)}"/><input type="hidden" name="token" value="${esc(token)}"/><label class="field" for="reg">Auto registreerimisnumber</label><input id="reg" name="reg_no" maxlength="12" required autofocus autocomplete="off" autocapitalize="characters" spellcheck="false"/>${message}<button type="submit">Saada</button></form>`);
 }
 
 Deno.serve(async (req) => {
@@ -64,10 +62,10 @@ Deno.serve(async (req) => {
   const { caseId, token } = extractParams(req, form || undefined);
   if (!UUID_RE.test(caseId) || !token) return html("<h1>Link on vigane</h1><p class='muted'>Avage palun SMS-ist saadud link uuesti.</p>", 400);
 
-  if (req.method === "GET") return redirectToFrontendForm(caseId, token);
+  if (req.method === "GET") return regForm(caseId, token);
 
   const regNo = normalizeRegNo((form?.get("reg_no") || "").toString());
-  if (!REG_NO_RE.test(regNo)) return html(`<h1>Sisesta sõiduki registreerimisnumber</h1><form method="post"><input type="hidden" name="caseId" value="${caseId}"/><input type="hidden" name="token" value="${token}"/><label class="field" for="reg">Auto registreerimisnumber</label><input id="reg" name="reg_no" value="${regNo}" maxlength="12" required/><div class="err">Registreerimisnumber ei sobi.</div><button type="submit">Saada</button></form>`, 400);
+  if (!REG_NO_RE.test(regNo)) return regForm(caseId, token, `<div class="err">Registreerimisnumber ei sobi.</div>`);
   if (!(await verifyToken(caseId, token))) return html("<h1>Link ei kehti</h1><p class='muted'>Avage palun SMS-ist saadud link uuesti.</p>", 403);
 
   const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
