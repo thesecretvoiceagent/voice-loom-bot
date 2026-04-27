@@ -321,6 +321,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return true;
   };
 
+  const scheduleUserResponseCreate = (reason: string, delayMs: number) => {
+    if (greetingInProgress) return;
+    clearPendingUserResponseTimer();
+    pendingUserResponseTimer = setTimeout(() => {
+      pendingUserResponseTimer = null;
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId || greetingInProgress) return;
+      console.warn(`[Diag] No assistant response after ${reason}; forcing response.create (callId=${callId})`);
+      sendResponseCreate(reason);
+    }, delayMs);
+  };
+
   const normalizeTranscript = (txt: string) =>
     txt
       .toLowerCase()
@@ -355,7 +366,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
-        create_response: true,      // Server VAD must create the assistant turn after caller speech
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
