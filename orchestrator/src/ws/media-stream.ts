@@ -251,6 +251,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
   let antiBargeinEnabled = false;
   let aiIsSpeaking = false; // Track whether AI is currently outputting audio or Twilio is still playing it
+  // Guardrails against premature end_call right after greeting:
+  // 1. We require at least one real user utterance before honoring end_call.
+  // 2. We require a minimum elapsed time since greeting completion.
+  let greetingCompletedAt: number | null = null;
+  let userUtteranceCount = 0;
+  const MIN_MS_AFTER_GREETING_BEFORE_END_CALL = 12_000;
   let responsePlaybackMarkName: string | null = null;
   let responseHasAudio = false;
   let responseAudioDone = false;
