@@ -490,7 +490,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.55,            // Balanced for phone audio; 0.7 was missing quiet callers.
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
-        create_response: false,     // We trigger responses ourselves after VAD commits caller audio.
+        create_response: false,     // Manual path: every committed user turn gets exactly one response.create.
         interrupt_response: false,  // Barge-in is guarded manually below to avoid invalid response.cancel calls.
       },
     };
@@ -505,6 +505,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       type: "session.update",
       session: sessionPatch,
     }));
+    console.log(`[MediaStream] Turn detection enabled after greeting (manual response mode) (callId=${callId}, threshold=${sessionPatch.turn_detection.threshold}, silenceMs=${sessionPatch.turn_detection.silence_duration_ms})`);
   };
 
   const maybeCompleteAiTurn = (source: string) => {
