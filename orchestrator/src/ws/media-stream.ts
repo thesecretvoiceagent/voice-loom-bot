@@ -383,12 +383,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const resetResponseState = () => {
     activeResponseId = null;
+    assistantResponding = false;
+    responseCreateInFlight = false;
     responsePlaybackMarkName = null;
     responseHasAudio = false;
     responseAudioDone = false;
     responseDoneReceived = false;
+    currentResponseCreatedAt = 0;
+    currentResponseAudioDeltaCount = 0;
+    currentResponseOutboundFrameCount = 0;
     clearMarkFallback();
     clearResponseAudioDoneFallback();
+    clearResponseCreateWatchdog();
+    clearResponseAudioWatchdog();
   };
 
   const sendUserTurnResponseCreate = (source: string) => {
