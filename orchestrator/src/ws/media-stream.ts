@@ -1118,6 +1118,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 reason = args.reason || reason;
               } catch {}
 
+              // Guardrail: refuse end_call if it fires too soon after greeting or before
+              // any real user utterance. This stops the bot from "hanging up randomly"
+              // right after the greeting (e.g. when whisper STT mangles the first reply).
+              const msSinceGreeting = greetingCompletedAt ? Date.now() - greetingCompletedAt : 0;
+              const tooEarly = !greetingCompletedAt || msSinceGreeting < MIN_MS_AFTER_GREETING_BEFORE_END_CALL;
+              const noUserSpeech = userUtteranceCount === 0;
+              if (tooEarly || noUserSpeech) {
+                console.warn(`[MediaStream] end_call BLOCKED — tooEarly=${tooEarly} (msSinceGreeting=${msSinceGreeting}) noUserSpeech=${noUserSpeech} userUtterances=${userUtteranceCount} reason="${reason}" (callId=${callId})`);
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({
+                      success: false,
+                      error: "end_call_not_allowed_yet",
+                      message: "You may NOT end the call yet. The caller has not had a real chance to speak. Stay on the line, ask them again in their language to describe the situation, and wait for their answer. Do NOT call end_call again until the caller has actually spoken and the case is fully handled.",
+                    }),
+                  },
+                }));
+                openaiWs!.send(JSON.stringify({ type: "response.create" }));
+                break;
+              }
+
               console.log(`[MediaStream] END CALL requested: ${reason} (callId=${callId})`);
               transcriptLines.push(`[System]: Call ended — ${reason}`);
 
