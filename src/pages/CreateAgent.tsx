@@ -877,7 +877,7 @@ export default function CreateAgent() {
                                   : token === "form_link"
                                     ? "/form"
                                     : "/form2";
-                              const previewUrl = `${path}?caseId=preview&token=preview`;
+                              const previewUrl = `${path}?caseId=${crypto.randomUUID()}&token=preview`;
                               return (
                                 <Button
                                   type="button"
