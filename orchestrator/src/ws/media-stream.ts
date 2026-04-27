@@ -532,7 +532,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
 
     const completedResponseId = activeResponseId;
-    const recoveryCooldownMs = pendingRecoveryCooldownMs || 1200;
+    // After the GREETING specifically, use a tiny cooldown so we don't drop the
+    // caller's immediate reply ("tere" / "mul oli avarii"). Echo risk is minimal
+    // because the greeting just finished playing and Twilio's mark confirmed it.
+    // After normal AI turns we keep the longer cooldown to avoid echo loops.
+    const defaultCooldownMs = greetingInProgress ? 150 : 1200;
+    const recoveryCooldownMs = pendingRecoveryCooldownMs || defaultCooldownMs;
     pendingRecoveryCooldownMs = 0;
 
     resetResponseState();
@@ -547,7 +552,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (greetingInProgress) {
       greetingInProgress = false;
       greetingCompletedAt = Date.now();
-      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after cooldown (callId=${callId}, responseId=${completedResponseId})`);
+      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after ${recoveryCooldownMs}ms cooldown (callId=${callId}, responseId=${completedResponseId})`);
       clearTurnDetectionEnableTimer();
       turnDetectionEnableTimer = setTimeout(() => {
         turnDetectionEnableTimer = null;
