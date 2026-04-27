@@ -858,7 +858,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     // must NOT continue using phone-based CRM context (which may belong
                     // to a different vehicle). Inject a vehicle_lookup_result event so
                     // the AI knows whether the submitted reg is verified or not.
-                    if (reg) {
+                    if (isIiziRoadsideAgent && reg) {
                       crmLookup({ reg_no: reg }).then((veh) => {
                         if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
                         let lookupMsg: string;
@@ -1340,7 +1340,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
               const requestedPurpose = classifySmsPurpose(requestedName);
               let tpl = resolveDuringSmsTemplate(requestedName);
-              if (requestedPurpose !== "unknown") {
+              if (isIiziRoadsideAgent && requestedPurpose !== "unknown") {
                 const purposeTpl = findDuringSmsByPurpose(requestedPurpose);
                 if (purposeTpl && purposeTpl.name !== tpl?.name) {
                   console.warn(`[MediaStream] send_sms purpose override requested="${requestedName}" purpose=${requestedPurpose}: using configured template="${purposeTpl.name}" instead of "${tpl?.name || "none"}" (callId=${callId})`);
@@ -1349,11 +1349,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
 
               const tplPurpose = tpl ? classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) : "unknown";
-              if (tpl && tplPurpose === "registration" && !tpl.content.includes("{{form1_link}}")) {
+              if (isIiziRoadsideAgent && tpl && tplPurpose === "registration" && !tpl.content.includes("{{form1_link}}")) {
                 console.warn(`[MediaStream] send_sms guard: registration template "${tpl.name}" did not contain {{form1_link}}; forcing reg-only link text (callId=${callId})`);
                 tpl = { ...tpl, content: `Palun sisestage oma numbrimärk: {{form1_link}}` };
               }
-              if (tplPurpose === "registration" && submittedRegistrationNumber) {
+              if (isIiziRoadsideAgent && tplPurpose === "registration" && submittedRegistrationNumber) {
                 const callbackTpl = findDuringSmsByPurpose("callback");
                 if (callbackTpl) {
                   console.warn(`[MediaStream] send_sms guard: registration already submitted (${submittedRegistrationNumber}); switching to callback SMS "${callbackTpl.name}" (callId=${callId})`);
