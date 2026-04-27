@@ -263,6 +263,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let pendingUserResponseRetry = false;
   let lastUserAudioItemId: string | null = null;
   let lastRespondedUserAudioItemId: string | null = null;
+  type PendingUserTurn = { id: string; transcript?: string; source: string; createdAt: number };
+  let pendingUserTurn: PendingUserTurn | null = null;
+  let assistantResponding = false;
+  let responseCreateInFlight = false;
+  let responseCreateWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  let responseAudioWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  let currentResponseCreatedAt = 0;
+  let currentResponseAudioDeltaCount = 0;
+  let currentResponseOutboundFrameCount = 0;
+  let inboundMediaAfterGreetingCount = 0;
+  let inboundMediaForwardedAfterGreetingCount = 0;
+  let inboundMediaBlockedAfterGreetingCount = 0;
 
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
