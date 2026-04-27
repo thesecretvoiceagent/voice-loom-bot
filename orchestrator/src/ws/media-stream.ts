@@ -217,6 +217,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   type SmsMessage = { id?: string; name: string; description?: string; content: string; trigger: "during" | "after"; order?: number };
   let smsMessages: SmsMessage[] = [];
   const smsSentNames = new Set<string>();
+  let isIiziRoadsideAgent = false;
   let submittedRegistrationNumber = "";
   let submittedCallbackPhoneNumber = "";
   let inboundSmsChannel: RealtimeChannel | null = null;
@@ -270,6 +271,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (turnDetectionEnableTimer) {
       clearTimeout(turnDetectionEnableTimer);
       turnDetectionEnableTimer = null;
+    }
+  };
+
+  let pendingUserSpeechResponseTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearPendingUserSpeechResponseTimer = () => {
+    if (pendingUserSpeechResponseTimer) {
+      clearTimeout(pendingUserSpeechResponseTimer);
+      pendingUserSpeechResponseTimer = null;
     }
   };
 
@@ -341,6 +350,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseAudioDone = false;
     responseDoneReceived = false;
     clearMarkFallback();
+  };
+
+  const scheduleManualResponseAfterUserSpeech = (source: string, delayMs = 700) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
+    clearPendingUserSpeechResponseTimer();
+    pendingUserSpeechResponseTimer = setTimeout(() => {
+      pendingUserSpeechResponseTimer = null;
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+      if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
+      console.warn(`[MediaStream] Manual response.create fallback after user speech (${source}) (callId=${callId})`);
+      openaiWs.send(JSON.stringify({ type: "response.create" }));
+    }, delayMs);
   };
 
   const enableTurnDetection = () => {
