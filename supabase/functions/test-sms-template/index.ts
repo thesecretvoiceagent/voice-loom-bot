@@ -8,16 +8,19 @@ const corsHeaders = {
 
 // Override with FRONTEND_BASE_URL secret if you change domains again.
 const FRONTEND_BASE_URL = (Deno.env.get("FRONTEND_BASE_URL") || "https://app.beyondcode.ai").replace(/\/$/, "");
+const SUPABASE_FUNCTIONS_BASE_URL = `${(Deno.env.get("SUPABASE_URL") || "").replace(/\/+$/, "")}/functions/v1`;
 
 function substituteVars(template: string, caseId: string, locationToken: string): string {
   const locationLink = `${FRONTEND_BASE_URL}/location?caseId=${encodeURIComponent(
     caseId,
   )}&token=${encodeURIComponent(locationToken)}`;
-  // Form link reuses the same signed token so FormSubmit treats it as a valid signed link
+  // Registration form bypasses the published frontend bundle so it can only ask for reg number.
   const baseFormLink = `${FRONTEND_BASE_URL}/form?caseId=${encodeURIComponent(
     caseId,
   )}&token=${encodeURIComponent(locationToken)}`;
-  const formLink = `${baseFormLink}&mode=reg`;
+  const formLink = `${SUPABASE_FUNCTIONS_BASE_URL}/iizi-reg-form?caseId=${encodeURIComponent(
+    caseId,
+  )}&token=${encodeURIComponent(locationToken)}`;
   const form2Link = `${baseFormLink}&mode=phone`;
 
   return template

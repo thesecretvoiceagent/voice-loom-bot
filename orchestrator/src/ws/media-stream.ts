@@ -542,18 +542,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       return text.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
     };
 
+    const buildRegistrationOnlyLink = (caseIdValue: string, tokenValue: string): string => {
+      const formBase = config.publicBaseUrl
+        ? `${config.publicBaseUrl.replace(/\/+$/, "")}/api/forms/reg`
+        : `${(locationPageBase || LOVABLE_FALLBACK).replace(/\/+$/, "")}/form`;
+      return `${formBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${encodeURIComponent(tokenValue)}`;
+    };
+
     const normalizeRegistrationSmsLink = (text: string): string => {
       if (!text) return text;
-      const frontendBase = locationPageBase || LOVABLE_FALLBACK;
-      const frontendFormBase = `${frontendBase.replace(/\/+$/, "")}/form`;
-      return text.replace(/https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})&mode=reg/gi, (_match, caseIdValue, tokenValue) => {
-        return `${frontendFormBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}&mode=reg`;
+      return text.replace(/https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})(?:&mode=(?:reg|both))?/gi, (_match, caseIdValue, tokenValue) => {
+        return buildRegistrationOnlyLink(caseIdValue, tokenValue);
       }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?src=https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})/gi, (_match, caseIdValue, tokenValue) => {
-        return `${frontendFormBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}&mode=reg`;
-      }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?src=https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})&mode=reg/gi, (_match, caseIdValue, tokenValue) => {
-        return `${frontendFormBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}&mode=reg`;
-      }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})/gi, (_match, caseIdValue, tokenValue) => {
-        return `${frontendFormBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}&mode=reg`;
+        return buildRegistrationOnlyLink(caseIdValue, tokenValue);
+      }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?src=https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})(?:&mode=(?:reg|both))?/gi, (_match, caseIdValue, tokenValue) => {
+        return buildRegistrationOnlyLink(caseIdValue, tokenValue);
       });
     };
 
@@ -639,8 +642,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
         const formPath = isLovableLike ? "/form" : "/form.html";
         const baseFormUrl = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
-        const regFormUrl = `${baseFormUrl}&mode=reg`;
-        // form1_link / form_link → SMS #1: registration number only via browser-rendered /form page.
+        const regFormUrl = buildRegistrationOnlyLink(callId, formToken);
+        // form1_link / form_link → SMS #1: registration number only via dedicated backend form.
         // form2_link             → SMS #3: callback phone number only (mode=phone)
         callVariables.form1_link = regFormUrl;
         callVariables.form_link = regFormUrl;
