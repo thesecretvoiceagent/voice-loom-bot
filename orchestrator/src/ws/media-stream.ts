@@ -1488,7 +1488,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               clearMarkFallback();
               markFallbackTimer = setTimeout(() => {
                 if (responsePlaybackMarkName) {
-                  console.warn(`[MediaStream] Mark fallback triggered — Twilio mark not received in ${markTimeoutMs}ms, force-completing turn (callId=${callId}, mark=${responsePlaybackMarkName})`);
+                  console.warn(`[Diag-Gate] greetingPlaying timeout fallback fired=${greetingInProgress} — Twilio mark not received in ${markTimeoutMs}ms, force-completing turn (callId=${callId}, mark=${responsePlaybackMarkName})`);
                   responsePlaybackMarkName = null;
                   maybeCompleteAiTurn("mark-fallback-timeout");
                 }
