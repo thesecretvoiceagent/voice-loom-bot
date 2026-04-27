@@ -1427,8 +1427,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   type: "function_call_output",
                   call_id: event.call_id,
                   output: JSON.stringify(result.ok
-                    ? { success: true, sid: result.sid || null, template_name: tpl?.name || requestedName, message: `SMS template "${tpl?.name || requestedName}" was sent successfully (sid=${result.sid || "n/a"}). NOW you may briefly confirm to the caller in their language that the SMS has been sent (e.g. "Saatsin Teile tekstisõnumi.") and then continue. Do not say anything before this point about the SMS being sent.` }
-                    : { success: false, error: result.error, template_name: tpl?.name || requestedName, instruction: `The SMS could not be sent. Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent. Do NOT say "saatsin" or "I sent". Suggest trying again in a moment.` }),
+                    ? { success: true, sid: result.sid || null, template_name: tpl?.name || requestedName }
+                    : { success: false, error: result.error, template_name: tpl?.name || requestedName }),
                 },
               }));
               openaiWs!.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
