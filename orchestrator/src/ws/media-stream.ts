@@ -917,7 +917,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - Stay strictly on topic. Do not improvise or add unrequested information.
 - Follow the script above exactly. Do not deviate.
 - If asked about something outside your scope, briefly redirect back to the topic.
-- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
+- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.
+- LIVE DATA HARD RULE: You do NOT have a registration number or callback phone number unless it is present in runtime variables, returned by lookup_vehicle, or arrives in a [SYSTEM EVENT: form_submitted] field. A caller asking “did you get it?” or saying they opened/sent the link is NOT data. If the system event has not arrived, say you do not see it yet and ask them to submit the form.
+- SMS LINK HARD RULE: registration SMS must use the template containing {{form_link}}; callback-number SMS must use the template containing {{form2_link}}. Never use the registration SMS for callback number collection.`;
 
       // Inject SMS catalog so the AI knows which named SMSes are available, when to use them, and what they say.
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
