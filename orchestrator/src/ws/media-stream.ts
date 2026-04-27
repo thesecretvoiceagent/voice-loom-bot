@@ -283,6 +283,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   };
 
+  let responseAudioDoneFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearResponseAudioDoneFallback = () => {
+    if (responseAudioDoneFallbackTimer) {
+      clearTimeout(responseAudioDoneFallbackTimer);
+      responseAudioDoneFallbackTimer = null;
+    }
+  };
+
   const normalizeTranscript = (txt: string) =>
     txt
       .toLowerCase()
@@ -351,6 +359,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseAudioDone = false;
     responseDoneReceived = false;
     clearMarkFallback();
+    clearResponseAudioDoneFallback();
   };
 
   const sendUserTurnResponseCreate = (source: string) => {
