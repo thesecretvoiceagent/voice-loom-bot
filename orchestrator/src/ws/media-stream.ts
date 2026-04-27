@@ -1546,21 +1546,43 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
           console.log(`[MediaStream] Stream started: streamSid=${streamSid} callId=${callId} agentId=${agentId} callSid=${callSid}`);
 
+          // Periodic diagnostic snapshot — proves end-to-end media flow.
+          diagnosticSnapshotTimer = setInterval(() => {
+            console.log(
+              `[Diag-Snapshot] callId=${callId} ` +
+              `inFrames=${twilioInboundFrames}(fwd=${twilioInboundFramesForwarded},dropG=${twilioInboundFramesDropGreeting},dropC=${twilioInboundFramesDropCooldown},dropAB=${twilioInboundFramesDropAntiBargein},postGreeting=${twilioInboundFramesAfterGreeting}) ` +
+              `vad{started=${speechStartedCount},stopped=${speechStoppedCount},committed=${bufferCommittedCount},transcripts=${userTranscriptCount}} ` +
+              `resp{created=${responseCreatedCount},done=${responseDoneCount},sent=${responseCreateSentCount},err=${responseErrorCount}} ` +
+              `audio{deltas=${assistantAudioDeltaCount},twilioOut=${twilioOutboundFrames},sendErr=${twilioOutboundSendErrors}} ` +
+              `state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},sessionCfg=${sessionConfigured},twilioState=${twilioWs.readyState},openaiState=${openaiWs?.readyState ?? "null"},cooldownLeftMs=${Math.max(0, inboundAudioCooldownUntil - Date.now())}}`
+            );
+          }, 5000);
+
           connectToOpenAI();
           break;
 
         case "media":
+          twilioInboundFrames += 1;
           // Don't forward audio to OpenAI during greeting (prevents VAD triggering)
           if (greetingInProgress) {
+            twilioInboundFramesDropGreeting += 1;
             break;
+          }
+          twilioInboundFramesAfterGreeting += 1;
+          if (!firstInboundAudioAfterGreetingLogged) {
+            firstInboundAudioAfterGreetingLogged = true;
+            const sinceGreeting = greetingCompletedAt ? Date.now() - greetingCompletedAt : -1;
+            console.log(`[Diag] FIRST inbound media frame after greeting (callId=${callId}) msSinceGreetingComplete=${sinceGreeting} totalSinceStart=${twilioInboundFrames}`);
           }
           // Short cooldown after AI speech finishes — prevents the model from hearing its
           // own just-played audio (echo loop) and re-triggering the same response.
           if (Date.now() < inboundAudioCooldownUntil) {
+            twilioInboundFramesDropCooldown += 1;
             break;
           }
           // Don't forward audio when anti-barge-in is active and AI is speaking
           if (antiBargeinEnabled && aiIsSpeaking) {
+            twilioInboundFramesDropAntiBargein += 1;
             break;
           }
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN && sessionConfigured) {
@@ -1568,6 +1590,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               type: "input_audio_buffer.append",
               audio: msg.media.payload,
             }));
+            twilioInboundFramesForwarded += 1;
+          } else if (twilioInboundFrames % 50 === 0) {
+            console.warn(`[Diag] Cannot forward inbound media: openaiState=${openaiWs?.readyState ?? "null"} sessionConfigured=${sessionConfigured} (callId=${callId})`);
           }
           break;
 
