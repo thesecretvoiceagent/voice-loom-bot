@@ -306,6 +306,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   };
 
+  const clearResponseCreateWatchdog = () => {
+    if (responseCreateWatchdogTimer) {
+      clearTimeout(responseCreateWatchdogTimer);
+      responseCreateWatchdogTimer = null;
+    }
+  };
+
+  const clearResponseAudioWatchdog = () => {
+    if (responseAudioWatchdogTimer) {
+      clearTimeout(responseAudioWatchdogTimer);
+      responseAudioWatchdogTimer = null;
+    }
+  };
+
   const normalizeTranscript = (txt: string) =>
     txt
       .toLowerCase()
