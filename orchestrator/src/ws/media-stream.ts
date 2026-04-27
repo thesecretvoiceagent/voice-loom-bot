@@ -485,9 +485,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const sessionPatch: any = {
       turn_detection: {
         type: "server_vad",
-        threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
-        prefix_padding_ms: 500,
-        silence_duration_ms: 900,   // Wait longer before considering speech ended
+        threshold: 0.6,             // Slightly less strict so quieter callers still trigger
+        prefix_padding_ms: 400,
+        silence_duration_ms: 700,   // Faster end-of-turn detection
+        create_response: true,      // CRITICAL: ensure OpenAI auto-creates assistant response on turn end
+        interrupt_response: true,   // Allow caller to barge in on assistant audio
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
