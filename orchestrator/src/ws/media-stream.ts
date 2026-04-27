@@ -283,6 +283,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   };
 
+  let responseAudioDoneFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearResponseAudioDoneFallback = () => {
+    if (responseAudioDoneFallbackTimer) {
+      clearTimeout(responseAudioDoneFallbackTimer);
+      responseAudioDoneFallbackTimer = null;
+    }
+  };
+
   const normalizeTranscript = (txt: string) =>
     txt
       .toLowerCase()
@@ -351,6 +359,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseAudioDone = false;
     responseDoneReceived = false;
     clearMarkFallback();
+    clearResponseAudioDoneFallback();
   };
 
   const sendUserTurnResponseCreate = (source: string) => {
@@ -438,18 +447,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
-    startInboundAudioCooldown(recoveryCooldownMs, source);
 
     if (greetingInProgress) {
       greetingInProgress = false;
-      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after cooldown (callId=${callId}, responseId=${completedResponseId})`);
+      const greetingVadDelayMs = source === "twilio.mark" ? 0 : Math.min(recoveryCooldownMs, 300);
+      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after ${greetingVadDelayMs}ms (callId=${callId}, responseId=${completedResponseId})`);
       clearTurnDetectionEnableTimer();
-      turnDetectionEnableTimer = setTimeout(() => {
-        turnDetectionEnableTimer = null;
+      if (greetingVadDelayMs === 0) {
         enableTurnDetection();
-      }, recoveryCooldownMs);
+      } else {
+        startInboundAudioCooldown(greetingVadDelayMs, source);
+        turnDetectionEnableTimer = setTimeout(() => {
+          turnDetectionEnableTimer = null;
+          enableTurnDetection();
+        }, greetingVadDelayMs);
+      }
       return;
     }
+
+    startInboundAudioCooldown(recoveryCooldownMs, source);
 
     console.log(`[MediaStream] AI playback complete via ${source} (callId=${callId}, responseId=${completedResponseId})`);
   };
@@ -1195,6 +1211,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.created":
             clearPendingUserSpeechResponseTimer();
+            clearResponseAudioDoneFallback();
             activeResponseId = event.response?.id || null;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
@@ -1216,6 +1233,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             responseHasAudio = true;
             pendingUserResponseRetry = false;
+            clearResponseAudioDoneFallback();
+            responseAudioDoneFallbackTimer = setTimeout(() => {
+              if (!activeResponseId || responseAudioDone || !responseDoneReceived) return;
+              console.warn(`[MediaStream] response.audio.done missing after audio; force-completing audio state (callId=${callId}, responseId=${activeResponseId})`);
+              responseAudioDone = true;
+              maybeCompleteAiTurn("response.audio.done-fallback");
+            }, 1200);
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
               // OpenAI sends large audio chunks (~200ms). Twilio Media Streams plays smoothest
               // when each `media` event carries ~20ms of ulaw audio (160 bytes @ 8kHz).
@@ -1452,6 +1476,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
 
+            clearResponseAudioDoneFallback();
+
             responseAudioDone = true;
 
             if (!responseHasAudio) {
@@ -1504,6 +1530,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(
               `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens}`
             );
+            if (responseHasAudio && !responseAudioDone) {
+              clearResponseAudioDoneFallback();
+              responseAudioDoneFallbackTimer = setTimeout(() => {
+                if (!activeResponseId || responseAudioDone) return;
+                console.warn(`[MediaStream] response.done arrived without response.audio.done; force-completing audio state (callId=${callId}, responseId=${activeResponseId})`);
+                responseAudioDone = true;
+                maybeCompleteAiTurn("response.done-audio-fallback");
+              }, 1200);
+            }
             if (!responseHasAudio && pendingUserResponseRetry && !greetingInProgress) {
               pendingUserResponseRetry = false;
               console.warn(`[MediaStream] Post-user response completed with no audio; retrying once with tools disabled (callId=${callId}, responseId=${responseId})`);
@@ -1578,6 +1613,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         initialResponseFallbackTimer = null;
       }
       clearMarkFallback();
+      clearResponseAudioDoneFallback();
       clearTurnDetectionEnableTimer();
       console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
       openaiWs = null;
@@ -1614,6 +1650,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
     clearPendingUserSpeechResponseTimer();
+    clearResponseAudioDoneFallback();
 
     // Stop listening for inbound SMS replies for this call
     if (inboundSmsChannel) {
