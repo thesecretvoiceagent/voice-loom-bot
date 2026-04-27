@@ -332,47 +332,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const sendResponseCreate = (reason: string, response?: Record<string, unknown>) => {
-    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
+      console.warn(`[Diag] response.create skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`);
+      return false;
+    }
+    if (activeResponseId) {
+      console.warn(`[Diag] response.create skipped reason=${reason} skip=active_response activeResponseBefore=${activeResponseId} (callId=${callId})`);
+      return false;
+    }
     responseCreateSentCount += 1;
-    console.log(`[Diag] response.create sent #${responseCreateSentCount} reason=${reason} (callId=${callId})`);
+    console.log(`[Diag] response.create sent #${responseCreateSentCount} reason=${reason} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`);
     openaiWs.send(JSON.stringify(response ? { type: "response.create", response } : { type: "response.create" }));
     return true;
-  };
-
-  const injectTranscriptFallbackIfNeeded = (reason: string) => {
-    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-    if (!reason.includes("transcript") && !reason.includes("audio-commit") && !reason.includes("speech-stopped")) return;
-
-    const transcript = (pendingUserResponseTranscript || "").trim();
-    if (transcript) {
-      const normalized = normalizeTranscript(transcript);
-      if (normalized && normalized !== lastInjectedUserTranscript) {
-        lastInjectedUserTranscript = normalized;
-        console.warn(`[Diag] Injecting transcript fallback as user text before response.create reason=${reason} text="${transcript.slice(0, 120)}" (callId=${callId})`);
-        openaiWs.send(JSON.stringify({
-          type: "conversation.item.create",
-          item: {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: transcript }],
-          },
-        }));
-      }
-      return;
-    }
-
-    console.warn(`[Diag] Caller speech detected but transcript empty; injecting repeat-request fallback before response.create reason=${reason} (callId=${callId})`);
-    openaiWs.send(JSON.stringify({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "system",
-        content: [{
-          type: "input_text",
-          text: "[SYSTEM EVENT: caller_speech_unclear] The caller just spoke, but the speech-to-text result was empty or unclear. Do not mention this system tag. Briefly apologize in the caller's language and ask them to repeat what happened.",
-        }],
-      },
-    }));
   };
 
   const scheduleUserResponseCreate = (reason: string, delayMs: number, transcript?: string) => {
