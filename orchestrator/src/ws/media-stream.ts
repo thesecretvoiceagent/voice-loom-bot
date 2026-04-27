@@ -485,9 +485,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const sessionPatch: any = {
       turn_detection: {
         type: "server_vad",
-        threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
-        prefix_padding_ms: 500,
-        silence_duration_ms: 900,   // Wait longer before considering speech ended
+        threshold: 0.6,             // Slightly less strict so quieter callers still trigger
+        prefix_padding_ms: 400,
+        silence_duration_ms: 700,   // Faster end-of-turn detection
+        create_response: true,      // CRITICAL: ensure OpenAI auto-creates assistant response on turn end
+        interrupt_response: true,   // Allow caller to barge in on assistant audio
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
@@ -530,7 +532,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
 
     const completedResponseId = activeResponseId;
-    const recoveryCooldownMs = pendingRecoveryCooldownMs || 1200;
+    // After the GREETING specifically, use a tiny cooldown so we don't drop the
+    // caller's immediate reply ("tere" / "mul oli avarii"). Echo risk is minimal
+    // because the greeting just finished playing and Twilio's mark confirmed it.
+    // After normal AI turns we keep the longer cooldown to avoid echo loops.
+    const defaultCooldownMs = greetingInProgress ? 150 : 1200;
+    const recoveryCooldownMs = pendingRecoveryCooldownMs || defaultCooldownMs;
     pendingRecoveryCooldownMs = 0;
 
     resetResponseState();
@@ -545,7 +552,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (greetingInProgress) {
       greetingInProgress = false;
       greetingCompletedAt = Date.now();
-      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after cooldown (callId=${callId}, responseId=${completedResponseId})`);
+      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after ${recoveryCooldownMs}ms cooldown (callId=${callId}, responseId=${completedResponseId})`);
       clearTurnDetectionEnableTimer();
       turnDetectionEnableTimer = setTimeout(() => {
         turnDetectionEnableTimer = null;
@@ -1804,6 +1811,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           // own just-played audio (echo loop) and re-triggering the same response.
           if (Date.now() < inboundAudioCooldownUntil) {
             twilioInboundFramesDropCooldown += 1;
+            if (twilioInboundFramesDropCooldown === 1 || twilioInboundFramesDropCooldown % 25 === 0) {
+              console.warn(`[Diag-Drop] caller frame dropped during cooldown count=${twilioInboundFramesDropCooldown} cooldownLeftMs=${inboundAudioCooldownUntil - Date.now()} (callId=${callId})`);
+            }
             break;
           }
           // Don't forward audio when anti-barge-in is active and AI is speaking
