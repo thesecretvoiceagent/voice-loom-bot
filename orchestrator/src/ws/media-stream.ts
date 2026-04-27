@@ -321,6 +321,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return true;
   };
 
+  const scheduleUserResponseCreate = (reason: string, delayMs: number) => {
+    if (greetingInProgress) return;
+    clearPendingUserResponseTimer();
+    pendingUserResponseTimer = setTimeout(() => {
+      pendingUserResponseTimer = null;
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId || greetingInProgress) return;
+      console.warn(`[Diag] No assistant response after ${reason}; forcing response.create (callId=${callId})`);
+      sendResponseCreate(reason);
+    }, delayMs);
+  };
+
   const normalizeTranscript = (txt: string) =>
     txt
       .toLowerCase()
@@ -355,7 +366,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
-        create_response: true,      // Server VAD must create the assistant turn after caller speech
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
@@ -1167,15 +1177,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
-            if (!greetingInProgress && !activeResponseId) {
-              clearPendingUserResponseTimer();
-              pendingUserResponseTimer = setTimeout(() => {
-                pendingUserResponseTimer = null;
-                if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId || greetingInProgress) return;
-                console.warn(`[Diag] No assistant response after user transcript; forcing response.create (callId=${callId})`);
-                sendResponseCreate("transcript-fallback");
-              }, 1200);
-            }
+            scheduleUserResponseCreate("user-transcript", 250);
             break;
 
           case "response.function_call_arguments.done": {
@@ -1393,33 +1395,23 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
               break;
             }
-            console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId}, responseId=${activeResponseId})`);
-            resetResponseState();
-            ignoreAudioUntilNextResponse = true;
+            console.log(`[MediaStream] Speech started (callId=${callId}, responseId=${activeResponseId})`);
             aiIsSpeaking = false;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
             }
-            openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
             break;
 
           case "input_audio_buffer.speech_stopped":
             speechStoppedCount += 1;
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
+            scheduleUserResponseCreate("speech-stopped", 1100);
             break;
 
           case "input_audio_buffer.committed":
             bufferCommittedCount += 1;
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
-            if (!greetingInProgress) {
-              clearPendingUserResponseTimer();
-              pendingUserResponseTimer = setTimeout(() => {
-                pendingUserResponseTimer = null;
-                if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId || greetingInProgress) return;
-                console.warn(`[Diag] No assistant response after audio commit; forcing response.create (callId=${callId})`);
-                sendResponseCreate("commit-fallback");
-              }, 1500);
-            }
+            scheduleUserResponseCreate("audio-commit", 250);
             break;
 
           case "response.error":
