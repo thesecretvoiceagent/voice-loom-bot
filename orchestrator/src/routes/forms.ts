@@ -88,6 +88,45 @@ formsRouter.options("/iizi-fallback", (_req, res) => {
   res.sendStatus(204);
 });
 
+formsRouter.get("/reg", (req: Request, res: Response) => {
+  const { caseId, token } = extractSignedParams(req);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(caseId) || !token) {
+    return res.status(400).type("html").send(`<!doctype html><html lang="et"><body><h1>Link on vigane</h1><p>Avage palun SMS-ist saadud link uuesti.</p></body></html>`);
+  }
+  return res.type("html").send(renderRegForm(caseId, token));
+});
+
+formsRouter.post("/reg", async (req: Request, res: Response) => {
+  const correlationId = crypto.randomUUID();
+  const caseId = typeof req.body?.caseId === "string" ? req.body.caseId.trim() : "";
+  const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+  const regNo = normalizeRegistration(typeof req.body?.reg_no === "string" ? req.body.reg_no : "");
+
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(caseId) || !token) {
+    return res.status(400).type("html").send(renderRegForm(caseId, token, `<div class="err">Link on vigane.</div>`));
+  }
+  if (!REG_NO_RE.test(regNo)) {
+    return res.status(400).type("html").send(renderRegForm(caseId, token, `<div class="err">Registreerimisnumber ei sobi.</div>`));
+  }
+  if (!verifyLocationToken(caseId, token)) {
+    return res.status(403).type("html").send(renderRegForm(caseId, token, `<div class="err">Link ei kehti. Avage palun SMS-ist saadud link uuesti.</div>`));
+  }
+
+  try {
+    await updateCall(caseId, {
+      form_registration_number: regNo,
+      form_submitted_at: new Date().toISOString(),
+      form_submission_source: "orchestrator_reg_form",
+      form_raw: { mode: "reg", reg_no: regNo, correlation_id: correlationId },
+    });
+  } catch (err) {
+    console.error(`[${correlationId}] Failed to persist registration form submission:`, err);
+    return res.status(500).type("html").send(renderRegForm(caseId, token, `<div class="err">Salvestamine ebaõnnestus. Palun proovige uuesti.</div>`));
+  }
+
+  return res.type("html").send(`<!doctype html><html lang="et"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Saadetud</title><style>body{margin:0;background:#050308;color:#f4f0f6;font-family:Arial,sans-serif}.wrap{padding:24px 20px;max-width:520px}.ok{color:#91f3c3;font-weight:800}.muted{color:#9c94a8}</style></head><body><main class="wrap"><h1>Andmed saadetud</h1><p class="ok">Reg: ${esc(regNo)}</p><p class="muted">AI assistent saab selle vestluses kätte.</p></main></body></html>`);
+});
+
 formsRouter.post("/iizi-fallback", async (req: Request<{}, {}, IiziFallbackBody>, res: Response) => {
   res.set("Access-Control-Allow-Origin", "*");
 
