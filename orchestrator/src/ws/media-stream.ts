@@ -389,7 +389,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
-        create_response: false,     // We trigger responses ourselves after cooldown/mark state is safe
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
