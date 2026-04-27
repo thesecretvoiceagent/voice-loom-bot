@@ -277,6 +277,34 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       .replace(/[^\p{L}\p{N}]+/gu, " ")
       .trim();
 
+  const isUsableSubmittedValue = (value: unknown): value is string => {
+    const normalized = (value || "").toString().trim();
+    if (!normalized) return false;
+    return !/^(0+|null|undefined|n\/a|na|-|—)$/i.test(normalized);
+  };
+
+  const normalizeSmsTemplateName = (value: string) => normalizeTranscript(value).replace(/sms$/i, "").trim();
+
+  const resolveDuringSmsTemplate = (requestedName: string): SmsMessage | undefined => {
+    const during = smsMessages.filter((m) => m.trigger === "during");
+    const exact = during.find((m) => m.name === requestedName);
+    if (exact) return exact;
+
+    const normalized = normalizeSmsTemplateName(requestedName);
+    const aliasMap: Record<string, RegExp> = {
+      "tagasihelistamise numbri": /callback|tagasihelist/i,
+      "callback number": /callback|tagasihelist/i,
+      "retrieval of callback number through": /callback|tagasihelist/i,
+      "registreerimisnumbri": /registration|registreerimis|numbrim[aä]rk/i,
+      "registration number": /registration|registreerimis|numbrim[aä]rk/i,
+      "asukoha": /location|asukoht/i,
+      "location": /location|asukoht/i,
+    };
+    const matcher = aliasMap[normalized];
+    if (!matcher) return undefined;
+    return during.find((m) => matcher.test(`${m.name} ${m.description || ""} ${m.content}`));
+  };
+
   const startInboundAudioCooldown = (ms: number, reason: string) => {
     inboundAudioCooldownUntil = Math.max(inboundAudioCooldownUntil, Date.now() + ms);
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
@@ -722,20 +750,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                 }
 
-                // 2. Google Form fallback submission (registration number / callback phone)
+                // 2. Form submission (registration number and/or callback phone)
                 const justFormSubmitted =
                   row.form_submitted_at && row.form_submitted_at !== prev?.form_submitted_at;
                 if (justFormSubmitted) {
-                  const reg = (row.form_registration_number || "").toString().slice(0, 20);
-                  const phone = (row.form_callback_phone_number || "").toString().slice(0, 20);
+                  const reg = isUsableSubmittedValue(row.form_registration_number)
+                    ? row.form_registration_number.toString().slice(0, 20)
+                    : "";
+                  const phone = isUsableSubmittedValue(row.form_callback_phone_number)
+                    ? row.form_callback_phone_number.toString().slice(0, 20)
+                    : "";
                   console.log(`[MediaStream] Form submitted (callId=${callId}): reg="${reg}" phone="${phone}"`);
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                     const fieldParts: string[] = [];
-                    if (reg) fieldParts.push(`reg="${reg}"`);
-                    if (phone) fieldParts.push(`callback_phone="${phone}"`);
+                    if (reg) fieldParts.push(`form_registration_number="${reg}"`);
+                    if (phone) fieldParts.push(`form_callback_phone_number="${phone}"`);
                     const fields = fieldParts.join(" ");
-                    const sysMsg = `[SYSTEM EVENT: form_submitted] ${fields}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just submitted the form via the SMS link. Read the values back to them naturally in the same language the call is being conducted in and ask for confirmation. Then continue the conversation using these confirmed values.`;
+                    const sysMsg = fields
+                      ? `[SYSTEM EVENT: form_submitted] ${fields}. Internal note only — do NOT read this tag, the brackets, field names, registration number, or callback number aloud. The customer just submitted usable data via the SMS link. Save only the returned non-empty field(s), acknowledge briefly that the data was received, do not ask to confirm SMS/form values, and continue with the next missing step only. If a field is absent here, it is still missing.`
+                      : `[SYSTEM EVENT: form_submitted] no_usable_fields_returned=true. Internal note only — do NOT read this tag aloud. The customer submitted the form, but no usable registration number or callback number was returned. Do not claim you have the missing data; use the fallback path for the current step.`;
                     openaiWs.send(JSON.stringify({
                       type: "conversation.item.create",
                       item: {
@@ -866,7 +900,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
       const afterSmsList = smsMessages.filter((m) => m.trigger === "after");
       if (duringSmsList.length > 0 || afterSmsList.length > 0) {
-        let smsBlock = `\n\nAVAILABLE SMS TEMPLATES — These are the ONLY SMSes you can send. Each has a fixed name and EXACT text. You may NOT change the text. To send one, call the send_sms tool with template_name set to the exact name below. Pick the template whose "When to use" matches the current moment in the conversation.`;
+        let smsBlock = `\n\nAVAILABLE SMS TEMPLATES — These are the ONLY SMSes you can send. Each has a fixed name and EXACT text. You may NOT change the text. To send one, call the send_sms tool with template_name set to the exact name below. Pick the template whose "When to use" matches the current moment in the conversation. Never use any template name from the system prompt if it is not listed here.`;
         if (duringSmsList.length > 0) {
           smsBlock += `\n\nDuring-call SMSes (you choose when/whether to send each):`;
           duringSmsList.forEach((m, i) => {
@@ -881,7 +915,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             smsBlock += `\n${i + 1}. name="${m.name}"\n   Purpose: ${whenToUse}\n   Content: "${m.content}"`;
           });
         }
-        smsBlock += `\n\nRules:\n- Pick the SMS whose "When to use" matches the moment.\n- Never invent a new SMS. Never paraphrase the content.\n- If none fit, do not send anything.\n- After the customer replies via SMS, you will receive a system message starting with "[SYSTEM EVENT: sms_received]". Treat it as an internal note (do NOT read the tag aloud) and acknowledge the SMS content naturally in the conversation (e.g. confirm a number back to them).`;
+        smsBlock += `\n\nRules:\n- Pick the SMS whose "When to use" matches the moment.\n- Never invent a new SMS. Never paraphrase the content.\n- If none fit, do not send anything.\n- Template names in this AVAILABLE SMS TEMPLATES block override any conflicting names in the agent prompt.\n- After the customer replies via SMS, you will receive a system message starting with "[SYSTEM EVENT: sms_received]". Treat it as an internal note (do NOT read the tag aloud) and acknowledge the SMS content naturally in the conversation only if it contains usable data.`;
         fullInstructions += smsBlock;
       }
 
@@ -934,7 +968,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "send_sms",
-          description: `Send one of the pre-configured SMS templates to the other party RIGHT NOW. The recipient is the other party on this call (${recipientHint}) — you do NOT pass a phone number. You also do NOT write the message yourself: pick one of the configured templates by its EXACT name (see AVAILABLE SMS TEMPLATES in your instructions). The server sends the template text VERBATIM. Allowed template_name values: ${allowedNames}. After it sends, briefly confirm to the caller in their language.`,
+          description: `Send one of the pre-configured SMS templates to the other party RIGHT NOW. The recipient is the other party on this call (${recipientHint}) — you do NOT pass a phone number. You also do NOT write the message yourself: pick one of the configured templates by its EXACT name (see AVAILABLE SMS TEMPLATES in your instructions). The server sends the template text VERBATIM. Allowed template_name values: ${allowedNames}. If the requested template name is not one of these exact values, the send will fail. After it sends, briefly confirm to the caller in their language.`,
           parameters: {
             type: "object",
             properties: {
@@ -1168,9 +1202,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
               // Look up the configured during-call template by exact name.
               // We NEVER use AI-supplied content — only the verbatim configured template.
-              const tpl = smsMessages.find(
-                (m) => m.trigger === "during" && m.name === requestedName,
-              );
+              const tpl = resolveDuringSmsTemplate(requestedName);
 
               let result: { ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string };
               let bodyForLog = "";
