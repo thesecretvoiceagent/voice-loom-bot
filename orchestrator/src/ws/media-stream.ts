@@ -1143,6 +1143,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(`[Diag] OpenAI session.created (callId=${callId}) model=${config.openai.realtimeModel}`);
             break;
 
+          case "conversation.item.created":
+            conversationItemCreatedCount += 1;
+            console.log(`[Diag] conversation.item.created #${conversationItemCreatedCount} itemType=${event.item?.type || "?"} role=${event.item?.role || "?"} (callId=${callId})`);
+            break;
+
           case "session.updated":
             openaiSessionUpdatedAt = Date.now();
             if (!sessionConfigured) {
