@@ -543,10 +543,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     };
 
     const buildRegistrationOnlyLink = (caseIdValue: string, tokenValue: string): string => {
-      const edgeBase = config.supabase.url
-        ? `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/iizi-reg-form`
+      const formBase = config.publicBaseUrl
+        ? `${config.publicBaseUrl.replace(/\/+$/, "")}/api/forms/reg`
         : `${(locationPageBase || LOVABLE_FALLBACK).replace(/\/+$/, "")}/form`;
-      return `${edgeBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${encodeURIComponent(tokenValue)}`;
+      return `${formBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${encodeURIComponent(tokenValue)}`;
     };
 
     const normalizeRegistrationSmsLink = (text: string): string => {
