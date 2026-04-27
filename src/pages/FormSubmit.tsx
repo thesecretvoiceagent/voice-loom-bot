@@ -36,11 +36,11 @@ export default function FormSubmit() {
     const reg = regNo.trim();
     const ph = phone.trim();
 
-    if (!reg) {
+    if (showReg && !reg) {
       setSubmit({ kind: "error", message: "Sisesta auto registreerimisnumber." });
       return;
     }
-    if (!ph) {
+    if (showPhone && !ph) {
       setSubmit({ kind: "error", message: "Sisesta tagasihelistamise number." });
       return;
     }
@@ -56,13 +56,12 @@ export default function FormSubmit() {
     setSubmit({ kind: "loading" });
 
     try {
+      const body: Record<string, unknown> = { caseId, token };
+      if (showReg) body.reg_no = reg;
+      if (showPhone) body.callback_phone_number = ph;
+
       const { data, error } = await supabase.functions.invoke("form-submit", {
-        body: {
-          caseId,
-          token,
-          reg_no: reg,
-          callback_phone_number: ph,
-        },
+        body,
       });
 
       if (error) {
