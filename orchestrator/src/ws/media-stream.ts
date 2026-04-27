@@ -447,18 +447,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
-    startInboundAudioCooldown(recoveryCooldownMs, source);
 
     if (greetingInProgress) {
       greetingInProgress = false;
-      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after cooldown (callId=${callId}, responseId=${completedResponseId})`);
+      const greetingVadDelayMs = source === "twilio.mark" ? 0 : Math.min(recoveryCooldownMs, 300);
+      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after ${greetingVadDelayMs}ms (callId=${callId}, responseId=${completedResponseId})`);
       clearTurnDetectionEnableTimer();
-      turnDetectionEnableTimer = setTimeout(() => {
-        turnDetectionEnableTimer = null;
+      if (greetingVadDelayMs === 0) {
         enableTurnDetection();
-      }, recoveryCooldownMs);
+      } else {
+        startInboundAudioCooldown(greetingVadDelayMs, source);
+        turnDetectionEnableTimer = setTimeout(() => {
+          turnDetectionEnableTimer = null;
+          enableTurnDetection();
+        }, greetingVadDelayMs);
+      }
       return;
     }
+
+    startInboundAudioCooldown(recoveryCooldownMs, source);
 
     console.log(`[MediaStream] AI playback complete via ${source} (callId=${callId}, responseId=${completedResponseId})`);
   };
