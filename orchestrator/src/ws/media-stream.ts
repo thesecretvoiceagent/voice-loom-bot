@@ -373,7 +373,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.warn(`[MediaStream] Creating AI response after user speech (${source}) (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"})`);
     pendingUserResponseRetry = true;
     const response: Record<string, unknown> = {
-      instructions: "Follow the session instructions and respond out loud to the caller's latest message. Do not stay silent.",
+      modalities: ["text", "audio"],
     };
     if (postGreetingAssistantTurnCount === 0) {
       response.tool_choice = "none";
