@@ -872,6 +872,7 @@ export default function CreateAgent() {
                               const linkMatch = sms.content.match(/\{\{(location_link|form1_link|form_link|form2_link)\}\}/);
                               if (!linkMatch) return null;
                               const token = linkMatch[1];
+                              const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
                               const path = token === "location_link" ? "/location" : "/form";
                               const modeQuery =
                                 token === "form1_link" || token === "form_link"
@@ -879,7 +880,9 @@ export default function CreateAgent() {
                                   : token === "form2_link"
                                     ? "&mode=phone"
                                     : "";
-                              const previewUrl = `${path}?caseId=${crypto.randomUUID()}&token=preview${modeQuery}`;
+                              const previewUrl = token === "form1_link" || token === "form_link"
+                                ? `https://${projectId}.supabase.co/functions/v1/iizi-reg-form?caseId=${crypto.randomUUID()}&token=preview`
+                                : `${path}?caseId=${crypto.randomUUID()}&token=preview${modeQuery}`;
                               return (
                                 <Button
                                   type="button"
