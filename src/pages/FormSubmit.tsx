@@ -14,6 +14,11 @@ export default function FormSubmit() {
   const [params] = useSearchParams();
   const caseId = params.get("caseId") || "";
   const token = params.get("token") || "";
+  const modeParam = (params.get("mode") || "").toLowerCase();
+  const mode: "both" | "reg" | "phone" =
+    modeParam === "reg" ? "reg" : modeParam === "phone" ? "phone" : "both";
+  const showReg = mode === "both" || mode === "reg";
+  const showPhone = mode === "both" || mode === "phone";
 
   const [regNo, setRegNo] = useState("");
   const [phone, setPhone] = useState("");
@@ -31,11 +36,11 @@ export default function FormSubmit() {
     const reg = regNo.trim();
     const ph = phone.trim();
 
-    if (!reg) {
+    if (showReg && !reg) {
       setSubmit({ kind: "error", message: "Sisesta auto registreerimisnumber." });
       return;
     }
-    if (!ph) {
+    if (showPhone && !ph) {
       setSubmit({ kind: "error", message: "Sisesta tagasihelistamise number." });
       return;
     }
@@ -51,13 +56,12 @@ export default function FormSubmit() {
     setSubmit({ kind: "loading" });
 
     try {
+      const body: Record<string, unknown> = { caseId, token };
+      if (showReg) body.reg_no = reg;
+      if (showPhone) body.callback_phone_number = ph;
+
       const { data, error } = await supabase.functions.invoke("form-submit", {
-        body: {
-          caseId,
-          token,
-          reg_no: reg,
-          callback_phone_number: ph,
-        },
+        body,
       });
 
       if (error) {
@@ -110,44 +114,47 @@ export default function FormSubmit() {
         onSubmit={handleSubmit}
         className="flex-1 px-5 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-4"
       >
-        <div className="space-y-1.5">
-          <label htmlFor="reg" className="text-sm font-medium text-foreground">
-            Auto registreerimisnumber
-          </label>
-          <input
-            id="reg"
-            type="text"
-            inputMode="text"
-            autoCapitalize="characters"
-            autoCorrect="off"
-            spellCheck={false}
-            value={regNo}
-            onChange={(e) => setRegNo(e.target.value.toUpperCase())}
-            placeholder="nt 484DLC"
-            maxLength={12}
-            disabled={disabled}
-            className="w-full h-12 px-3 rounded-md bg-muted border border-border text-base text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary tracking-wider font-mono"
-          />
-        </div>
+        {showReg && (
+          <div className="space-y-1.5">
+            <label htmlFor="reg" className="text-sm font-medium text-foreground">
+              Auto registreerimisnumber
+            </label>
+            <input
+              id="reg"
+              type="text"
+              inputMode="text"
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
+              value={regNo}
+              onChange={(e) => setRegNo(e.target.value.toUpperCase())}
+              placeholder="nt 484DLC"
+              maxLength={12}
+              disabled={disabled}
+              className="w-full h-12 px-3 rounded-md bg-muted border border-border text-base text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary tracking-wider font-mono"
+            />
+          </div>
+        )}
 
-        <div className="space-y-1.5">
-          <label htmlFor="phone" className="text-sm font-medium text-foreground">
-            Tagasihelistamise number
-          </label>
-          <input
-            id="phone"
-            type="tel"
-            inputMode="tel"
-            autoComplete="tel"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="nt +372 5555 5555"
-            maxLength={20}
-            disabled={disabled}
-            className="w-full h-12 px-3 rounded-md bg-muted border border-border text-base text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-          />
-        </div>
-
+        {showPhone && (
+          <div className="space-y-1.5">
+            <label htmlFor="phone" className="text-sm font-medium text-foreground">
+              Tagasihelistamise number
+            </label>
+            <input
+              id="phone"
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="nt +372 5555 5555"
+              maxLength={20}
+              disabled={disabled}
+              className="w-full h-12 px-3 rounded-md bg-muted border border-border text-base text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+            />
+          </div>
+        )}
         {token === "preview" && (
           <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
             Eelvaate link näitab vormi, aga ei salvesta. Päris test vajab allkirjastatud linki.
@@ -170,9 +177,17 @@ export default function FormSubmit() {
           >
             <div className="font-semibold">Andmed saadetud</div>
             <div className="text-sm opacity-90">
-              Reg: <span className="font-mono">{submit.reg}</span>
-              <br />
-              Tel: <span className="font-mono">{submit.phone}</span>
+              {showReg && (
+                <>
+                  Reg: <span className="font-mono">{submit.reg}</span>
+                  {showPhone && <br />}
+                </>
+              )}
+              {showPhone && (
+                <>
+                  Tel: <span className="font-mono">{submit.phone}</span>
+                </>
+              )}
             </div>
             <div className="text-xs opacity-75">
               AI assistent loeb need sulle vestluses tagasi.
@@ -181,7 +196,11 @@ export default function FormSubmit() {
         ) : (
           <button
             type="submit"
-            disabled={disabled || !regNo.trim() || !phone.trim()}
+            disabled={
+              disabled ||
+              (showReg && !regNo.trim()) ||
+              (showPhone && !phone.trim())
+            }
             className="w-full h-14 rounded-lg bg-primary text-primary-foreground text-lg font-semibold shadow-md active:scale-[0.99] transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {submit.kind === "loading" ? "Saadan…" : "Saada"}
