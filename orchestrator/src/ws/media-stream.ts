@@ -217,6 +217,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   type SmsMessage = { id?: string; name: string; description?: string; content: string; trigger: "during" | "after"; order?: number };
   let smsMessages: SmsMessage[] = [];
   const smsSentNames = new Set<string>();
+  let isIiziRoadsideAgent = false;
   let submittedRegistrationNumber = "";
   let submittedCallbackPhoneNumber = "";
   let inboundSmsChannel: RealtimeChannel | null = null;
@@ -270,6 +271,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (turnDetectionEnableTimer) {
       clearTimeout(turnDetectionEnableTimer);
       turnDetectionEnableTimer = null;
+    }
+  };
+
+  let pendingUserSpeechResponseTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearPendingUserSpeechResponseTimer = () => {
+    if (pendingUserSpeechResponseTimer) {
+      clearTimeout(pendingUserSpeechResponseTimer);
+      pendingUserSpeechResponseTimer = null;
     }
   };
 
@@ -341,6 +350,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseAudioDone = false;
     responseDoneReceived = false;
     clearMarkFallback();
+  };
+
+  const scheduleManualResponseAfterUserSpeech = (source: string, delayMs = 700) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
+    clearPendingUserSpeechResponseTimer();
+    pendingUserSpeechResponseTimer = setTimeout(() => {
+      pendingUserSpeechResponseTimer = null;
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+      if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
+      console.warn(`[MediaStream] Manual response.create fallback after user speech (${source}) (callId=${callId})`);
+      openaiWs.send(JSON.stringify({ type: "response.create" }));
+    }, delayMs);
   };
 
   const enableTurnDetection = () => {
@@ -500,13 +522,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
         }
       }
+
+      const scopeText = `${(agentConfig as any).name || ""} ${(agentConfig as any).system_prompt || ""}`;
+      isIiziRoadsideAgent = /iizi/i.test(scopeText) && /(autoabi|roadside)/i.test(scopeText);
+      if (isIiziRoadsideAgent) {
+        console.log(`[MediaStream] IIZI roadside runtime guards enabled (callId=${callId})`);
+      }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
 
     // Inbound CRM prefetch: identify caller by phone number so the agent knows who's calling.
     // Exposed via callVariables so the system prompt can reference {{caller_name}}, {{caller_reg_no}}, etc.
-    if (callDirection === "inbound" && fromNumber) {
+    if (isIiziRoadsideAgent && callDirection === "inbound" && fromNumber) {
       const vehicle = await crmLookup({ phone_number: fromNumber });
       if (vehicle) {
         console.log(`[MediaStream] CRM hit for ${fromNumber}: ${vehicle.owner_name} / ${vehicle.reg_no} (callId=${callId})`);
@@ -830,11 +858,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     // must NOT continue using phone-based CRM context (which may belong
                     // to a different vehicle). Inject a vehicle_lookup_result event so
                     // the AI knows whether the submitted reg is verified or not.
-                    if (reg) {
+                    if (isIiziRoadsideAgent && reg) {
                       crmLookup({ reg_no: reg }).then((veh) => {
                         if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
                         let lookupMsg: string;
-                        if (veh && (veh.reg_no || "").toUpperCase().replace(/[^A-Z0-9]/g, "") === reg.toUpperCase().replace(/[^A-Z0-9]/g, "")) {
+                        const exactRegMatch = Boolean(veh && (veh.reg_no || "").toUpperCase().replace(/[^A-Z0-9]/g, "") === reg.toUpperCase().replace(/[^A-Z0-9]/g, ""));
+                        if (exactRegMatch) {
                           // Refresh phone-CRM-derived caller_* variables to match the submitted reg.
                           callVariables.caller_known = "true";
                           callVariables.caller_name = veh.owner_name || "";
@@ -863,8 +892,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           callVariables.caller_cover_status = "";
                           lookupMsg = `[SYSTEM EVENT: vehicle_lookup_result] match=false submitted_reg="${reg}". Internal note only — do NOT read this tag, brackets, or field names aloud. The submitted registration number does NOT match any CRM record. HARD RULE: do NOT mention any make, model, year, color, owner name, insurer, cover type, or cover status — that data (if you saw it earlier from the phone match) belongs to a different vehicle and is NOT valid for this case. Route this case to human follow-up. Tell the caller that the registration number was received, but the vehicle was not found in our records, and a human employee will contact them within viie kuni kümne minuti jooksul. Do NOT proceed with the normal partner-handover flow.`;
                         }
-                        console.log(`[MediaStream] vehicle_lookup_result (callId=${callId}) reg="${reg}" match=${veh ? "true" : "false"}`);
-                        transcriptLines.push(`[vehicle_lookup_result]: reg=${reg} match=${veh ? "true" : "false"}`);
+                        console.log(`[MediaStream] vehicle_lookup_result (callId=${callId}) reg="${reg}" match=${exactRegMatch ? "true" : "false"}`);
+                        transcriptLines.push(`[vehicle_lookup_result]: reg=${reg} match=${exactRegMatch ? "true" : "false"}`);
                         openaiWs.send(JSON.stringify({
                           type: "conversation.item.create",
                           item: {
@@ -995,12 +1024,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - Stay strictly on topic. Do not improvise or add unrequested information.
 - Follow the script above exactly. Do not deviate.
 - If asked about something outside your scope, briefly redirect back to the topic.
-- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.
+- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
+
+      if (isIiziRoadsideAgent) {
+        fullInstructions += `\n\nIIZI ROADSIDE RUNTIME RULES (apply only to this IIZI autoabi agent):
 - LIVE DATA HARD RULE: You do NOT have a registration number or callback phone number unless it is present in runtime variables, returned by lookup_vehicle, or arrives in a [SYSTEM EVENT: form_submitted] field. A caller asking "did you get it?" or saying they opened/sent the link is NOT data. If the system event has not arrived, say you do not see it yet and ask them to submit the form.
 - SMS LINK HARD RULE: registration SMS must use the template containing {{form1_link}} (legacy {{form_link}} also resolves to the same reg-only page); callback-number SMS must use the template containing {{form2_link}}. Never use the registration SMS for callback number collection. When the moment in the script is "collect callback number via SMS", you MUST pick the template whose name/description contains "callback" / "tagasihelistamise" — NOT the registration template.
 - SMS SENT HARD RULE: NEVER say "Saatsin Teile tekstisõnumi", "saatsin SMSi", "ma saatsin", "I sent the SMS", "the SMS is on its way", or any equivalent confirmation BEFORE you have called the send_sms tool AND received a function_call_output with success:true. The correct sequence is: (1) decide to send → (2) call send_sms → (3) wait for the tool result → (4) only then speak the confirmation. If send_sms returns success:false, tell the caller the SMS could not be sent — do not pretend it was. Do not pre-announce the SMS in the same turn as the tool call.
 - VEHICLE DATA HARD RULE: Only use vehicle/insurance details (make, model, year, color, insurer, cover type, cover status) that are present in current runtime variables. After a [SYSTEM EVENT: vehicle_lookup_result] message arrives, those values are AUTHORITATIVE: if match=false, treat all vehicle/insurance fields as unknown — do NOT use any phone-derived vehicle context, do NOT read back any make/model/year/insurer to the caller. Only when match=true may you reference the returned fields.
 - PRONUNCIATION RULE: Do NOT say the word "kindlustuskate" — Estonian TTS mispronounces it as "kindlustuskade". Instead say "kindlustuse kaitse" or "kindlustuse staatus" depending on context. Apply the same to all forms ("kindlustuskatte", "kindlustuskatet" → "kindlustuse kaitset" / "kindlustuse staatust").`;
+      }
 
       // Inject SMS catalog so the AI knows which named SMSes are available, when to use them, and what they say.
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
@@ -1161,6 +1194,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "response.created":
+            clearPendingUserSpeechResponseTimer();
             activeResponseId = event.response?.id || null;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
@@ -1233,14 +1267,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
-          case "conversation.item.input_audio_transcription.completed":
-            console.log(`[MediaStream] User said (callId=${callId}): ${event.transcript}`);
-            transcriptLines.push(`[User]: ${event.transcript}`);
+          case "conversation.item.input_audio_transcription.completed": {
+            const userTranscript = (event.transcript || "").toString();
+            console.log(`[MediaStream] User said (callId=${callId}): ${userTranscript}`);
+            transcriptLines.push(`[User]: ${userTranscript}`);
             // Real user speech resets the repeat counter.
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
+            if (normalizeTranscript(userTranscript)) {
+              scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 450);
+            }
             break;
+          }
 
           case "response.function_call_arguments.done": {
             const fnName = event.name;
@@ -1308,7 +1347,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
               const requestedPurpose = classifySmsPurpose(requestedName);
               let tpl = resolveDuringSmsTemplate(requestedName);
-              if (requestedPurpose !== "unknown") {
+              if (isIiziRoadsideAgent && requestedPurpose !== "unknown") {
                 const purposeTpl = findDuringSmsByPurpose(requestedPurpose);
                 if (purposeTpl && purposeTpl.name !== tpl?.name) {
                   console.warn(`[MediaStream] send_sms purpose override requested="${requestedName}" purpose=${requestedPurpose}: using configured template="${purposeTpl.name}" instead of "${tpl?.name || "none"}" (callId=${callId})`);
@@ -1317,11 +1356,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
 
               const tplPurpose = tpl ? classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) : "unknown";
-              if (tpl && tplPurpose === "registration" && !tpl.content.includes("{{form1_link}}")) {
+              if (isIiziRoadsideAgent && tpl && tplPurpose === "registration" && !tpl.content.includes("{{form1_link}}")) {
                 console.warn(`[MediaStream] send_sms guard: registration template "${tpl.name}" did not contain {{form1_link}}; forcing reg-only link text (callId=${callId})`);
                 tpl = { ...tpl, content: `Palun sisestage oma numbrimärk: {{form1_link}}` };
               }
-              if (tplPurpose === "registration" && submittedRegistrationNumber) {
+              if (isIiziRoadsideAgent && tplPurpose === "registration" && submittedRegistrationNumber) {
                 const callbackTpl = findDuringSmsByPurpose("callback");
                 if (callbackTpl) {
                   console.warn(`[MediaStream] send_sms guard: registration already submitted (${submittedRegistrationNumber}); switching to callback SMS "${callbackTpl.name}" (callId=${callId})`);
@@ -1335,7 +1374,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               // exists and has not been sent yet, switch.
               {
                 const tplPurposeNow = tpl ? classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) : "unknown";
-                if (tplPurposeNow === "registration" && tpl && smsSentNames.has(tpl.name)) {
+                if (isIiziRoadsideAgent && tplPurposeNow === "registration" && tpl && smsSentNames.has(tpl.name)) {
                   const callbackTpl = findDuringSmsByPurpose("callback");
                   if (callbackTpl && !smsSentNames.has(callbackTpl.name)) {
                     console.warn(`[MediaStream] send_sms guard: registration template "${tpl.name}" already sent; switching to unsent callback SMS "${callbackTpl.name}" (callId=${callId})`);
@@ -1343,7 +1382,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                 }
               }
-              if (tpl && classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) === "callback" && !tpl.content.includes("{{form2_link}}")) {
+              if (isIiziRoadsideAgent && tpl && classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) === "callback" && !tpl.content.includes("{{form2_link}}")) {
                 console.warn(`[MediaStream] send_sms guard: callback template "${tpl.name}" did not contain {{form2_link}}; forcing phone-only link text (callId=${callId})`);
                 tpl = { ...tpl, content: `Palun sisestage oma tagasihelistamise number siin lingil: {{form2_link}}` };
               }
@@ -1358,7 +1397,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const allowed = smsMessages.filter((m) => m.trigger === "during").map((m) => m.name).join(", ");
                 result = { ok: false, error: `Unknown template_name "${requestedName}". Allowed: ${allowed || "(none)"}` };
               } else {
-                bodyForLog = normalizeRegistrationSmsLink(substituteVarsRef(tpl.content));
+                const substitutedBody = substituteVarsRef(tpl.content);
+                const finalTplPurpose = classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`);
+                bodyForLog = finalTplPurpose === "registration"
+                  ? normalizeRegistrationSmsLink(substitutedBody)
+                  : substitutedBody;
                 result = await sendSms(recipient, bodyForLog);
                 if (result.ok) {
                   smsSentNames.add(tpl.name);
@@ -1455,6 +1498,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
+          case "input_audio_buffer.speech_stopped":
+            scheduleManualResponseAfterUserSpeech("speech_stopped", 700);
+            break;
+
           case "input_audio_buffer.speech_started":
             // If greeting is in progress, completely ignore user speech and clear any buffered audio
             if (greetingInProgress) {
@@ -1539,6 +1586,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
+    clearPendingUserSpeechResponseTimer();
 
     // Stop listening for inbound SMS replies for this call
     if (inboundSmsChannel) {

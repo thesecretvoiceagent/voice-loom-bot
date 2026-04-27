@@ -5,7 +5,7 @@ type: feature
 ---
 # SMS Form Fallback
 
-When a caller can't say their car registration number or a callback phone clearly, the AI sends an SMS with signed form links. Same pattern as `{{location_link}}`:
+IIZI roadside assistance bot only: when a caller can't say their car registration number or a callback phone clearly, the AI sends an SMS with signed form links. Same pattern as `{{location_link}}`:
 
 - **Page**: registration SMS uses the Railway orchestrator route `/api/forms/reg?caseId=<UUID>&token=<HMAC>` and shows only one registration-number input. Callback SMS uses `/form?caseId=<UUID>&token=<HMAC>&mode=phone` (src/pages/FormSubmit.tsx).
 - **Edge function**: `form-submit` (validates HMAC with `LOCATION_TOKEN_SECRET`, writes to `calls`)
@@ -13,3 +13,4 @@ When a caller can't say their car registration number or a callback phone clearl
 - **AI integration**: orchestrator subscribes to `calls` UPDATE — when `form_submitted_at` changes it injects a system message so AI reads values back to caller
 - **Token**: same HMAC-SHA256(callId, LOCATION_TOKEN_SECRET) as location — one shared secret
 - **Base URL**: orchestrator builds `form1_link` / legacy `form_link` as `PUBLIC_BASE_URL` + `/api/forms/reg` for registration-only collection. `form2_link` remains the callback-phone page using `LOCATION_PAGE_BASE_URL` + `/form?mode=phone`. Legacy `GOOGLE_FORM_BASE_URL` is a fallback only.
+- **Scope**: SMS link guards, submitted registration CRM revalidation, mismatch human handoff, IIZI SMS sent-claim ordering, and the `kindlustuskate` pronunciation workaround must only be injected for the IIZI autoabi / roadside agent, not every voice agent.
