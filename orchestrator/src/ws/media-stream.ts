@@ -471,6 +471,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return sent;
   };
 
+  const scheduleManualResponseAfterUserSpeech = (source: string, delayMs = 0) => {
+    clearPendingUserSpeechResponseTimer();
+    pendingUserSpeechResponseTimer = setTimeout(() => {
+      pendingUserSpeechResponseTimer = null;
+      processPendingUserTurn(source);
+    }, delayMs);
+  };
+
   const enableTurnDetection = () => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
     // Flush any audio that accumulated during greeting playback (echo, line noise)
