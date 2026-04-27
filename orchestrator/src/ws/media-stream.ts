@@ -362,6 +362,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
     if (greetingInProgress) {
       greetingInProgress = false;
+      greetingCompletedAt = Date.now();
       console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after cooldown (callId=${callId}, responseId=${completedResponseId})`);
       clearTurnDetectionEnableTimer();
       turnDetectionEnableTimer = setTimeout(() => {
