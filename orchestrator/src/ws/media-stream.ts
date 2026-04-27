@@ -1336,8 +1336,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (normalizeTranscript(userTranscript)) {
               callerHasSpokenSinceGreeting = true;
               callerSubstantiveTurnCount += 1;
+              createResponseFromTranscriptFallback(userTranscript, "input_audio_transcription.completed");
+            } else {
+              scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 50);
             }
-            scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 50);
             break;
           }
 
