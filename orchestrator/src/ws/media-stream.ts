@@ -1037,29 +1037,33 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
         switch (event.type) {
           case "session.created":
-            console.log(`[MediaStream] OpenAI session created (callId=${callId})`);
+            openaiSessionCreatedAt = Date.now();
+            console.log(`[Diag] OpenAI session.created (callId=${callId}) model=${config.openai.realtimeModel}`);
             break;
 
           case "session.updated":
+            openaiSessionUpdatedAt = Date.now();
             if (!sessionConfigured) {
               sessionConfigured = true;
-              console.log(`[MediaStream] OpenAI session configured (callId=${callId})`);
+              console.log(`[Diag] OpenAI session.updated — INITIAL configured (callId=${callId}) modalities=text+audio audioFormat=g711_ulaw`);
               maybeStartInitialResponse();
             } else {
-              console.log(`[MediaStream] OpenAI session updated (callId=${callId})`);
+              console.log(`[Diag] OpenAI session.updated — patch applied (callId=${callId})`);
             }
             break;
 
           case "response.created":
+            responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
             responseAudioDone = false;
             responseDoneReceived = false;
             ignoreAudioUntilNextResponse = false;
-            aiIsSpeaking = true; // Keep this true until Twilio confirms playback completion.
+            aiIsSpeaking = true;
             lastResponseFinishReason = null;
             lastResponseOutputTokens = null;
+            console.log(`[Diag] response.created #${responseCreatedCount} responseId=${activeResponseId} (callId=${callId})`);
             break;
 
           case "response.audio.delta": {
