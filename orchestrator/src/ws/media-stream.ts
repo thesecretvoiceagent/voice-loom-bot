@@ -260,6 +260,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callerHasSpokenSinceGreeting = false;
   let callerSubstantiveTurnCount = 0;
   let pendingUserResponseRetry = false;
+  let lastUserAudioItemId: string | null = null;
+  let lastRespondedUserAudioItemId: string | null = null;
 
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
@@ -365,7 +367,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const sendUserTurnResponseCreate = (source: string) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
     if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return false;
-    console.warn(`[MediaStream] Creating AI response after user speech (${source}) (callId=${callId})`);
+    if (lastUserAudioItemId && lastRespondedUserAudioItemId === lastUserAudioItemId) return false;
+    lastRespondedUserAudioItemId = lastUserAudioItemId;
+    console.warn(`[MediaStream] Creating AI response after user speech (${source}) (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"})`);
     pendingUserResponseRetry = true;
     openaiWs.send(JSON.stringify({
       type: "response.create",
