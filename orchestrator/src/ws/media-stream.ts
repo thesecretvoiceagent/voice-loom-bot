@@ -574,8 +574,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const formToken = crypto.createHmac("sha256", tokenSecret).update(callId).digest("hex");
         const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
         const formPath = isLovableLike ? "/form" : "/form.html";
-        callVariables.form_link = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
+        const baseFormUrl = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
+        // form_link  → SMS #1: ask for car registration number only (mode=reg)
+        // form2_link → SMS #3: ask for callback phone number only (mode=phone)
+        callVariables.form_link = `${baseFormUrl}&mode=reg`;
+        callVariables.form2_link = `${baseFormUrl}&mode=phone`;
         console.log(`[MediaStream] form_link built: ${callVariables.form_link}`);
+        console.log(`[MediaStream] form2_link built: ${callVariables.form2_link}`);
       } catch (err) {
         console.error(`[MediaStream] Failed to build form_link:`, err);
       }
