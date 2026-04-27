@@ -867,6 +867,30 @@ export default function CreateAgent() {
                                 ↓
                               </Button>
                             </div>
+                            {(() => {
+                              const linkMatch = sms.content.match(/\{\{(location_link|form_link|form2_link)\}\}/);
+                              if (!linkMatch) return null;
+                              const token = linkMatch[1];
+                              const path =
+                                token === "location_link"
+                                  ? "/location"
+                                  : token === "form_link"
+                                    ? "/form"
+                                    : "/form2";
+                              const previewUrl = `${path}?caseId=preview&token=preview`;
+                              return (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => window.open(previewUrl, "_blank", "noopener,noreferrer")}
+                                  className="shrink-0 text-foreground/70 hover:text-foreground"
+                                  title={`Open ${token} page in a new tab`}
+                                >
+                                  <ExternalLink className="h-4 w-4" />
+                                </Button>
+                              );
+                            })()}
                             <Button
                               type="button"
                               variant="ghost"
