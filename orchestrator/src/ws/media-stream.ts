@@ -277,6 +277,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       .replace(/[^\p{L}\p{N}]+/gu, " ")
       .trim();
 
+  const isUsableSubmittedValue = (value: unknown): value is string => {
+    const normalized = (value || "").toString().trim();
+    if (!normalized) return false;
+    return !/^(0+|null|undefined|n\/a|na|-|—)$/i.test(normalized);
+  };
+
   const startInboundAudioCooldown = (ms: number, reason: string) => {
     inboundAudioCooldownUntil = Math.max(inboundAudioCooldownUntil, Date.now() + ms);
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
@@ -722,20 +728,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                 }
 
-                // 2. Google Form fallback submission (registration number / callback phone)
+                // 2. Form submission (registration number and/or callback phone)
                 const justFormSubmitted =
                   row.form_submitted_at && row.form_submitted_at !== prev?.form_submitted_at;
                 if (justFormSubmitted) {
-                  const reg = (row.form_registration_number || "").toString().slice(0, 20);
-                  const phone = (row.form_callback_phone_number || "").toString().slice(0, 20);
+                  const reg = isUsableSubmittedValue(row.form_registration_number)
+                    ? row.form_registration_number.toString().slice(0, 20)
+                    : "";
+                  const phone = isUsableSubmittedValue(row.form_callback_phone_number)
+                    ? row.form_callback_phone_number.toString().slice(0, 20)
+                    : "";
                   console.log(`[MediaStream] Form submitted (callId=${callId}): reg="${reg}" phone="${phone}"`);
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                     const fieldParts: string[] = [];
-                    if (reg) fieldParts.push(`reg="${reg}"`);
-                    if (phone) fieldParts.push(`callback_phone="${phone}"`);
+                    if (reg) fieldParts.push(`form_registration_number="${reg}"`);
+                    if (phone) fieldParts.push(`form_callback_phone_number="${phone}"`);
                     const fields = fieldParts.join(" ");
-                    const sysMsg = `[SYSTEM EVENT: form_submitted] ${fields}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just submitted the form via the SMS link. Read the values back to them naturally in the same language the call is being conducted in and ask for confirmation. Then continue the conversation using these confirmed values.`;
+                    const sysMsg = fields
+                      ? `[SYSTEM EVENT: form_submitted] ${fields}. Internal note only — do NOT read this tag, the brackets, field names, registration number, or callback number aloud. The customer just submitted usable data via the SMS link. Save only the returned non-empty field(s), acknowledge briefly that the data was received, do not ask to confirm SMS/form values, and continue with the next missing step only. If a field is absent here, it is still missing.`
+                      : `[SYSTEM EVENT: form_submitted] no_usable_fields_returned=true. Internal note only — do NOT read this tag aloud. The customer submitted the form, but no usable registration number or callback number was returned. Do not claim you have the missing data; use the fallback path for the current step.`;
                     openaiWs.send(JSON.stringify({
                       type: "conversation.item.create",
                       item: {
