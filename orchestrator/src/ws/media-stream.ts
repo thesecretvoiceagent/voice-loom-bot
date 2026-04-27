@@ -543,14 +543,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     };
 
     const normalizeRegistrationSmsLink = (text: string): string => {
-      if (!text || !config.supabase.url) return text;
-      const edgeBase = `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/iizi-reg-form`;
+      if (!text) return text;
+      const frontendBase = locationPageBase || LOVABLE_FALLBACK;
+      const frontendFormBase = `${frontendBase.replace(/\/+$/, "")}/form`;
       return text.replace(/https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})&mode=reg/gi, (_match, caseIdValue, tokenValue) => {
-        return `${edgeBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}`;
+        return `${frontendFormBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}&mode=reg`;
       }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?src=https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})/gi, (_match, caseIdValue, tokenValue) => {
-        return `${edgeBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}`;
+        return `${frontendFormBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}&mode=reg`;
       }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?src=https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})&mode=reg/gi, (_match, caseIdValue, tokenValue) => {
-        return `${edgeBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}`;
+        return `${frontendFormBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}&mode=reg`;
+      }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})/gi, (_match, caseIdValue, tokenValue) => {
+        return `${frontendFormBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${tokenValue}&mode=reg`;
       });
     };
 
@@ -636,10 +639,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
         const formPath = isLovableLike ? "/form" : "/form.html";
         const baseFormUrl = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
-        const regFormUrl = config.supabase.url
-          ? `${config.supabase.url.replace(/\/+$/, "")}/functions/v1/iizi-reg-form?caseId=${encodeURIComponent(callId)}&token=${formToken}`
-          : `${baseFormUrl}&mode=reg`;
-        // form1_link / form_link → SMS #1: registration number only via dedicated edge form.
+        const regFormUrl = `${baseFormUrl}&mode=reg`;
+        // form1_link / form_link → SMS #1: registration number only via browser-rendered /form page.
         // form2_link             → SMS #3: callback phone number only (mode=phone)
         callVariables.form1_link = regFormUrl;
         callVariables.form_link = regFormUrl;
