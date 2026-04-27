@@ -431,6 +431,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       toolsActivated = true;
       console.log(`[MediaStream] Activating ${pendingToolsForActivation.length} tools post-greeting (callId=${callId})`);
     }
+    console.log(`[Diag-OpenAI-Config] callId=${callId} session.update patch=${JSON.stringify({ turn_detection: sessionPatch.turn_detection, tools_count: Array.isArray(sessionPatch.tools) ? sessionPatch.tools.length : 0 })}`);
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: sessionPatch,
