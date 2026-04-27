@@ -862,7 +862,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           `If the greeting is in Estonian, you MUST speak Estonian. If in Finnish, Finnish. If in English, English. ` +
           `\n\nGREETING TO SAY VERBATIM:\n"""\n${greeting}\n"""`;
       }
-      openaiWs.send(JSON.stringify(responseCreate));
+      sendResponseCreate("initial-greeting", responseCreate.response);
 
       // Treat the initial response as speaking immediately so anti-barge-in stays active until playback is confirmed done.
       aiIsSpeaking = true;
@@ -1071,6 +1071,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "response.created":
+            clearPendingUserResponseTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
             responsePlaybackMarkName = null;
@@ -1167,6 +1168,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
+            if (!greetingInProgress && !activeResponseId) {
+              clearPendingUserResponseTimer();
+              pendingUserResponseTimer = setTimeout(() => {
+                pendingUserResponseTimer = null;
+                if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId || greetingInProgress) return;
+                console.warn(`[Diag] No assistant response after user transcript; forcing response.create (callId=${callId})`);
+                sendResponseCreate("transcript-fallback");
+              }, 1200);
+            }
             break;
 
           case "response.function_call_arguments.done": {
@@ -1402,6 +1412,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "input_audio_buffer.committed":
             bufferCommittedCount += 1;
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
+            if (!greetingInProgress) {
+              clearPendingUserResponseTimer();
+              pendingUserResponseTimer = setTimeout(() => {
+                pendingUserResponseTimer = null;
+                if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId || greetingInProgress) return;
+                console.warn(`[Diag] No assistant response after audio commit; forcing response.create (callId=${callId})`);
+                sendResponseCreate("commit-fallback");
+              }, 1500);
+            }
             break;
 
           case "response.error":
