@@ -1929,20 +1929,36 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           if (greetingInProgress) {
             break;
           }
+          inboundMediaAfterGreetingCount += 1;
           // Short cooldown after AI speech finishes — prevents the model from hearing its
           // own just-played audio (echo loop) and re-triggering the same response.
           if (Date.now() < inboundAudioCooldownUntil) {
+            inboundMediaBlockedAfterGreetingCount += 1;
+            if (inboundMediaBlockedAfterGreetingCount === 1 || inboundMediaBlockedAfterGreetingCount % 50 === 0) {
+              console.log(`[MediaStream] Twilio inbound media blocked by cooldown after greeting (callId=${callId}, blocked=${inboundMediaBlockedAfterGreetingCount}, total=${inboundMediaAfterGreetingCount})`);
+            }
             break;
           }
           // Don't forward audio when anti-barge-in is active and AI is speaking
           if (antiBargeinEnabled && aiIsSpeaking) {
+            inboundMediaBlockedAfterGreetingCount += 1;
+            if (inboundMediaBlockedAfterGreetingCount === 1 || inboundMediaBlockedAfterGreetingCount % 50 === 0) {
+              console.log(`[MediaStream] Twilio inbound media blocked by anti-barge-in after greeting (callId=${callId}, blocked=${inboundMediaBlockedAfterGreetingCount}, total=${inboundMediaAfterGreetingCount})`);
+            }
             break;
           }
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN && sessionConfigured) {
+            inboundMediaForwardedAfterGreetingCount += 1;
+            if (inboundMediaForwardedAfterGreetingCount === 1 || inboundMediaForwardedAfterGreetingCount % 50 === 0) {
+              console.log(`[MediaStream] Twilio inbound media forwarded to OpenAI after greeting (callId=${callId}, forwarded=${inboundMediaForwardedAfterGreetingCount}, total=${inboundMediaAfterGreetingCount})`);
+            }
             openaiWs.send(JSON.stringify({
               type: "input_audio_buffer.append",
               audio: msg.media.payload,
             }));
+          } else {
+            inboundMediaBlockedAfterGreetingCount += 1;
+            console.error(`[MediaStream] Twilio inbound media NOT forwarded after greeting (callId=${callId}, openaiReadyState=${openaiWs?.readyState ?? "null"}, sessionConfigured=${sessionConfigured}, blocked=${inboundMediaBlockedAfterGreetingCount}, total=${inboundMediaAfterGreetingCount})`);
           }
           break;
 
