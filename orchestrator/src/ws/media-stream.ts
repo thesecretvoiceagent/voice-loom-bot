@@ -1466,14 +1466,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
               break;
             }
-            console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId}, responseId=${activeResponseId})`);
-            resetResponseState();
-            ignoreAudioUntilNextResponse = true;
-            aiIsSpeaking = false;
-            if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-              twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+            // Only barge-in / cancel when there is actually an active assistant response.
+            // Sending response.cancel with no active response causes OpenAI to error and can
+            // leave the conversation in a state where the next VAD-triggered response never
+            // fires — the user spoke but the agent stayed silent forever.
+            if (activeResponseId) {
+              console.log(`[MediaStream] Speech started during AI response, cancelling (callId=${callId}, responseId=${activeResponseId})`);
+              resetResponseState();
+              ignoreAudioUntilNextResponse = true;
+              aiIsSpeaking = false;
+              if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+                twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+              }
+              openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
+            } else {
+              console.log(`[MediaStream] Speech started (no active response — letting VAD auto-create response) (callId=${callId})`);
             }
-            openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
             break;
 
           case "error":
