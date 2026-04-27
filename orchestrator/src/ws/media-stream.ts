@@ -1284,6 +1284,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
             if (normalizeTranscript(userTranscript)) {
+              callerHasSpokenSinceGreeting = true;
               scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 450);
             }
             break;
