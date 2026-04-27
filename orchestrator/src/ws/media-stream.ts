@@ -1609,7 +1609,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
               openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
             } else {
-              console.log(`[MediaStream] Speech started (no active response — letting VAD auto-create response) (callId=${callId})`);
+              console.log(`[MediaStream] Speech started (no active response — waiting for VAD commit, then manual response) (callId=${callId}, itemId=${event.item_id || "unknown"})`);
             }
             break;
 
