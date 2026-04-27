@@ -755,7 +755,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       content: [{ type: "input_text", text: sysMsg }],
                     },
                   }));
-                  sendResponseCreate("system-event");
+                  scheduleUserResponseCreate("system-event", 50);
                 }
               },
             )
@@ -803,7 +803,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-                    sendResponseCreate("system-event");
+                    scheduleUserResponseCreate("system-event", 50);
                   }
                 }
 
@@ -829,7 +829,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-                    sendResponseCreate("system-event");
+                    scheduleUserResponseCreate("system-event", 50);
                   }
                 }
               },
