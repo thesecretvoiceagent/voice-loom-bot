@@ -381,33 +381,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return true;
   };
 
-  const createResponseFromTranscriptFallback = (userTranscript: string, source: string) => {
-    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
-    const cleaned = userTranscript.trim();
-    if (!cleaned || !sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return false;
-    const syntheticItemId = `transcript:${cleaned.slice(0, 80)}:${Date.now()}`;
-    lastUserAudioItemId = syntheticItemId;
-    lastRespondedUserAudioItemId = syntheticItemId;
-    console.warn(`[MediaStream] Creating AI response from transcript fallback (${source}) (callId=${callId}, text="${cleaned.slice(0, 80)}")`);
-    openaiWs.send(JSON.stringify({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: cleaned }],
-      },
-    }));
-    pendingUserResponseRetry = true;
-    openaiWs.send(JSON.stringify({
-      type: "response.create",
-      response: {
-        modalities: ["text", "audio"],
-        tool_choice: "auto",
-      },
-    }));
-    return true;
-  };
-
   const scheduleManualResponseAfterUserSpeech = (source: string, delayMs = 700) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
     if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
