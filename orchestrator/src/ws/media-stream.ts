@@ -259,6 +259,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseAudioDone = false;
   let responseDoneReceived = false;
   let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let callerHasSpokenSinceGreeting = false;
 
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
@@ -361,7 +362,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
       if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
       console.warn(`[MediaStream] Manual response.create fallback after user speech (${source}) (callId=${callId})`);
-      openaiWs.send(JSON.stringify({ type: "response.create" }));
+      openaiWs.send(JSON.stringify({
+        type: "response.create",
+        response: {
+          instructions: callerHasSpokenSinceGreeting
+            ? "Respond now to the caller's latest message. Continue the normal intake script in the caller's language. Do not stay silent."
+            : "The caller has started speaking. Respond now in the caller's language and continue the normal intake script. Do not stay silent.",
+        },
+      }));
     }, delayMs);
   };
 
@@ -376,8 +384,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
-        create_response: true,      // Auto-create response when user finishes speaking
-        interrupt_response: true,   // Auto-cancel any active response when user starts speaking
+        create_response: false,     // We create responses manually after transcription; avoids tool-only/no-audio turns.
+        interrupt_response: false,  // Barge-in is guarded manually below to avoid invalid response.cancel calls.
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
