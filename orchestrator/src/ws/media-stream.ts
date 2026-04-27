@@ -1367,7 +1367,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               // exists and has not been sent yet, switch.
               {
                 const tplPurposeNow = tpl ? classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) : "unknown";
-                if (tplPurposeNow === "registration" && tpl && smsSentNames.has(tpl.name)) {
+                if (isIiziRoadsideAgent && tplPurposeNow === "registration" && tpl && smsSentNames.has(tpl.name)) {
                   const callbackTpl = findDuringSmsByPurpose("callback");
                   if (callbackTpl && !smsSentNames.has(callbackTpl.name)) {
                     console.warn(`[MediaStream] send_sms guard: registration template "${tpl.name}" already sent; switching to unsent callback SMS "${callbackTpl.name}" (callId=${callId})`);
@@ -1375,7 +1375,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                 }
               }
-              if (tpl && classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) === "callback" && !tpl.content.includes("{{form2_link}}")) {
+              if (isIiziRoadsideAgent && tpl && classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) === "callback" && !tpl.content.includes("{{form2_link}}")) {
                 console.warn(`[MediaStream] send_sms guard: callback template "${tpl.name}" did not contain {{form2_link}}; forcing phone-only link text (callId=${callId})`);
                 tpl = { ...tpl, content: `Palun sisestage oma tagasihelistamise number siin lingil: {{form2_link}}` };
               }
@@ -1390,7 +1390,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const allowed = smsMessages.filter((m) => m.trigger === "during").map((m) => m.name).join(", ");
                 result = { ok: false, error: `Unknown template_name "${requestedName}". Allowed: ${allowed || "(none)"}` };
               } else {
-                bodyForLog = normalizeRegistrationSmsLink(substituteVarsRef(tpl.content));
+                const substitutedBody = substituteVarsRef(tpl.content);
+                const finalTplPurpose = classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`);
+                bodyForLog = finalTplPurpose === "registration"
+                  ? normalizeRegistrationSmsLink(substitutedBody)
+                  : substitutedBody;
                 result = await sendSms(recipient, bodyForLog);
                 if (result.ok) {
                   smsSentNames.add(tpl.name);
