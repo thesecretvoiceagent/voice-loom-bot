@@ -263,6 +263,34 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseDoneReceived = false;
   let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // ---- Diagnostic counters (A–E from runbook) ----
+  // A. Twilio inbound caller audio
+  let twilioInboundFrames = 0;
+  let twilioInboundFramesDropGreeting = 0;
+  let twilioInboundFramesDropCooldown = 0;
+  let twilioInboundFramesDropAntiBargein = 0;
+  let twilioInboundFramesForwarded = 0;
+  let twilioInboundFramesAfterGreeting = 0;
+  let firstInboundAudioAfterGreetingLogged = false;
+  // B. OpenAI session
+  let openaiSessionCreatedAt: number | null = null;
+  let openaiSessionUpdatedAt: number | null = null;
+  // C. User turn detection
+  let speechStartedCount = 0;
+  let speechStoppedCount = 0;
+  let bufferCommittedCount = 0;
+  let userTranscriptCount = 0;
+  // D. Assistant response creation
+  let responseCreateSentCount = 0;
+  let responseCreatedCount = 0;
+  let responseDoneCount = 0;
+  let responseErrorCount = 0;
+  // E. Assistant audio back to Twilio
+  let assistantAudioDeltaCount = 0;
+  let twilioOutboundFrames = 0;
+  let twilioOutboundSendErrors = 0;
+  let diagnosticSnapshotTimer: ReturnType<typeof setInterval> | null = null;
+
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
       clearTimeout(markFallbackTimer);
