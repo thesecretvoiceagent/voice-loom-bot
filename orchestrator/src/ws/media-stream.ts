@@ -1226,6 +1226,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
             responseHasAudio = true;
+            pendingUserResponseRetry = false;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
               // OpenAI sends large audio chunks (~200ms). Twilio Media Streams plays smoothest
               // when each `media` event carries ~20ms of ulaw audio (160 bytes @ 8kHz).
@@ -1533,6 +1534,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(
               `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens}`
             );
+            if (!responseHasAudio && pendingUserResponseRetry && !greetingInProgress) {
+              pendingUserResponseRetry = false;
+              console.warn(`[MediaStream] Post-user response completed with no audio; retrying once with tools disabled (callId=${callId}, responseId=${responseId})`);
+              setTimeout(() => {
+                if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId) return;
+                openaiWs.send(JSON.stringify({
+                  type: "response.create",
+                  response: {
+                    modalities: ["text", "audio"],
+                    tool_choice: "none",
+                    instructions: "You produced no audio. Speak now in Estonian. Ask one concise next intake question for IIZI autoabi and do not call any tool in this turn.",
+                  },
+                }));
+              }, 150);
+            }
             maybeCompleteAiTurn("response.done");
             break;
           }
