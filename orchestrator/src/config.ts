@@ -18,7 +18,7 @@ export const config = {
   // OpenAI
   openai: {
     apiKey: process.env.OPENAI_API_KEY || "",
-    realtimeModel: "gpt-4o-realtime-preview-2024-12-17",
+    realtimeModel: process.env.OPENAI_REALTIME_MODEL || "gpt-4o-realtime-preview-2024-12-17",
     get isConfigured() {
       return !!this.apiKey;
     },
@@ -38,3 +38,29 @@ export const config = {
   publicBaseUrl: process.env.PUBLIC_BASE_URL || "",
   publicWsBaseUrl: process.env.PUBLIC_WS_BASE_URL || "",
 };
+
+export function getDeploymentIdentity() {
+  return {
+    gitSha:
+      process.env.RAILWAY_GIT_COMMIT_SHA ||
+      process.env.SOURCE_COMMIT ||
+      process.env.GIT_COMMIT ||
+      process.env.COMMIT_SHA ||
+      "(unknown)",
+    gitBranch: process.env.RAILWAY_GIT_BRANCH || "(unknown)",
+    railwayDeploymentId:
+      process.env.RAILWAY_DEPLOYMENT_ID ||
+      process.env.RAILWAY_REPLICA_ID ||
+      "(unknown)",
+    railwayServiceName: process.env.RAILWAY_SERVICE_NAME || "(unknown)",
+    railwayProjectName: process.env.RAILWAY_PROJECT_NAME || "(unknown)",
+    nodeEnv: config.nodeEnv,
+    realtimeModel: config.openai.realtimeModel,
+    publicBaseUrl: config.publicBaseUrl || "(none)",
+    publicWsBaseUrl: config.publicWsBaseUrl || "(none)",
+    expectedTwilioVoiceWebhook: config.publicBaseUrl ? `${config.publicBaseUrl}/twilio/voice` : "(missing PUBLIC_BASE_URL)",
+    expectedTwilioStreamUrl: (config.publicWsBaseUrl || config.publicBaseUrl.replace("https://", "wss://"))
+      ? `${config.publicWsBaseUrl || config.publicBaseUrl.replace("https://", "wss://")}/twilio/stream`
+      : "(missing PUBLIC_WS_BASE_URL/PUBLIC_BASE_URL)",
+  };
+}

@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import { createClient, SupabaseClient, RealtimeChannel } from "@supabase/supabase-js";
-import { config } from "../config.js";
+import { config, getDeploymentIdentity } from "../config.js";
 import {
   fetchAgentConfig,
   fetchAgentByPhoneNumber,
@@ -282,19 +282,100 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let userTranscriptCount = 0;
   // D. Assistant response creation
   let responseCreateSentCount = 0;
+  let userResponseCreateSentCount = 0;
   let responseCreatedCount = 0;
+  let userResponseCreatedCount = 0;
   let responseDoneCount = 0;
   let responseErrorCount = 0;
   let pendingUserResponseTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingUserResponseReason: string | null = null;
   let pendingUserResponseAttempts = 0;
   let pendingUserResponseTranscript: string | null = null;
-  let lastInjectedUserTranscript = "";
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
+  let assistantOutputAudioDeltaCount = 0;
+  let firstAssistantAudioDeltaAt: string | null = null;
+  let totalAssistantAudioBytes = 0;
+  let userAssistantAudioDeltaCount = 0;
+  let userAssistantAudioBytes = 0;
   let twilioOutboundFrames = 0;
+  let userTwilioOutboundFrames = 0;
+  let firstTwilioOutboundAt: string | null = null;
   let twilioOutboundSendErrors = 0;
   let diagnosticSnapshotTimer: ReturnType<typeof setInterval> | null = null;
+  let twilioStartReceived = false;
+  let twilioStopReceived = false;
+  let twilioGreetingMarkReceived = false;
+  let firstCallerMediaAfterGreetingAt: string | null = null;
+  let conversationItemCreatedCount = 0;
+  let lastSessionConfigSent: Record<string, unknown> | null = null;
+  let loadedAgentName = "(none)";
+  let bridgeSelfTest = "";
+  let callFinalized = false;
+  let lastResponseCreateReason = "(none)";
+  let activeResponseReason = "(none)";
+
+  const diagState = () =>
+    `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
+
+  const logCallDeploymentIdentity = () => {
+    const d = getDeploymentIdentity();
+    console.log(`[Diag-Deploy] callId=${callId} gitSha=${d.gitSha} railwayDeploymentId=${d.railwayDeploymentId} NODE_ENV=${d.nodeEnv} realtimeModel=${d.realtimeModel}`);
+    console.log(`[Diag-Deploy] callId=${callId} twilioVoiceWebhook=${d.expectedTwilioVoiceWebhook} expectedPublicBaseUrl=${d.publicBaseUrl} expectedStreamUrl=${d.expectedTwilioStreamUrl}`);
+  };
+
+  const diagnoseBreakPoint = () => {
+    if (twilioInboundFramesAfterGreeting === 0) return "Twilio inbound media after greeting is 0: Twilio stream/greeting mark/gating is broken.";
+    if (speechStartedCount === 0 && userTranscriptCount === 0 && bufferCommittedCount === 0) return "Twilio inbound media exists but no OpenAI speech_started/transcript/commit: audio forwarding or Realtime input format is broken.";
+    if ((userTranscriptCount > 0 || bufferCommittedCount > 0) && responseCreateSentCount === 0) return "OpenAI transcript/commit exists but no response.create: response triggering logic is broken.";
+    if (responseCreateSentCount > 0 && responseCreatedCount === 0) return "response.create was sent but no response.created: OpenAI session/model/config/error is broken.";
+    if (responseCreatedCount > 0 && assistantAudioDeltaCount + assistantOutputAudioDeltaCount === 0) return "response.created exists but no audio delta: session output modality/audio config is broken.";
+    if (assistantAudioDeltaCount + assistantOutputAudioDeltaCount > 0 && twilioOutboundFrames === 0) return "audio delta exists but no Twilio outbound media: outbound forwarding/conversion is broken.";
+    if (twilioOutboundFrames > 0) return "Twilio outbound media exists; if caller hears nothing, codec/payload format or Twilio playback path is broken.";
+    return "No single break point identified; inspect preceding counters/events.";
+  };
+
+  const sendTwilioBridgeSelfTestTone = (reason: string) => {
+    if (bridgeSelfTest !== "twilio-outbound") return;
+    if (!streamSid || twilioWs.readyState !== WebSocket.OPEN) {
+      console.warn(`[Diag-TestB] skipped reason=${reason} streamSid=${streamSid || "empty"} twilioState=${twilioWs.readyState} (callId=${callId})`);
+      return;
+    }
+    const linearToMuLaw = (sample: number) => {
+      const BIAS = 0x84;
+      const CLIP = 32635;
+      let sign = (sample >> 8) & 0x80;
+      if (sign !== 0) sample = -sample;
+      if (sample > CLIP) sample = CLIP;
+      sample += BIAS;
+      let exponent = 7;
+      for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; expMask >>= 1) exponent -= 1;
+      const mantissa = (sample >> (exponent + 3)) & 0x0f;
+      return (~(sign | (exponent << 4) | mantissa)) & 0xff;
+    };
+    const sampleRate = 8000;
+    const toneHz = 880;
+    const frames = 60;
+    const framePayloads = Array.from({ length: frames }, (_, frameIndex) => {
+      const frame = Buffer.alloc(160);
+      for (let i = 0; i < 160; i += 1) {
+        const t = (frameIndex * 160 + i) / sampleRate;
+        frame[i] = linearToMuLaw(Math.round(Math.sin(2 * Math.PI * toneHz * t) * 12000));
+      }
+      return frame.toString("base64");
+    });
+    console.warn(`[Diag-TestB] sending hardcoded outbound Twilio media tone frames=${frames} reason=${reason} (callId=${callId})`);
+    for (const payload of framePayloads) {
+      try {
+        twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload } }));
+        twilioOutboundFrames += 1;
+        if (!firstTwilioOutboundAt) firstTwilioOutboundAt = new Date().toISOString();
+      } catch (sendErr) {
+        twilioOutboundSendErrors += 1;
+        console.error(`[Diag-TestB] Twilio outbound self-test send error (callId=${callId}, twilioState=${twilioWs.readyState}):`, sendErr);
+      }
+    }
+  };
 
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
@@ -318,54 +399,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const sendResponseCreate = (reason: string, response?: Record<string, unknown>) => {
-    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
+      console.warn(`[Diag] response.create skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`);
+      return false;
+    }
+    if (activeResponseId) {
+      console.warn(`[Diag] response.create skipped reason=${reason} skip=active_response activeResponseBefore=${activeResponseId} (callId=${callId})`);
+      return false;
+    }
     responseCreateSentCount += 1;
-    console.log(`[Diag] response.create sent #${responseCreateSentCount} reason=${reason} (callId=${callId})`);
+    if (reason !== "initial-greeting") userResponseCreateSentCount += 1;
+    lastResponseCreateReason = reason;
+    console.log(`[Diag] response.create sent #${responseCreateSentCount} reason=${reason} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`);
     openaiWs.send(JSON.stringify(response ? { type: "response.create", response } : { type: "response.create" }));
     return true;
-  };
-
-  const injectTranscriptFallbackIfNeeded = (reason: string) => {
-    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-    if (!reason.includes("transcript") && !reason.includes("audio-commit") && !reason.includes("speech-stopped")) return;
-
-    const transcript = (pendingUserResponseTranscript || "").trim();
-    if (transcript) {
-      const normalized = normalizeTranscript(transcript);
-      if (normalized && normalized !== lastInjectedUserTranscript) {
-        lastInjectedUserTranscript = normalized;
-        console.warn(`[Diag] Injecting transcript fallback as user text before response.create reason=${reason} text="${transcript.slice(0, 120)}" (callId=${callId})`);
-        openaiWs.send(JSON.stringify({
-          type: "conversation.item.create",
-          item: {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: transcript }],
-          },
-        }));
-      }
-      return;
-    }
-
-    console.warn(`[Diag] Caller speech detected but transcript empty; injecting repeat-request fallback before response.create reason=${reason} (callId=${callId})`);
-    openaiWs.send(JSON.stringify({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "system",
-        content: [{
-          type: "input_text",
-          text: "[SYSTEM EVENT: caller_speech_unclear] The caller just spoke, but the speech-to-text result was empty or unclear. Do not mention this system tag. Briefly apologize in the caller's language and ask them to repeat what happened.",
-        }],
-      },
-    }));
   };
 
   const scheduleUserResponseCreate = (reason: string, delayMs: number, transcript?: string) => {
     const cleanTranscript = typeof transcript === "string" ? transcript.trim() : "";
     if (cleanTranscript) pendingUserResponseTranscript = cleanTranscript;
+    if (pendingUserResponseTimer) {
+      console.log(`[Diag] response.create schedule skipped reason=${reason} skip=already_pending pendingReason=${pendingUserResponseReason || "none"} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
+      return;
+    }
     pendingUserResponseReason = pendingUserResponseReason || reason;
-    clearPendingUserResponseTimer();
     pendingUserResponseTimer = setTimeout(() => {
       pendingUserResponseTimer = null;
       if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
@@ -389,11 +446,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }
 
       const finalReason = pendingUserResponseReason || reason;
-      injectTranscriptFallbackIfNeeded(finalReason);
       pendingUserResponseReason = null;
       pendingUserResponseTranscript = null;
       pendingUserResponseAttempts = 0;
-      console.warn(`[Diag] No assistant response after ${finalReason}; forcing response.create (callId=${callId})`);
+      console.warn(`[Diag] No assistant response after ${finalReason}; sending single response.create (callId=${callId})`);
       sendResponseCreate(finalReason, { modalities: ["text", "audio"] });
     }, delayMs);
   };
@@ -441,6 +497,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       toolsActivated = true;
       console.log(`[MediaStream] Activating ${pendingToolsForActivation.length} tools post-greeting (callId=${callId})`);
     }
+    console.log(`[Diag-OpenAI-Config] callId=${callId} session.update patch=${JSON.stringify({ turn_detection: sessionPatch.turn_detection, tools_count: Array.isArray(sessionPatch.tools) ? sessionPatch.tools.length : 0 })}`);
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: sessionPatch,
@@ -529,7 +586,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
 
     if (agentConfig) {
+      loadedAgentName = agentConfig.name || "(unnamed)";
       console.log(`[MediaStream] Loaded agent config: "${agentConfig.name}" (callId=${callId})`);
+      console.log(`[Diag-Agent] callId=${callId} loadedAgentId=${(agentConfig as any).id || agentId || "(none)"} loadedAgentName="${loadedAgentName}" requestedAgentId=${agentId || "(none)"}`);
       if (agentConfig.system_prompt) instructions = agentConfig.system_prompt;
       if (agentConfig.greeting) greeting = agentConfig.greeting;
       if (agentConfig.voice) voice = agentConfig.voice;
@@ -965,6 +1024,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
     openaiWs.on("open", () => {
       console.log(`[MediaStream] Connected to OpenAI Realtime (callId=${callId}, voice=${voice})`);
+      console.log(`[Diag-OpenAI] OpenAI WS open (callId=${callId}) model=${config.openai.realtimeModel} readyState=${openaiWs?.readyState ?? "null"}`);
 
       // Note: do NOT bake "your first message MUST be the greeting" into the long-lived
       // session instructions — that text persists for the whole call and can cause the
@@ -1116,6 +1176,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       toolsActivated = false;
 
       pendingInitialResponse = true;
+      lastSessionConfigSent = {
+        model: config.openai.realtimeModel,
+        modalities: sessionUpdate.session.modalities,
+        input_audio_format: sessionUpdate.session.input_audio_format,
+        output_audio_format: sessionUpdate.session.output_audio_format,
+        voice: sessionUpdate.session.voice,
+        turn_detection: sessionUpdate.session.turn_detection,
+        input_audio_transcription: sessionUpdate.session.input_audio_transcription,
+        tools_count: tools.length,
+      };
+      console.log(`[Diag-OpenAI-Config] callId=${callId} ${JSON.stringify(lastSessionConfigSent)}`);
       openaiWs!.send(JSON.stringify(sessionUpdate));
 
       initialResponseFallbackTimer = setTimeout(() => {
@@ -1138,6 +1209,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(`[Diag] OpenAI session.created (callId=${callId}) model=${config.openai.realtimeModel}`);
             break;
 
+          case "conversation.item.created":
+            conversationItemCreatedCount += 1;
+            console.log(`[Diag] conversation.item.created #${conversationItemCreatedCount} itemType=${event.item?.type || "?"} role=${event.item?.role || "?"} (callId=${callId})`);
+            break;
+
           case "session.updated":
             openaiSessionUpdatedAt = Date.now();
             if (!sessionConfigured) {
@@ -1153,6 +1229,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             clearPendingUserResponseTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
+            activeResponseReason = lastResponseCreateReason;
+            if (activeResponseReason !== "initial-greeting") userResponseCreatedCount += 1;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
             responseAudioDone = false;
@@ -1161,10 +1239,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             aiIsSpeaking = true;
             lastResponseFinishReason = null;
             lastResponseOutputTokens = null;
-            console.log(`[Diag] response.created #${responseCreatedCount} responseId=${activeResponseId} (callId=${callId})`);
+            console.log(`[Diag] response.created #${responseCreatedCount} reason=${activeResponseReason} responseId=${activeResponseId} (callId=${callId})`);
             break;
 
-          case "response.audio.delta": {
+          case "response.audio.delta":
+          case "response.output_audio.delta": {
             const responseId = event.response_id || activeResponseId || null;
             if (ignoreAudioUntilNextResponse) {
               break;
@@ -1172,11 +1251,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
             }
-            assistantAudioDeltaCount += 1;
+            if (event.type === "response.output_audio.delta") assistantOutputAudioDeltaCount += 1;
+            else assistantAudioDeltaCount += 1;
             responseHasAudio = true;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
               try {
                 const raw = Buffer.from(event.delta, "base64");
+                totalAssistantAudioBytes += raw.length;
+                if (activeResponseReason !== "initial-greeting") {
+                  userAssistantAudioDeltaCount += 1;
+                  userAssistantAudioBytes += raw.length;
+                }
+                if (!firstAssistantAudioDeltaAt) {
+                  firstAssistantAudioDeltaAt = new Date().toISOString();
+                  console.log(`[Diag] first OpenAI audio delta type=${event.type} bytes=${raw.length} at=${firstAssistantAudioDeltaAt} (callId=${callId})`);
+                }
                 const FRAME = 160; // 20ms @ 8kHz mu-law
                 for (let offset = 0; offset < raw.length; offset += FRAME) {
                   const chunk = raw.subarray(offset, Math.min(offset + FRAME, raw.length));
@@ -1187,6 +1276,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       media: { payload: chunk.toString("base64") },
                     }));
                     twilioOutboundFrames += 1;
+                    if (activeResponseReason !== "initial-greeting") userTwilioOutboundFrames += 1;
+                    if (!firstTwilioOutboundAt) {
+                      firstTwilioOutboundAt = new Date().toISOString();
+                      console.log(`[Diag] first outbound media to Twilio at=${firstTwilioOutboundAt} twilioState=${twilioWs.readyState} (callId=${callId})`);
+                    }
                   } catch (sendErr) {
                     twilioOutboundSendErrors += 1;
                     console.error(`[Diag] Twilio send error (callId=${callId}, twilioState=${twilioWs.readyState}):`, sendErr);
@@ -1200,6 +1294,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     media: { payload: event.delta },
                   }));
                   twilioOutboundFrames += 1;
+                  if (!firstTwilioOutboundAt) {
+                    firstTwilioOutboundAt = new Date().toISOString();
+                    console.log(`[Diag] first outbound media to Twilio at=${firstTwilioOutboundAt} twilioState=${twilioWs.readyState} (callId=${callId})`);
+                  }
                 } catch (sendErr) {
                   twilioOutboundSendErrors += 1;
                   console.error(`[Diag] Twilio send error (fallback path) (callId=${callId}):`, sendErr);
@@ -1418,7 +1516,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               clearMarkFallback();
               markFallbackTimer = setTimeout(() => {
                 if (responsePlaybackMarkName) {
-                  console.warn(`[MediaStream] Mark fallback triggered — Twilio mark not received in ${markTimeoutMs}ms, force-completing turn (callId=${callId}, mark=${responsePlaybackMarkName})`);
+                  console.warn(`[Diag-Gate] greetingPlaying timeout fallback fired=${greetingInProgress} — Twilio mark not received in ${markTimeoutMs}ms, force-completing turn (callId=${callId}, mark=${responsePlaybackMarkName})`);
                   responsePlaybackMarkName = null;
                   maybeCompleteAiTurn("mark-fallback-timeout");
                 }
@@ -1508,7 +1606,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       clearMarkFallback();
       clearTurnDetectionEnableTimer();
       clearPendingUserResponseTimer();
-      console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
+      console.log(`[Diag-OpenAI] OpenAI websocket close code=${code} reason=${reason?.toString() || ""} (callId=${callId})`);
       openaiWs = null;
       finalizeCall();
     });
@@ -1540,6 +1638,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   // Save final call data to DB
   const finalizeCall = () => {
     if (!callId) return;
+    if (callFinalized) return;
+    callFinalized = true;
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
     clearPendingUserResponseTimer();
@@ -1552,9 +1652,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       `[Diag-Final] callId=${callId} ` +
       `inFrames=${twilioInboundFrames}(fwd=${twilioInboundFramesForwarded},dropG=${twilioInboundFramesDropGreeting},dropC=${twilioInboundFramesDropCooldown},dropAB=${twilioInboundFramesDropAntiBargein},postGreeting=${twilioInboundFramesAfterGreeting}) ` +
       `vad{started=${speechStartedCount},stopped=${speechStoppedCount},committed=${bufferCommittedCount},transcripts=${userTranscriptCount}} ` +
-      `resp{created=${responseCreatedCount},done=${responseDoneCount},sent=${responseCreateSentCount},err=${responseErrorCount}} ` +
-      `audio{deltas=${assistantAudioDeltaCount},twilioOut=${twilioOutboundFrames},sendErr=${twilioOutboundSendErrors}} ` +
-      `session{created=${openaiSessionCreatedAt?"yes":"no"},updated=${openaiSessionUpdatedAt?"yes":"no"},greetingCompletedAt=${greetingCompletedAt?"yes":"no"}}`
+      `items{created=${conversationItemCreatedCount}} ` +
+      `resp{createSent=${responseCreateSentCount},created=${responseCreatedCount},done=${responseDoneCount},err=${responseErrorCount},active=${activeResponseId || "none"}} ` +
+      `audio{response.audio.delta=${assistantAudioDeltaCount},response.output_audio.delta=${assistantOutputAudioDeltaCount},firstDeltaAt=${firstAssistantAudioDeltaAt || "none"},bytes=${totalAssistantAudioBytes},twilioOut=${twilioOutboundFrames},firstTwilioOutAt=${firstTwilioOutboundAt || "none"},sendErr=${twilioOutboundSendErrors}} ` +
+      `twilio{start=${twilioStartReceived},stop=${twilioStopReceived},greetingMark=${twilioGreetingMarkReceived},firstCallerMediaAfterGreetingAt=${firstCallerMediaAfterGreetingAt || "none"}} ` +
+      `session{created=${openaiSessionCreatedAt?"yes":"no"},updated=${openaiSessionUpdatedAt?"yes":"no"},config=${lastSessionConfigSent ? JSON.stringify(lastSessionConfigSent) : "none"}} ` +
+      diagState() + ` break="${diagnoseBreakPoint()}"`
     );
 
     // Stop listening for inbound SMS replies for this call
@@ -1641,6 +1744,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           break;
 
         case "start":
+          twilioStartReceived = true;
           streamSid = msg.start.streamSid;
           callId = msg.start.customParameters?.callId || "";
           agentId = msg.start.customParameters?.agentId || "";
@@ -1649,6 +1753,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           callDirection = (msg.start.customParameters?.direction === "inbound" ? "inbound" : "outbound");
           callSid = msg.start.customParameters?.callSid || "";
           campaignId = msg.start.customParameters?.campaignId || "";
+          bridgeSelfTest = msg.start.customParameters?.bridgeSelfTest || "";
+          logCallDeploymentIdentity();
           // Parse call variables
           const varsParam = msg.start.customParameters?.variables || "";
           if (varsParam) {
@@ -1659,7 +1765,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.warn(`[MediaStream] Failed to parse variables param (callId=${callId})`);
             }
           }
-          console.log(`[MediaStream] Stream started: streamSid=${streamSid} callId=${callId} agentId=${agentId} callSid=${callSid}`);
+          console.log(`[Diag-Twilio] twilio.start received callId=${callId} streamSid=${streamSid} agentId=${agentId || "(resolve-by-number)"} callSid=${callSid} direction=${callDirection} bridgeSelfTest=${bridgeSelfTest || "none"}`);
 
           // Periodic diagnostic snapshot — proves end-to-end media flow.
           diagnosticSnapshotTimer = setInterval(() => {
@@ -1668,8 +1774,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               `inFrames=${twilioInboundFrames}(fwd=${twilioInboundFramesForwarded},dropG=${twilioInboundFramesDropGreeting},dropC=${twilioInboundFramesDropCooldown},dropAB=${twilioInboundFramesDropAntiBargein},postGreeting=${twilioInboundFramesAfterGreeting}) ` +
               `vad{started=${speechStartedCount},stopped=${speechStoppedCount},committed=${bufferCommittedCount},transcripts=${userTranscriptCount}} ` +
               `resp{created=${responseCreatedCount},done=${responseDoneCount},sent=${responseCreateSentCount},err=${responseErrorCount}} ` +
-              `audio{deltas=${assistantAudioDeltaCount},twilioOut=${twilioOutboundFrames},sendErr=${twilioOutboundSendErrors}} ` +
-              `state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},sessionCfg=${sessionConfigured},twilioState=${twilioWs.readyState},openaiState=${openaiWs?.readyState ?? "null"},cooldownLeftMs=${Math.max(0, inboundAudioCooldownUntil - Date.now())}}`
+              `audio{response.audio.delta=${assistantAudioDeltaCount},response.output_audio.delta=${assistantOutputAudioDeltaCount},bytes=${totalAssistantAudioBytes},twilioOut=${twilioOutboundFrames},sendErr=${twilioOutboundSendErrors}} ` +
+              diagState() + ` sessionCfg=${sessionConfigured} cooldownLeftMs=${Math.max(0, inboundAudioCooldownUntil - Date.now())}`
             );
           }, 5000);
 
@@ -1686,8 +1792,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           twilioInboundFramesAfterGreeting += 1;
           if (!firstInboundAudioAfterGreetingLogged) {
             firstInboundAudioAfterGreetingLogged = true;
+            firstCallerMediaAfterGreetingAt = new Date().toISOString();
             const sinceGreeting = greetingCompletedAt ? Date.now() - greetingCompletedAt : -1;
-            console.log(`[Diag] FIRST inbound media frame after greeting (callId=${callId}) msSinceGreetingComplete=${sinceGreeting} totalSinceStart=${twilioInboundFrames}`);
+            console.log(`[Diag-Twilio] first caller media timestamp after greeting=${firstCallerMediaAfterGreetingAt} msSinceGreetingComplete=${sinceGreeting} totalSinceStart=${twilioInboundFrames} (callId=${callId})`);
+            sendTwilioBridgeSelfTestTone("first-caller-media-after-greeting");
+          }
+          if (greetingCompletedAt && Date.now() - greetingCompletedAt <= 5000) {
+            console.log(`[Diag-Gate] caller media within first 5s after greeting frame=${twilioInboundFramesAfterGreeting} callId=${callId} ${diagState()}`);
           }
           // Short cooldown after AI speech finishes — prevents the model from hearing its
           // own just-played audio (echo loop) and re-triggering the same response.
@@ -1714,7 +1825,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         case "mark": {
           const markName = msg.mark?.name || "";
           if (markName && responsePlaybackMarkName && markName === responsePlaybackMarkName) {
-            console.log(`[MediaStream] Twilio playback mark received (callId=${callId}, mark=${markName})`);
+            if (greetingInProgress) twilioGreetingMarkReceived = true;
+            console.log(`[Diag-Twilio] twilio.mark greeting received=${greetingInProgress ? "yes" : "no"} mark=${markName} (callId=${callId})`);
             clearMarkFallback();
             responsePlaybackMarkName = null;
             maybeCompleteAiTurn("twilio.mark");
@@ -1723,7 +1835,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         }
 
         case "stop":
-          console.log(`[MediaStream] Twilio stream stopped (callId=${callId})`);
+          twilioStopReceived = true;
+          console.log(`[Diag-Twilio] twilio.stop received (callId=${callId})`);
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
             openaiWs.close();
           }
@@ -1737,8 +1850,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   });
 
-  twilioWs.on("close", () => {
-    console.log(`[MediaStream] Twilio WS closed (callId=${callId})`);
+  twilioWs.on("close", (code, reason) => {
+    console.log(`[Diag-Twilio] Twilio websocket close code=${code} reason=${reason?.toString() || ""} (callId=${callId})`);
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
       openaiWs.close();
     } else {

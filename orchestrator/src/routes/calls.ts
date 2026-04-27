@@ -11,6 +11,7 @@ interface StartCallBody {
   campaign_id?: string;
   variables?: Record<string, string>;
   idempotency_key?: string;
+  bridge_self_test?: string;
 }
 
 callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Response) => {
@@ -35,7 +36,7 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
     });
   }
 
-  const { to_number, agent_id, campaign_id, variables } = req.body;
+    const { to_number, agent_id, campaign_id, variables, bridge_self_test } = req.body;
 
   if (!to_number || !agent_id) {
     return res.status(400).json({
@@ -49,7 +50,8 @@ callsRouter.post("/start", async (req: Request<{}, {}, StartCallBody>, res: Resp
   try {
     const callId = crypto.randomUUID();
     const variablesParam = variables && Object.keys(variables).length > 0 ? `&variables=${encodeURIComponent(JSON.stringify(variables))}` : "";
-    const voiceUrl = `${config.publicBaseUrl}/twilio/voice?callId=${callId}&agentId=${agent_id}${campaign_id ? `&campaignId=${campaign_id}` : ""}${variablesParam}`;
+    const bridgeSelfTestParam = bridge_self_test ? `&bridgeSelfTest=${encodeURIComponent(bridge_self_test)}` : "";
+    const voiceUrl = `${config.publicBaseUrl}/twilio/voice?callId=${callId}&agentId=${agent_id}${campaign_id ? `&campaignId=${campaign_id}` : ""}${variablesParam}${bridgeSelfTestParam}`;
     const statusUrl = `${config.publicBaseUrl}/twilio/status`;
 
     // Fetch agent settings to determine recording, ring timeout, and caller-id number
