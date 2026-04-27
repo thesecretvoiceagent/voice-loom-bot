@@ -718,7 +718,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       content: [{ type: "input_text", text: sysMsg }],
                     },
                   }));
-                  openaiWs.send(JSON.stringify({ type: "response.create" }));
+                  sendResponseCreate("system-event");
                 }
               },
             )
@@ -766,7 +766,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-                    openaiWs.send(JSON.stringify({ type: "response.create" }));
+                    sendResponseCreate("system-event");
                   }
                 }
 
@@ -792,7 +792,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-                    openaiWs.send(JSON.stringify({ type: "response.create" }));
+                    sendResponseCreate("system-event");
                   }
                 }
               },
@@ -1210,7 +1210,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     }),
                   },
                 }));
-                openaiWs!.send(JSON.stringify({ type: "response.create" }));
+                sendResponseCreate("tool-result");
                 break;
               }
 
@@ -1226,7 +1226,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 },
               };
               openaiWs!.send(JSON.stringify(toolResult));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              sendResponseCreate("tool-result");
 
               setTimeout(() => {
                 console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
@@ -1253,7 +1253,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   output: JSON.stringify(output),
                 },
               }));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              sendResponseCreate("tool-result");
               transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
             }
 
@@ -1313,7 +1313,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     : { success: false, error: result.error, instruction: `Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent.` }),
                 },
               }));
-              openaiWs!.send(JSON.stringify({ type: "response.create" }));
+              sendResponseCreate("tool-result");
             }
             break;
           }
