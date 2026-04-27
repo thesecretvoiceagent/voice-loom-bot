@@ -640,7 +640,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const formPath = isLovableLike ? "/form" : "/form.html";
         const baseFormUrl = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
         const regFormUrl = `${baseFormUrl}&mode=reg`;
-        // form1_link / form_link → SMS #1: registration number only via dedicated edge form.
+        // form1_link / form_link → SMS #1: registration number only via browser-rendered /form page.
         // form2_link             → SMS #3: callback phone number only (mode=phone)
         callVariables.form1_link = regFormUrl;
         callVariables.form_link = regFormUrl;
