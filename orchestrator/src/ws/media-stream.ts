@@ -1096,7 +1096,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "send_sms",
-          description: `Send one of the pre-configured SMS templates to the other party RIGHT NOW. The recipient is the other party on this call (${recipientHint}) — you do NOT pass a phone number. You also do NOT write the message yourself: pick one of the configured templates by its EXACT name (see AVAILABLE SMS TEMPLATES in your instructions). The server sends the template text VERBATIM. Allowed template_name values: ${allowedNames}. If the requested template name is not one of these exact values, the send will fail. STRICT ORDERING: do NOT speak any "SMS sent / saatsin SMSi" confirmation in the same turn as this tool call. Call the tool first and stay silent; the server will return success:true or success:false. ONLY AFTER the success:true result arrives, briefly confirm to the caller in their language. If success:false, tell the caller it could not be sent — never claim it was sent.`,
+          description: `Send one of the pre-configured SMS templates to the other party on this call (${recipientHint}). The server sends the template text verbatim — you do not write the message and you do not pass a phone number. Allowed template_name values: ${allowedNames}. Returns success:true with sid on success, or success:false with error on failure.`,
           parameters: {
             type: "object",
             properties: {
