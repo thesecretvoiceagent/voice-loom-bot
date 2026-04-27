@@ -1070,8 +1070,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     lastAssistantTranscript = "";
     repeatedAssistantTranscriptCount = 0;
     pendingRecoveryCooldownMs = 0;
-      lastUserAudioItemId = null;
-      lastRespondedUserAudioItemId = null;
+    pendingUserTurn = null;
+    lastUserAudioItemId = null;
+    lastRespondedUserAudioItemId = null;
+    inboundMediaAfterGreetingCount = 0;
+    inboundMediaForwardedAfterGreetingCount = 0;
+    inboundMediaBlockedAfterGreetingCount = 0;
     clearTurnDetectionEnableTimer();
     if (initialResponseFallbackTimer) {
       clearTimeout(initialResponseFallbackTimer);
