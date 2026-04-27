@@ -251,6 +251,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
   let antiBargeinEnabled = false;
   let aiIsSpeaking = false; // Track whether AI is currently outputting audio or Twilio is still playing it
+  // Guardrails against premature end_call right after greeting:
+  // 1. We require at least one real user utterance before honoring end_call.
+  // 2. We require a minimum elapsed time since greeting completion.
+  let greetingCompletedAt: number | null = null;
+  let userUtteranceCount = 0;
+  const MIN_MS_AFTER_GREETING_BEFORE_END_CALL = 12_000;
   let responsePlaybackMarkName: string | null = null;
   let responseHasAudio = false;
   let responseAudioDone = false;
@@ -356,6 +362,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
     if (greetingInProgress) {
       greetingInProgress = false;
+      greetingCompletedAt = Date.now();
       console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after cooldown (callId=${callId}, responseId=${completedResponseId})`);
       clearTurnDetectionEnableTimer();
       turnDetectionEnableTimer = setTimeout(() => {
@@ -1091,6 +1098,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "conversation.item.input_audio_transcription.completed":
             console.log(`[MediaStream] User said (callId=${callId}): ${event.transcript}`);
             transcriptLines.push(`[User]: ${event.transcript}`);
+            if (typeof event.transcript === "string" && event.transcript.trim().length > 0) {
+              userUtteranceCount += 1;
+            }
             // Real user speech resets the repeat counter.
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
@@ -1107,6 +1117,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const args = JSON.parse(event.arguments);
                 reason = args.reason || reason;
               } catch {}
+
+              // Guardrail: refuse end_call if it fires too soon after greeting or before
+              // any real user utterance. This stops the bot from "hanging up randomly"
+              // right after the greeting (e.g. when whisper STT mangles the first reply).
+              const msSinceGreeting = greetingCompletedAt ? Date.now() - greetingCompletedAt : 0;
+              const tooEarly = !greetingCompletedAt || msSinceGreeting < MIN_MS_AFTER_GREETING_BEFORE_END_CALL;
+              const noUserSpeech = userUtteranceCount === 0;
+              if (tooEarly || noUserSpeech) {
+                console.warn(`[MediaStream] end_call BLOCKED — tooEarly=${tooEarly} (msSinceGreeting=${msSinceGreeting}) noUserSpeech=${noUserSpeech} userUtterances=${userUtteranceCount} reason="${reason}" (callId=${callId})`);
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({
+                      success: false,
+                      error: "end_call_not_allowed_yet",
+                      message: "You may NOT end the call yet. The caller has not had a real chance to speak. Stay on the line, ask them again in their language to describe the situation, and wait for their answer. Do NOT call end_call again until the caller has actually spoken and the case is fully handled.",
+                    }),
+                  },
+                }));
+                openaiWs!.send(JSON.stringify({ type: "response.create" }));
+                break;
+              }
 
               console.log(`[MediaStream] END CALL requested: ${reason} (callId=${callId})`);
               transcriptLines.push(`[System]: Call ended — ${reason}`);
