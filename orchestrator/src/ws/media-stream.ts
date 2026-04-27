@@ -878,7 +878,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
       const afterSmsList = smsMessages.filter((m) => m.trigger === "after");
       if (duringSmsList.length > 0 || afterSmsList.length > 0) {
-        let smsBlock = `\n\nAVAILABLE SMS TEMPLATES — These are the ONLY SMSes you can send. Each has a fixed name and EXACT text. You may NOT change the text. To send one, call the send_sms tool with template_name set to the exact name below. Pick the template whose "When to use" matches the current moment in the conversation.`;
+        let smsBlock = `\n\nAVAILABLE SMS TEMPLATES — These are the ONLY SMSes you can send. Each has a fixed name and EXACT text. You may NOT change the text. To send one, call the send_sms tool with template_name set to the exact name below. Pick the template whose "When to use" matches the current moment in the conversation. Never use any template name from the system prompt if it is not listed here.`;
         if (duringSmsList.length > 0) {
           smsBlock += `\n\nDuring-call SMSes (you choose when/whether to send each):`;
           duringSmsList.forEach((m, i) => {
@@ -893,7 +893,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             smsBlock += `\n${i + 1}. name="${m.name}"\n   Purpose: ${whenToUse}\n   Content: "${m.content}"`;
           });
         }
-        smsBlock += `\n\nRules:\n- Pick the SMS whose "When to use" matches the moment.\n- Never invent a new SMS. Never paraphrase the content.\n- If none fit, do not send anything.\n- After the customer replies via SMS, you will receive a system message starting with "[SYSTEM EVENT: sms_received]". Treat it as an internal note (do NOT read the tag aloud) and acknowledge the SMS content naturally in the conversation (e.g. confirm a number back to them).`;
+        smsBlock += `\n\nRules:\n- Pick the SMS whose "When to use" matches the moment.\n- Never invent a new SMS. Never paraphrase the content.\n- If none fit, do not send anything.\n- Template names in this AVAILABLE SMS TEMPLATES block override any conflicting names in the agent prompt.\n- After the customer replies via SMS, you will receive a system message starting with "[SYSTEM EVENT: sms_received]". Treat it as an internal note (do NOT read the tag aloud) and acknowledge the SMS content naturally in the conversation only if it contains usable data.`;
         fullInstructions += smsBlock;
       }
 
@@ -946,7 +946,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "send_sms",
-          description: `Send one of the pre-configured SMS templates to the other party RIGHT NOW. The recipient is the other party on this call (${recipientHint}) — you do NOT pass a phone number. You also do NOT write the message yourself: pick one of the configured templates by its EXACT name (see AVAILABLE SMS TEMPLATES in your instructions). The server sends the template text VERBATIM. Allowed template_name values: ${allowedNames}. After it sends, briefly confirm to the caller in their language.`,
+          description: `Send one of the pre-configured SMS templates to the other party RIGHT NOW. The recipient is the other party on this call (${recipientHint}) — you do NOT pass a phone number. You also do NOT write the message yourself: pick one of the configured templates by its EXACT name (see AVAILABLE SMS TEMPLATES in your instructions). The server sends the template text VERBATIM. Allowed template_name values: ${allowedNames}. If the requested template name is not one of these exact values, the send will fail. After it sends, briefly confirm to the caller in their language.`,
           parameters: {
             type: "object",
             properties: {
