@@ -1229,6 +1229,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             clearPendingUserResponseTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
+            activeResponseReason = lastResponseCreateReason;
+            if (activeResponseReason !== "initial-greeting") userResponseCreatedCount += 1;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
             responseAudioDone = false;
@@ -1237,7 +1239,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             aiIsSpeaking = true;
             lastResponseFinishReason = null;
             lastResponseOutputTokens = null;
-            console.log(`[Diag] response.created #${responseCreatedCount} responseId=${activeResponseId} (callId=${callId})`);
+            console.log(`[Diag] response.created #${responseCreatedCount} reason=${activeResponseReason} responseId=${activeResponseId} (callId=${callId})`);
             break;
 
           case "response.audio.delta":
@@ -1256,6 +1258,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               try {
                 const raw = Buffer.from(event.delta, "base64");
                 totalAssistantAudioBytes += raw.length;
+                if (activeResponseReason !== "initial-greeting") {
+                  userAssistantAudioDeltaCount += 1;
+                  userAssistantAudioBytes += raw.length;
+                }
                 if (!firstAssistantAudioDeltaAt) {
                   firstAssistantAudioDeltaAt = new Date().toISOString();
                   console.log(`[Diag] first OpenAI audio delta type=${event.type} bytes=${raw.length} at=${firstAssistantAudioDeltaAt} (callId=${callId})`);
@@ -1270,6 +1276,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       media: { payload: chunk.toString("base64") },
                     }));
                     twilioOutboundFrames += 1;
+                    if (activeResponseReason !== "initial-greeting") userTwilioOutboundFrames += 1;
                     if (!firstTwilioOutboundAt) {
                       firstTwilioOutboundAt = new Date().toISOString();
                       console.log(`[Diag] first outbound media to Twilio at=${firstTwilioOutboundAt} twilioState=${twilioWs.readyState} (callId=${callId})`);
