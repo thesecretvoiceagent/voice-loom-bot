@@ -282,7 +282,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let userTranscriptCount = 0;
   // D. Assistant response creation
   let responseCreateSentCount = 0;
+  let userResponseCreateSentCount = 0;
   let responseCreatedCount = 0;
+  let userResponseCreatedCount = 0;
   let responseDoneCount = 0;
   let responseErrorCount = 0;
   let pendingUserResponseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -294,7 +296,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let assistantOutputAudioDeltaCount = 0;
   let firstAssistantAudioDeltaAt: string | null = null;
   let totalAssistantAudioBytes = 0;
+  let userAssistantAudioDeltaCount = 0;
+  let userAssistantAudioBytes = 0;
   let twilioOutboundFrames = 0;
+  let userTwilioOutboundFrames = 0;
   let firstTwilioOutboundAt: string | null = null;
   let twilioOutboundSendErrors = 0;
   let diagnosticSnapshotTimer: ReturnType<typeof setInterval> | null = null;
@@ -307,6 +312,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let loadedAgentName = "(none)";
   let bridgeSelfTest = "";
   let callFinalized = false;
+  let lastResponseCreateReason = "(none)";
+  let activeResponseReason = "(none)";
 
   const diagState = () =>
     `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
