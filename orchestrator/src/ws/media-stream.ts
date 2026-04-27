@@ -519,7 +519,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
 
     if (agentConfig) {
+      loadedAgentName = agentConfig.name || "(unnamed)";
       console.log(`[MediaStream] Loaded agent config: "${agentConfig.name}" (callId=${callId})`);
+      console.log(`[Diag-Agent] callId=${callId} loadedAgentId=${(agentConfig as any).id || agentId || "(none)"} loadedAgentName="${loadedAgentName}" requestedAgentId=${agentId || "(none)"}`);
       if (agentConfig.system_prompt) instructions = agentConfig.system_prompt;
       if (agentConfig.greeting) greeting = agentConfig.greeting;
       if (agentConfig.voice) voice = agentConfig.voice;
