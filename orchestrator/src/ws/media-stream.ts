@@ -974,15 +974,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         },
       };
       if (greeting) {
-        // Strict, unambiguous instructions. Past versions said "in the original language"
-        // which the model interpreted loosely and would translate Estonian → English.
+        // Pass the configured greeting through verbatim — no extra prompt rules.
+        // The agent's "Voice agent instructions" prompt is the sole source of behavior.
         responseCreate.response.instructions =
-          `Your one and ONLY job for this turn is to read the following greeting OUT LOUD, ` +
-          `WORD-FOR-WORD, in the EXACT SAME LANGUAGE it is written in. ` +
-          `Do NOT translate it. Do NOT paraphrase it. Do NOT add anything before or after it. ` +
-          `Do NOT change a single word. Do NOT pronounce any punctuation, brackets, or template syntax. ` +
-          `If the greeting is in Estonian, you MUST speak Estonian. If in Finnish, Finnish. If in English, English. ` +
-          `\n\nGREETING TO SAY VERBATIM:\n"""\n${greeting}\n"""`;
+          `Say the following greeting now, exactly as written:\n${greeting}`;
       }
       openaiWs.send(JSON.stringify(responseCreate));
 
