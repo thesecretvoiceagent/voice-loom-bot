@@ -1177,15 +1177,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
-            if (!greetingInProgress && !activeResponseId) {
-              clearPendingUserResponseTimer();
-              pendingUserResponseTimer = setTimeout(() => {
-                pendingUserResponseTimer = null;
-                if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId || greetingInProgress) return;
-                console.warn(`[Diag] No assistant response after user transcript; forcing response.create (callId=${callId})`);
-                sendResponseCreate("transcript-fallback");
-              }, 1200);
-            }
+            scheduleUserResponseCreate("user-transcript", 250);
             break;
 
           case "response.function_call_arguments.done": {
