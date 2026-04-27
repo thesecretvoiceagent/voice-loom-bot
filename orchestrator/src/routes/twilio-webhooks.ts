@@ -17,6 +17,7 @@ twilioWebhookRouter.post("/voice", async (req: Request, res: Response) => {
   const agentId = (req.query.agentId as string) || "";
   const campaignId = (req.query.campaignId as string) || "";
   const variables = (req.query.variables as string) || "";
+  const bridgeSelfTest = (req.query.bridgeSelfTest as string) || process.env.TWILIO_BRIDGE_SELF_TEST || "";
   const direction = isInbound ? "inbound" : "outbound";
 
   console.log(`[${correlationId}] POST /twilio/voice direction=${direction} callId=${callId} agentId=${agentId || "(resolve-by-number)"} campaignId=${campaignId} variables=${variables ? 'yes' : 'no'}`);
@@ -85,6 +86,7 @@ twilioWebhookRouter.post("/voice", async (req: Request, res: Response) => {
       <Parameter name="fromNumber" value="${fromNumber}"/>
       <Parameter name="direction" value="${direction}"/>
       <Parameter name="variables" value="${variables.replace(/"/g, '&quot;')}"/>
+      <Parameter name="bridgeSelfTest" value="${bridgeSelfTest.replace(/"/g, '&quot;')}"/>
     </Stream>
   </Connect>
 </Response>`;
