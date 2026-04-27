@@ -1435,7 +1435,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "conversation.item.input_audio_transcription.completed": {
             const userTranscript = (event.transcript || "").toString();
             lastUserAudioItemId = event.item_id || lastUserAudioItemId || null;
-            console.log(`[MediaStream] User said (callId=${callId}): ${userTranscript}`);
+            console.log(`[MediaStream] conversation.item.input_audio_transcription.completed (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}) transcript="${userTranscript.slice(0, 200)}"`);
             transcriptLines.push(`[User]: ${userTranscript}`);
             // Real user speech resets the repeat counter.
             lastAssistantTranscript = "";
@@ -1444,14 +1444,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (normalizeTranscript(userTranscript)) {
               callerHasSpokenSinceGreeting = true;
               callerSubstantiveTurnCount += 1;
-              scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 450);
+              const turnId = lastUserAudioItemId || `transcript:${Date.now()}`;
+              pendingUserTurn = { id: turnId, transcript: userTranscript, source: "input_audio_transcription.completed", createdAt: Date.now() };
+              scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 0);
             }
             break;
           }
 
           case "conversation.item.input_audio_transcription.failed":
             console.warn(`[MediaStream] User transcription failed (callId=${callId}):`, event.error || event);
-            scheduleManualResponseAfterUserSpeech("input_audio_transcription.failed", 250);
+            break;
+
+          case "conversation.item.created":
+            console.log(`[MediaStream] conversation.item.created (callId=${callId}, itemId=${event.item?.id || event.item_id || "unknown"}, role=${event.item?.role || "unknown"}, type=${event.item?.type || "unknown"})`);
+            break;
+
+          case "response.output_item.added":
+            console.log(`[MediaStream] response.output_item.added (callId=${callId}, responseId=${event.response_id || activeResponseId || "unknown"}, itemId=${event.item?.id || event.item_id || "unknown"}, type=${event.item?.type || "unknown"})`);
+            break;
+
+          case "response.content_part.added":
+            console.log(`[MediaStream] response.content_part.added (callId=${callId}, responseId=${event.response_id || activeResponseId || "unknown"}, itemId=${event.item_id || "unknown"}, partType=${event.part?.type || event.content_part?.type || "unknown"})`);
             break;
 
           case "response.function_call_arguments.done": {
