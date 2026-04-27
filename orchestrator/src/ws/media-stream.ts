@@ -1705,17 +1705,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             if (!responseHasAudio && pendingUserResponseRetry && !greetingInProgress) {
               pendingUserResponseRetry = false;
-              console.warn(`[MediaStream] Post-user response completed with no audio; retrying once with tools disabled (callId=${callId}, responseId=${responseId})`);
-              setTimeout(() => {
-                if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || activeResponseId) return;
-                openaiWs.send(JSON.stringify({
-                  type: "response.create",
-                  response: {
-                    modalities: ["text", "audio"],
-                    tool_choice: "none",
-                  },
-                }));
-              }, 150);
+              console.error(`[MediaStream] HARD ERROR: post-user response.done had no assistant audio (callId=${callId}, responseId=${responseId})`);
             }
             maybeCompleteAiTurn("response.done");
             break;
