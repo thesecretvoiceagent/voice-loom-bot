@@ -958,6 +958,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
     openaiWs.on("open", () => {
       console.log(`[MediaStream] Connected to OpenAI Realtime (callId=${callId}, voice=${voice})`);
+      console.log(`[Diag-OpenAI] OpenAI WS open (callId=${callId}) model=${config.openai.realtimeModel} readyState=${openaiWs?.readyState ?? "null"}`);
 
       // Note: do NOT bake "your first message MUST be the greeting" into the long-lived
       // session instructions — that text persists for the whole call and can cause the
