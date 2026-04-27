@@ -1239,7 +1239,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     }),
                   },
                 }));
-                sendResponseCreate("tool-result");
+                scheduleUserResponseCreate("tool-result", 50);
                 break;
               }
 
@@ -1255,7 +1255,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 },
               };
               openaiWs!.send(JSON.stringify(toolResult));
-              sendResponseCreate("tool-result");
+              scheduleUserResponseCreate("tool-result", 50);
 
               setTimeout(() => {
                 console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
@@ -1282,7 +1282,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   output: JSON.stringify(output),
                 },
               }));
-              sendResponseCreate("tool-result");
+              scheduleUserResponseCreate("tool-result", 50);
               transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
             }
 
@@ -1342,7 +1342,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     : { success: false, error: result.error, instruction: `Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent.` }),
                 },
               }));
-              sendResponseCreate("tool-result");
+              scheduleUserResponseCreate("tool-result", 50);
             }
             break;
           }
