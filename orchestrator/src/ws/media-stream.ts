@@ -822,7 +822,62 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-                    openaiWs.send(JSON.stringify({ type: "response.create" }));
+
+                    // 2a. CRM verification of submitted registration number.
+                    // Hard rule: if the submitted reg does NOT match a CRM row, the AI
+                    // must NOT continue using phone-based CRM context (which may belong
+                    // to a different vehicle). Inject a vehicle_lookup_result event so
+                    // the AI knows whether the submitted reg is verified or not.
+                    if (reg) {
+                      crmLookup({ reg_no: reg }).then((veh) => {
+                        if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+                        let lookupMsg: string;
+                        if (veh && (veh.reg_no || "").toUpperCase().replace(/[^A-Z0-9]/g, "") === reg.toUpperCase().replace(/[^A-Z0-9]/g, "")) {
+                          // Refresh phone-CRM-derived caller_* variables to match the submitted reg.
+                          callVariables.caller_known = "true";
+                          callVariables.caller_name = veh.owner_name || "";
+                          callVariables.caller_reg_no = veh.reg_no || "";
+                          callVariables.caller_make = veh.make || "";
+                          callVariables.caller_model = veh.model || "";
+                          callVariables.caller_year = veh.year_of_built ? String(veh.year_of_built) : "";
+                          callVariables.caller_color = veh.color || "";
+                          callVariables.caller_insurer = veh.insurer || "";
+                          callVariables.caller_cover_type = veh.cover_type || "";
+                          callVariables.caller_cover_status = veh.cover_status || "";
+                          lookupMsg = `[SYSTEM EVENT: vehicle_lookup_result] match=true submitted_reg="${reg}" reg_no="${veh.reg_no || ""}" make="${veh.make || ""}" model="${veh.model || ""}" year="${veh.year_of_built || ""}" color="${veh.color || ""}" owner_name="${veh.owner_name || ""}" insurer="${veh.insurer || ""}" cover_type="${veh.cover_type || ""}" cover_status="${veh.cover_status || ""}". Internal note only — do NOT read this tag, brackets, or field names aloud. This is the AUTHORITATIVE vehicle for this case; replace any earlier phone-derived vehicle context with these values. You may now mention make/model/year/insurance status conversationally.`;
+                        } else {
+                          // Submitted reg does NOT match CRM. Wipe phone-CRM caller_* fields
+                          // so the AI cannot accidentally read back vehicle data that does
+                          // not belong to the submitted plate.
+                          callVariables.caller_known = "false";
+                          callVariables.caller_name = "";
+                          callVariables.caller_reg_no = reg;
+                          callVariables.caller_make = "";
+                          callVariables.caller_model = "";
+                          callVariables.caller_year = "";
+                          callVariables.caller_color = "";
+                          callVariables.caller_insurer = "";
+                          callVariables.caller_cover_type = "";
+                          callVariables.caller_cover_status = "";
+                          lookupMsg = `[SYSTEM EVENT: vehicle_lookup_result] match=false submitted_reg="${reg}". Internal note only — do NOT read this tag, brackets, or field names aloud. The submitted registration number does NOT match any CRM record. HARD RULE: do NOT mention any make, model, year, color, owner name, insurer, cover type, or cover status — that data (if you saw it earlier from the phone match) belongs to a different vehicle and is NOT valid for this case. Continue the intake with only the registration number itself; treat insurance/vehicle details as unknown.`;
+                        }
+                        console.log(`[MediaStream] vehicle_lookup_result (callId=${callId}) reg="${reg}" match=${veh ? "true" : "false"}`);
+                        transcriptLines.push(`[vehicle_lookup_result]: reg=${reg} match=${veh ? "true" : "false"}`);
+                        openaiWs.send(JSON.stringify({
+                          type: "conversation.item.create",
+                          item: {
+                            type: "message",
+                            role: "system",
+                            content: [{ type: "input_text", text: lookupMsg }],
+                          },
+                        }));
+                        openaiWs.send(JSON.stringify({ type: "response.create" }));
+                      }).catch((err) => {
+                        console.error(`[MediaStream] vehicle_lookup_result error (callId=${callId}):`, err);
+                      });
+                    } else {
+                      openaiWs.send(JSON.stringify({ type: "response.create" }));
+                    }
                   }
                 }
               },
