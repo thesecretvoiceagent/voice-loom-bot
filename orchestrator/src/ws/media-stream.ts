@@ -306,6 +306,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let lastSessionConfigSent: Record<string, unknown> | null = null;
   let loadedAgentName = "(none)";
   let bridgeSelfTest = "";
+  let callFinalized = false;
 
   const diagState = () =>
     `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
@@ -314,6 +315,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const d = getDeploymentIdentity();
     console.log(`[Diag-Deploy] callId=${callId} gitSha=${d.gitSha} railwayDeploymentId=${d.railwayDeploymentId} NODE_ENV=${d.nodeEnv} realtimeModel=${d.realtimeModel}`);
     console.log(`[Diag-Deploy] callId=${callId} twilioVoiceWebhook=${d.expectedTwilioVoiceWebhook} expectedPublicBaseUrl=${d.publicBaseUrl} expectedStreamUrl=${d.expectedTwilioStreamUrl}`);
+  };
+
+  const diagnoseBreakPoint = () => {
+    if (twilioInboundFramesAfterGreeting === 0) return "Twilio inbound media after greeting is 0: Twilio stream/greeting mark/gating is broken.";
+    if (speechStartedCount === 0 && userTranscriptCount === 0 && bufferCommittedCount === 0) return "Twilio inbound media exists but no OpenAI speech_started/transcript/commit: audio forwarding or Realtime input format is broken.";
+    if ((userTranscriptCount > 0 || bufferCommittedCount > 0) && responseCreateSentCount === 0) return "OpenAI transcript/commit exists but no response.create: response triggering logic is broken.";
+    if (responseCreateSentCount > 0 && responseCreatedCount === 0) return "response.create was sent but no response.created: OpenAI session/model/config/error is broken.";
+    if (responseCreatedCount > 0 && assistantAudioDeltaCount + assistantOutputAudioDeltaCount === 0) return "response.created exists but no audio delta: session output modality/audio config is broken.";
+    if (assistantAudioDeltaCount + assistantOutputAudioDeltaCount > 0 && twilioOutboundFrames === 0) return "audio delta exists but no Twilio outbound media: outbound forwarding/conversion is broken.";
+    if (twilioOutboundFrames > 0) return "Twilio outbound media exists; if caller hears nothing, codec/payload format or Twilio playback path is broken.";
+    return "No single break point identified; inspect preceding counters/events.";
   };
 
   const sendTwilioBridgeSelfTestTone = (reason: string) => {
