@@ -285,6 +285,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseCreatedCount = 0;
   let responseDoneCount = 0;
   let responseErrorCount = 0;
+  let pendingUserResponseTimer: ReturnType<typeof setTimeout> | null = null;
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
   let twilioOutboundFrames = 0;
@@ -303,6 +304,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       clearTimeout(turnDetectionEnableTimer);
       turnDetectionEnableTimer = null;
     }
+  };
+
+  const clearPendingUserResponseTimer = () => {
+    if (pendingUserResponseTimer) {
+      clearTimeout(pendingUserResponseTimer);
+      pendingUserResponseTimer = null;
+    }
+  };
+
+  const sendResponseCreate = (reason: string, response?: Record<string, unknown>) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
+    responseCreateSentCount += 1;
+    console.log(`[Diag] response.create sent #${responseCreateSentCount} reason=${reason} (callId=${callId})`);
+    openaiWs.send(JSON.stringify(response ? { type: "response.create", response } : { type: "response.create" }));
+    return true;
   };
 
   const normalizeTranscript = (txt: string) =>
@@ -339,6 +355,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
+        create_response: true,      // Ensure caller speech automatically triggers assistant audio
+        interrupt_response: false,  // Greeting/turn completion is controlled by our own playback state
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
