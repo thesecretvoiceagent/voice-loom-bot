@@ -259,6 +259,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let callerHasSpokenSinceGreeting = false;
   let callerSubstantiveTurnCount = 0;
+  let postGreetingAssistantTurnCount = 0;
   let pendingUserResponseRetry = false;
   let lastUserAudioItemId: string | null = null;
   let lastRespondedUserAudioItemId: string | null = null;
@@ -371,12 +372,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     lastRespondedUserAudioItemId = lastUserAudioItemId;
     console.warn(`[MediaStream] Creating AI response after user speech (${source}) (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"})`);
     pendingUserResponseRetry = true;
+    const response: Record<string, unknown> = {
+      modalities: ["text", "audio"],
+    };
+    if (postGreetingAssistantTurnCount === 0) {
+      response.tool_choice = "none";
+    }
     openaiWs.send(JSON.stringify({
       type: "response.create",
-      response: {
-        modalities: ["text", "audio"],
-        tool_choice: "auto",
-      },
+      response,
     }));
     return true;
   };
@@ -402,7 +406,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.55,            // Balanced for phone audio; 0.7 was missing quiet callers.
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
-        create_response: true,      // Let Realtime behave like a normal voicebot after each caller turn.
+        create_response: false,     // We trigger responses ourselves after VAD commits caller audio.
         interrupt_response: false,  // Barge-in is guarded manually below to avoid invalid response.cancel calls.
       },
     };
@@ -1281,6 +1285,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             const assistantTranscript = (event.transcript || "").toString();
             console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
             transcriptLines.push(`[Agent]: ${assistantTranscript}`);
+            if (!greetingInProgress) {
+              postGreetingAssistantTurnCount += 1;
+            }
 
             // Detect the model repeating itself (echo loop). If it says effectively the
             // same line twice in a row without the user speaking in between, extend the
@@ -1314,12 +1321,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (normalizeTranscript(userTranscript)) {
               callerHasSpokenSinceGreeting = true;
               callerSubstantiveTurnCount += 1;
+              scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 450);
             }
             break;
           }
 
           case "conversation.item.input_audio_transcription.failed":
             console.warn(`[MediaStream] User transcription failed (callId=${callId}):`, event.error || event);
+            scheduleManualResponseAfterUserSpeech("input_audio_transcription.failed", 250);
             break;
 
           case "response.function_call_arguments.done": {
@@ -1573,7 +1582,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "input_audio_buffer.committed":
             lastUserAudioItemId = event.item_id || lastUserAudioItemId || null;
-            console.log(`[MediaStream] Caller audio committed; Realtime will auto-create the response (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}, previous=${event.previous_item_id || "none"})`);
+            console.log(`[MediaStream] Caller audio committed; scheduling manual response (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}, previous=${event.previous_item_id || "none"})`);
+            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 900);
             break;
 
           case "input_audio_buffer.speech_started":
@@ -1603,7 +1613,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
               openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
             } else {
-              console.log(`[MediaStream] Speech started (no active response — waiting for Realtime VAD auto-response) (callId=${callId}, itemId=${event.item_id || "unknown"})`);
+              console.log(`[MediaStream] Speech started (no active response — waiting for VAD commit, then manual response) (callId=${callId}, itemId=${event.item_id || "unknown"})`);
             }
             break;
 
