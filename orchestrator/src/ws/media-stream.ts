@@ -260,6 +260,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callerHasSpokenSinceGreeting = false;
   let callerSubstantiveTurnCount = 0;
   let pendingUserResponseRetry = false;
+  let lastUserAudioItemId: string | null = null;
+  let lastRespondedUserAudioItemId: string | null = null;
 
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
@@ -365,7 +367,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const sendUserTurnResponseCreate = (source: string) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
     if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return false;
-    console.warn(`[MediaStream] Creating AI response after user speech (${source}) (callId=${callId})`);
+    if (lastUserAudioItemId && lastRespondedUserAudioItemId === lastUserAudioItemId) return false;
+    lastRespondedUserAudioItemId = lastUserAudioItemId;
+    console.warn(`[MediaStream] Creating AI response after user speech (${source}) (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"})`);
     pendingUserResponseRetry = true;
     openaiWs.send(JSON.stringify({
       type: "response.create",
@@ -962,6 +966,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     lastAssistantTranscript = "";
     repeatedAssistantTranscriptCount = 0;
     pendingRecoveryCooldownMs = 0;
+      lastUserAudioItemId = null;
+      lastRespondedUserAudioItemId = null;
     clearTurnDetectionEnableTimer();
     if (initialResponseFallbackTimer) {
       clearTimeout(initialResponseFallbackTimer);
@@ -1304,6 +1310,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               callerHasSpokenSinceGreeting = true;
               callerSubstantiveTurnCount += 1;
             }
+            scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 50);
             break;
           }
 
@@ -1558,10 +1565,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
 
           case "input_audio_buffer.speech_stopped":
+            console.log(`[MediaStream] Speech stopped (callId=${callId}, itemId=${event.item_id || "unknown"})`);
             break;
 
           case "input_audio_buffer.committed":
-            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 1800);
+            lastUserAudioItemId = event.item_id || lastUserAudioItemId || null;
+            console.log(`[MediaStream] Caller audio committed (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}, previous=${event.previous_item_id || "none"})`);
+            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 80);
             break;
 
           case "input_audio_buffer.speech_started":
@@ -1591,7 +1601,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
               openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
             } else {
-              console.log(`[MediaStream] Speech started (no active response — letting VAD auto-create response) (callId=${callId})`);
+              console.log(`[MediaStream] Speech started (no active response — waiting for VAD commit, then manual response) (callId=${callId}, itemId=${event.item_id || "unknown"})`);
             }
             break;
 
