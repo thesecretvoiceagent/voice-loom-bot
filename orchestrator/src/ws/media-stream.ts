@@ -1789,7 +1789,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         case "mark": {
           const markName = msg.mark?.name || "";
           if (markName && responsePlaybackMarkName && markName === responsePlaybackMarkName) {
-            console.log(`[MediaStream] Twilio playback mark received (callId=${callId}, mark=${markName})`);
+            if (greetingInProgress) twilioGreetingMarkReceived = true;
+            console.log(`[Diag-Twilio] twilio.mark greeting received=${greetingInProgress ? "yes" : "no"} mark=${markName} (callId=${callId})`);
             clearMarkFallback();
             responsePlaybackMarkName = null;
             maybeCompleteAiTurn("twilio.mark");
@@ -1798,7 +1799,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         }
 
         case "stop":
-          console.log(`[MediaStream] Twilio stream stopped (callId=${callId})`);
+          twilioStopReceived = true;
+          console.log(`[Diag-Twilio] twilio.stop received (callId=${callId})`);
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
             openaiWs.close();
           }
@@ -1812,8 +1814,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   });
 
-  twilioWs.on("close", () => {
-    console.log(`[MediaStream] Twilio WS closed (callId=${callId})`);
+  twilioWs.on("close", (code, reason) => {
+    console.log(`[Diag-Twilio] Twilio websocket close code=${code} reason=${reason?.toString() || ""} (callId=${callId})`);
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
       openaiWs.close();
     } else {
