@@ -453,6 +453,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (responseCreateInFlight && !activeResponseId) {
         console.error(`[MediaStream] HARD ERROR: response.create sent but no response.created/response.error within 3s (callId=${callId}, itemId=${turn.id}, source=${source})`);
         responseCreateInFlight = false;
+        if (!pendingUserTurn && lastRespondedUserAudioItemId === turn.id) {
+          lastRespondedUserAudioItemId = null;
+          pendingUserTurn = turn;
+        }
       }
     }, 3000);
     return true;
