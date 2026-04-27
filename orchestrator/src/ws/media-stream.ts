@@ -543,6 +543,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
     if (greetingInProgress) {
       greetingInProgress = false;
+        inboundMediaAfterGreetingCount = 0;
+        inboundMediaForwardedAfterGreetingCount = 0;
+        inboundMediaBlockedAfterGreetingCount = 0;
       const greetingVadDelayMs = source === "twilio.mark" ? 0 : Math.min(recoveryCooldownMs, 300);
       console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after ${greetingVadDelayMs}ms (callId=${callId}, responseId=${completedResponseId})`);
       clearTurnDetectionEnableTimer();
@@ -555,12 +558,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           enableTurnDetection();
         }, greetingVadDelayMs);
       }
+        if (pendingUserTurn) {
+          console.warn(`[MediaStream] Processing queued caller turn after greeting (callId=${callId}, itemId=${pendingUserTurn.id})`);
+          scheduleManualResponseAfterUserSpeech("greeting-complete:queued", 0);
+        }
       return;
     }
 
     startInboundAudioCooldown(recoveryCooldownMs, source);
 
     console.log(`[MediaStream] AI playback complete via ${source} (callId=${callId}, responseId=${completedResponseId})`);
+    if (pendingUserTurn) {
+      console.warn(`[MediaStream] Processing queued caller turn after AI playback (callId=${callId}, itemId=${pendingUserTurn.id})`);
+      scheduleManualResponseAfterUserSpeech("ai-complete:queued", 0);
+    }
   };
 
   // Connect to OpenAI Realtime API with agent-specific config
