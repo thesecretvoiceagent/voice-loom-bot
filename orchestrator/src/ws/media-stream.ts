@@ -1169,7 +1169,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(`[Diag] response.created #${responseCreatedCount} responseId=${activeResponseId} (callId=${callId})`);
             break;
 
-          case "response.audio.delta": {
+          case "response.audio.delta":
+          case "response.output_audio.delta": {
             const responseId = event.response_id || activeResponseId || null;
             if (ignoreAudioUntilNextResponse) {
               break;
@@ -1177,11 +1178,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
             }
-            assistantAudioDeltaCount += 1;
+            if (event.type === "response.output_audio.delta") assistantOutputAudioDeltaCount += 1;
+            else assistantAudioDeltaCount += 1;
             responseHasAudio = true;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
               try {
                 const raw = Buffer.from(event.delta, "base64");
+                totalAssistantAudioBytes += raw.length;
+                if (!firstAssistantAudioDeltaAt) {
+                  firstAssistantAudioDeltaAt = new Date().toISOString();
+                  console.log(`[Diag] first OpenAI audio delta type=${event.type} bytes=${raw.length} at=${firstAssistantAudioDeltaAt} (callId=${callId})`);
+                }
                 const FRAME = 160; // 20ms @ 8kHz mu-law
                 for (let offset = 0; offset < raw.length; offset += FRAME) {
                   const chunk = raw.subarray(offset, Math.min(offset + FRAME, raw.length));
@@ -1192,6 +1199,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       media: { payload: chunk.toString("base64") },
                     }));
                     twilioOutboundFrames += 1;
+                    if (!firstTwilioOutboundAt) {
+                      firstTwilioOutboundAt = new Date().toISOString();
+                      console.log(`[Diag] first outbound media to Twilio at=${firstTwilioOutboundAt} twilioState=${twilioWs.readyState} (callId=${callId})`);
+                    }
                   } catch (sendErr) {
                     twilioOutboundSendErrors += 1;
                     console.error(`[Diag] Twilio send error (callId=${callId}, twilioState=${twilioWs.readyState}):`, sendErr);
@@ -1205,6 +1216,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     media: { payload: event.delta },
                   }));
                   twilioOutboundFrames += 1;
+                  if (!firstTwilioOutboundAt) {
+                    firstTwilioOutboundAt = new Date().toISOString();
+                    console.log(`[Diag] first outbound media to Twilio at=${firstTwilioOutboundAt} twilioState=${twilioWs.readyState} (callId=${callId})`);
+                  }
                 } catch (sendErr) {
                   twilioOutboundSendErrors += 1;
                   console.error(`[Diag] Twilio send error (fallback path) (callId=${callId}):`, sendErr);
