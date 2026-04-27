@@ -1566,7 +1566,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "input_audio_buffer.speech_stopped":
             console.log(`[MediaStream] Speech stopped (callId=${callId}, itemId=${event.item_id || "unknown"})`);
-            setTimeout(() => sendManualInputCommit("speech_stopped"), 80);
             break;
 
           case "input_audio_buffer.committed":
