@@ -768,9 +768,8 @@ export default function CreateAgent() {
                       <p className="text-sm text-muted-foreground">
                         Configure exact SMS texts. The AI sends them verbatim — never rewrites the content. Use{" "}
                         {"{{caller_name}}"}, {"{{caller_reg_no}}"}, {"{{first_name}}"} for variable substitution.
-                        Use <code className="text-xs">{"{{location_link}}"}</code> for the location confirmation link,
-                        <code className="text-xs">{"{{form1_link}}"}</code> for the registration-number form,
-                        and <code className="text-xs">{"{{form2_link}}"}</code> for the callback-number form.
+                        Use <code className="text-xs">{"{{location_link}}"}</code> for the location confirmation link
+                        and <code className="text-xs">{"{{form_link}}"}</code> for the registration-number + callback
                         info form. Order matters: AI references SMSes by <strong>name</strong>, and after-call SMSes
                         are sent in this order.
                       </p>
@@ -868,34 +867,6 @@ export default function CreateAgent() {
                                 ↓
                               </Button>
                             </div>
-                            {(() => {
-                              const linkMatch = sms.content.match(/\{\{(location_link|form1_link|form_link|form2_link)\}\}/);
-                              if (!linkMatch) return null;
-                              const token = linkMatch[1];
-                              const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
-                              const path = token === "location_link" ? "/location" : "/form";
-                              const modeQuery =
-                                token === "form1_link" || token === "form_link"
-                                  ? "&mode=reg"
-                                  : token === "form2_link"
-                                    ? "&mode=phone"
-                                    : "";
-                              const previewUrl = token === "form1_link" || token === "form_link"
-                                ? `https://${projectId}.supabase.co/functions/v1/iizi-reg-form?caseId=${crypto.randomUUID()}&token=preview`
-                                : `${path}?caseId=${crypto.randomUUID()}&token=preview${modeQuery}`;
-                              return (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => window.open(previewUrl, "_blank", "noopener,noreferrer")}
-                                  className="shrink-0 text-foreground/70 hover:text-foreground"
-                                  title={`Open ${token} page in a new tab`}
-                                >
-                                  <ExternalLink className="h-4 w-4" />
-                                </Button>
-                              );
-                            })()}
                             <Button
                               type="button"
                               variant="ghost"

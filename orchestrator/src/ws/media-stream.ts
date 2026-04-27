@@ -185,11 +185,13 @@ async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: s
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
-// Empty fallback — the real instructions come from the agent's "Voice agent
-// instructions" (system_prompt) field. The orchestrator must not inject any
-// behavioral rules of its own; only the prompt configured in the UI drives
-// the AI's behavior.
-const DEFAULT_INSTRUCTIONS = "";
+const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
+1. NEVER go off-topic. Only discuss what your instructions cover.
+2. Keep every response to 1-3 short sentences maximum.
+3. Do NOT elaborate unless explicitly asked.
+4. Do NOT make up information not in your instructions or knowledge base.
+5. If unsure, say you will follow up — do not guess.
+6. Stay in character at all times. Follow the script exactly.`;
 
 /**
  * Handles a single Twilio Media Stream WebSocket connection.
@@ -215,9 +217,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   type SmsMessage = { id?: string; name: string; description?: string; content: string; trigger: "during" | "after"; order?: number };
   let smsMessages: SmsMessage[] = [];
   const smsSentNames = new Set<string>();
-  let isIiziRoadsideAgent = false;
-  let submittedRegistrationNumber = "";
-  let submittedCallbackPhoneNumber = "";
   let inboundSmsChannel: RealtimeChannel | null = null;
   let locationConfirmChannel: RealtimeChannel | null = null;
   let resolvedAgentIdRef: string | null = null;
@@ -257,24 +256,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseAudioDone = false;
   let responseDoneReceived = false;
   let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-  let callerHasSpokenSinceGreeting = false;
-  let callerSubstantiveTurnCount = 0;
-  let postGreetingAssistantTurnCount = 0;
-  let pendingUserResponseRetry = false;
-  let lastUserAudioItemId: string | null = null;
-  let lastRespondedUserAudioItemId: string | null = null;
-  type PendingUserTurn = { id: string; transcript?: string; source: string; createdAt: number };
-  let pendingUserTurn: PendingUserTurn | null = null;
-  let assistantResponding = false;
-  let responseCreateInFlight = false;
-  let responseCreateWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
-  let responseAudioWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
-  let currentResponseCreatedAt = 0;
-  let currentResponseAudioDeltaCount = 0;
-  let currentResponseOutboundFrameCount = 0;
-  let inboundMediaAfterGreetingCount = 0;
-  let inboundMediaForwardedAfterGreetingCount = 0;
-  let inboundMediaBlockedAfterGreetingCount = 0;
 
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
@@ -290,88 +271,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   };
 
-  let pendingUserSpeechResponseTimer: ReturnType<typeof setTimeout> | null = null;
-  const clearPendingUserSpeechResponseTimer = () => {
-    if (pendingUserSpeechResponseTimer) {
-      clearTimeout(pendingUserSpeechResponseTimer);
-      pendingUserSpeechResponseTimer = null;
-    }
-  };
-
-  let responseAudioDoneFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-  const clearResponseAudioDoneFallback = () => {
-    if (responseAudioDoneFallbackTimer) {
-      clearTimeout(responseAudioDoneFallbackTimer);
-      responseAudioDoneFallbackTimer = null;
-    }
-  };
-
-  const clearResponseCreateWatchdog = () => {
-    if (responseCreateWatchdogTimer) {
-      clearTimeout(responseCreateWatchdogTimer);
-      responseCreateWatchdogTimer = null;
-    }
-  };
-
-  const clearResponseAudioWatchdog = () => {
-    if (responseAudioWatchdogTimer) {
-      clearTimeout(responseAudioWatchdogTimer);
-      responseAudioWatchdogTimer = null;
-    }
-  };
-
   const normalizeTranscript = (txt: string) =>
     txt
       .toLowerCase()
       .replace(/[^\p{L}\p{N}]+/gu, " ")
       .trim();
-
-  const isUsableSubmittedValue = (value: unknown): value is string => {
-    const normalized = (value || "").toString().trim();
-    if (!normalized) return false;
-    return !/^(0+|null|undefined|n\/a|na|-|—)$/i.test(normalized);
-  };
-
-  const normalizeSmsTemplateName = (value: string) => normalizeTranscript(value).replace(/sms$/i, "").trim();
-
-  type SmsPurpose = "registration" | "callback" | "location" | "unknown";
-  const classifySmsPurpose = (text: string): SmsPurpose => {
-    const normalized = normalizeTranscript(text);
-    if (/form2_link|callback|tagasihelist/.test(text) || /callback|tagasihelist/.test(normalized)) return "callback";
-    if (/location_link/.test(text) || /location|asukoht/.test(normalized)) return "location";
-    if (/form1_link|form_link/.test(text) || /registration|registreerimis|numbrim[aä]rk/.test(normalized)) return "registration";
-    return "unknown";
-  };
-
-  const findDuringSmsByPurpose = (purpose: SmsPurpose): SmsMessage | undefined => {
-    if (purpose === "unknown") return undefined;
-    return smsMessages
-      .filter((m) => m.trigger === "during")
-      .find((m) => classifySmsPurpose(`${m.name} ${m.description || ""} ${m.content}`) === purpose);
-  };
-
-  const resolveDuringSmsTemplate = (requestedName: string): SmsMessage | undefined => {
-    const during = smsMessages.filter((m) => m.trigger === "during");
-    const exact = during.find((m) => m.name === requestedName);
-    if (exact) return exact;
-
-    const sameNormalizedName = during.find((m) => normalizeSmsTemplateName(m.name) === normalizeSmsTemplateName(requestedName));
-    if (sameNormalizedName) return sameNormalizedName;
-
-    const normalized = normalizeSmsTemplateName(requestedName);
-    const aliasMap: Record<string, RegExp> = {
-      "tagasihelistamise numbri": /callback|tagasihelist/i,
-      "callback number": /callback|tagasihelist/i,
-      "retrieval of callback number through": /callback|tagasihelist/i,
-      "registreerimisnumbri": /registration|registreerimis|numbrim[aä]rk/i,
-      "registration number": /registration|registreerimis|numbrim[aä]rk/i,
-      "asukoha": /location|asukoht/i,
-      "location": /location|asukoht/i,
-    };
-    const matcher = aliasMap[normalized];
-    if (!matcher) return undefined;
-    return during.find((m) => matcher.test(`${m.name} ${m.description || ""} ${m.content}`));
-  };
 
   const startInboundAudioCooldown = (ms: number, reason: string) => {
     inboundAudioCooldownUntil = Math.max(inboundAudioCooldownUntil, Date.now() + ms);
@@ -383,104 +287,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const resetResponseState = () => {
     activeResponseId = null;
-    assistantResponding = false;
-    responseCreateInFlight = false;
     responsePlaybackMarkName = null;
     responseHasAudio = false;
     responseAudioDone = false;
     responseDoneReceived = false;
-    currentResponseCreatedAt = 0;
-    currentResponseAudioDeltaCount = 0;
-    currentResponseOutboundFrameCount = 0;
     clearMarkFallback();
-    clearResponseAudioDoneFallback();
-    clearResponseCreateWatchdog();
-    clearResponseAudioWatchdog();
-  };
-
-  const sendUserTurnResponseCreate = (source: string) => {
-    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
-      console.error(`[MediaStream] response.create blocked: OpenAI websocket not open (callId=${callId}, source=${source}, itemId=${pendingUserTurn?.id || lastUserAudioItemId || "unknown"})`);
-      return false;
-    }
-    if (!sessionConfigured) {
-      console.warn(`[MediaStream] response.create blocked: session not configured (callId=${callId}, source=${source})`);
-      return false;
-    }
-    if (greetingInProgress) {
-      console.warn(`[MediaStream] response.create queued: greeting still playing (callId=${callId}, source=${source}, itemId=${pendingUserTurn?.id || "unknown"})`);
-      return false;
-    }
-    if (activeResponseId && currentResponseCreatedAt && Date.now() - currentResponseCreatedAt > 15000) {
-      console.error(`[MediaStream] response.create blocked by stale active response; cancelling first (callId=${callId}, staleResponseId=${activeResponseId}, ageMs=${Date.now() - currentResponseCreatedAt})`);
-      try {
-        openaiWs.send(JSON.stringify({ type: "response.cancel" }));
-      } catch (err) {
-        console.error(`[MediaStream] response.cancel failed before user response.create (callId=${callId}):`, err);
-      }
-      resetResponseState();
-      aiIsSpeaking = false;
-    }
-    if (responseCreateInFlight || assistantResponding || activeResponseId) {
-      console.warn(`[MediaStream] response.create blocked: assistant response active (callId=${callId}, source=${source}, inFlight=${responseCreateInFlight}, assistantResponding=${assistantResponding}, responseId=${activeResponseId || "none"})`);
-      return false;
-    }
-    if (aiIsSpeaking && !responsePlaybackMarkName) {
-      console.warn(`[MediaStream] Clearing stale aiIsSpeaking before user response.create (callId=${callId}, source=${source})`);
-      aiIsSpeaking = false;
-    }
-
-    const turn = pendingUserTurn || (lastUserAudioItemId ? { id: lastUserAudioItemId, source, createdAt: Date.now() } : null);
-    if (!turn) {
-      console.warn(`[MediaStream] response.create blocked: no committed user turn (callId=${callId}, source=${source})`);
-      return false;
-    }
-    if (lastRespondedUserAudioItemId === turn.id) {
-      console.warn(`[MediaStream] response.create deduped for user turn (callId=${callId}, source=${source}, itemId=${turn.id})`);
-      pendingUserTurn = null;
-      return false;
-    }
-
-    lastRespondedUserAudioItemId = turn.id;
-    pendingUserTurn = null;
-    responseCreateInFlight = true;
-    pendingUserResponseRetry = true;
-    const response: Record<string, unknown> = { modalities: ["text", "audio"] };
-    console.warn(`[MediaStream] >>> response.create sent after committed user turn (callId=${callId}, source=${source}, itemId=${turn.id}, transcript="${(turn.transcript || "").slice(0, 120)}")`);
-    openaiWs.send(JSON.stringify({ type: "response.create", response }));
-    clearResponseCreateWatchdog();
-    responseCreateWatchdogTimer = setTimeout(() => {
-      if (responseCreateInFlight && !activeResponseId) {
-        console.error(`[MediaStream] HARD ERROR: response.create sent but no response.created/response.error within 3s (callId=${callId}, itemId=${turn.id}, source=${source})`);
-        responseCreateInFlight = false;
-        if (!pendingUserTurn && lastRespondedUserAudioItemId === turn.id) {
-          lastRespondedUserAudioItemId = null;
-          pendingUserTurn = turn;
-        }
-      }
-    }, 3000);
-    return true;
-  };
-
-  const processPendingUserTurn = (source: string) => {
-    if (!pendingUserTurn) return false;
-    const sent = sendUserTurnResponseCreate(source);
-    if (!sent) {
-      clearPendingUserSpeechResponseTimer();
-      pendingUserSpeechResponseTimer = setTimeout(() => {
-        pendingUserSpeechResponseTimer = null;
-        processPendingUserTurn(`${source}:retry`);
-      }, 250);
-    }
-    return sent;
-  };
-
-  const scheduleManualResponseAfterUserSpeech = (source: string, delayMs = 0) => {
-    clearPendingUserSpeechResponseTimer();
-    pendingUserSpeechResponseTimer = setTimeout(() => {
-      pendingUserSpeechResponseTimer = null;
-      processPendingUserTurn(source);
-    }, delayMs);
   };
 
   const enableTurnDetection = () => {
@@ -491,11 +302,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const sessionPatch: any = {
       turn_detection: {
         type: "server_vad",
-        threshold: 0.55,            // Balanced for phone audio; 0.7 was missing quiet callers.
+        threshold: 0.7,             // Higher = less sensitive to noise (default 0.5)
         prefix_padding_ms: 500,
         silence_duration_ms: 900,   // Wait longer before considering speech ended
-        create_response: false,     // Manual path: every committed user turn gets exactly one response.create.
-        interrupt_response: false,  // Barge-in is guarded manually below to avoid invalid response.cancel calls.
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
@@ -509,7 +318,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       type: "session.update",
       session: sessionPatch,
     }));
-    console.log(`[MediaStream] Turn detection enabled after greeting (manual response mode) (callId=${callId}, threshold=${sessionPatch.turn_detection.threshold}, silenceMs=${sessionPatch.turn_detection.silence_duration_ms})`);
   };
 
   const maybeCompleteAiTurn = (source: string) => {
@@ -544,38 +352,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
+    startInboundAudioCooldown(recoveryCooldownMs, source);
 
     if (greetingInProgress) {
       greetingInProgress = false;
-        inboundMediaAfterGreetingCount = 0;
-        inboundMediaForwardedAfterGreetingCount = 0;
-        inboundMediaBlockedAfterGreetingCount = 0;
-      const greetingVadDelayMs = source === "twilio.mark" ? 0 : Math.min(recoveryCooldownMs, 300);
-      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after ${greetingVadDelayMs}ms (callId=${callId}, responseId=${completedResponseId})`);
+      console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after cooldown (callId=${callId}, responseId=${completedResponseId})`);
       clearTurnDetectionEnableTimer();
-      if (greetingVadDelayMs === 0) {
+      turnDetectionEnableTimer = setTimeout(() => {
+        turnDetectionEnableTimer = null;
         enableTurnDetection();
-      } else {
-        startInboundAudioCooldown(greetingVadDelayMs, source);
-        turnDetectionEnableTimer = setTimeout(() => {
-          turnDetectionEnableTimer = null;
-          enableTurnDetection();
-        }, greetingVadDelayMs);
-      }
-        if (pendingUserTurn) {
-          console.warn(`[MediaStream] Processing queued caller turn after greeting (callId=${callId}, itemId=${pendingUserTurn.id})`);
-          scheduleManualResponseAfterUserSpeech("greeting-complete:queued", 0);
-        }
+      }, recoveryCooldownMs);
       return;
     }
 
-    startInboundAudioCooldown(recoveryCooldownMs, source);
-
     console.log(`[MediaStream] AI playback complete via ${source} (callId=${callId}, responseId=${completedResponseId})`);
-    if (pendingUserTurn) {
-      console.warn(`[MediaStream] Processing queued caller turn after AI playback (callId=${callId}, itemId=${pendingUserTurn.id})`);
-      scheduleManualResponseAfterUserSpeech("ai-complete:queued", 0);
-    }
   };
 
   // Connect to OpenAI Realtime API with agent-specific config
@@ -659,19 +449,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
         }
       }
-
-      const scopeText = `${(agentConfig as any).name || ""} ${(agentConfig as any).system_prompt || ""}`;
-      isIiziRoadsideAgent = /iizi/i.test(scopeText) && /(autoabi|roadside)/i.test(scopeText);
-      if (isIiziRoadsideAgent) {
-        console.log(`[MediaStream] IIZI roadside runtime guards enabled (callId=${callId})`);
-      }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
 
     // Inbound CRM prefetch: identify caller by phone number so the agent knows who's calling.
     // Exposed via callVariables so the system prompt can reference {{caller_name}}, {{caller_reg_no}}, etc.
-    if (isIiziRoadsideAgent && callDirection === "inbound" && fromNumber) {
+    if (callDirection === "inbound" && fromNumber) {
       const vehicle = await crmLookup({ phone_number: fromNumber });
       if (vehicle) {
         console.log(`[MediaStream] CRM hit for ${fromNumber}: ${vehicle.owner_name} / ${vehicle.reg_no} (callId=${callId})`);
@@ -707,24 +491,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const stripUnresolvedPlaceholders = (text: string): string => {
       if (!text) return text;
       return text.replace(/\{\{[^}]+\}\}/g, "").replace(/\s{2,}/g, " ").trim();
-    };
-
-    const buildRegistrationOnlyLink = (caseIdValue: string, tokenValue: string): string => {
-      const formBase = config.publicBaseUrl
-        ? `${config.publicBaseUrl.replace(/\/+$/, "")}/api/forms/reg`
-        : `${(locationPageBase || LOVABLE_FALLBACK).replace(/\/+$/, "")}/form`;
-      return `${formBase}?caseId=${encodeURIComponent(caseIdValue)}&token=${encodeURIComponent(tokenValue)}`;
-    };
-
-    const normalizeRegistrationSmsLink = (text: string): string => {
-      if (!text) return text;
-      return text.replace(/https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})(?:&mode=(?:reg|both))?/gi, (_match, caseIdValue, tokenValue) => {
-        return buildRegistrationOnlyLink(caseIdValue, tokenValue);
-      }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?src=https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})/gi, (_match, caseIdValue, tokenValue) => {
-        return buildRegistrationOnlyLink(caseIdValue, tokenValue);
-      }).replace(/https:\/\/[^\s]+\/functions\/v1\/iizi-reg-form\?src=https:\/\/[^\s]+\/form\?caseId=([0-9a-f-]{36})&token=([0-9a-f]{64})(?:&mode=(?:reg|both))?/gi, (_match, caseIdValue, tokenValue) => {
-        return buildRegistrationOnlyLink(caseIdValue, tokenValue);
-      });
     };
 
     // Inject location confirmation link variable so SMS templates can use {{location_link}}.
@@ -808,16 +574,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const formToken = crypto.createHmac("sha256", tokenSecret).update(callId).digest("hex");
         const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
         const formPath = isLovableLike ? "/form" : "/form.html";
-        const baseFormUrl = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
-        const regFormUrl = buildRegistrationOnlyLink(callId, formToken);
-        // form1_link / form_link → SMS #1: registration number only via dedicated backend form.
-        // form2_link             → SMS #3: callback phone number only (mode=phone)
-        callVariables.form1_link = regFormUrl;
-        callVariables.form_link = regFormUrl;
-        callVariables.form2_link = `${baseFormUrl}&mode=phone`;
-        console.log(`[MediaStream] form1_link built: ${callVariables.form1_link}`);
+        callVariables.form_link = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
         console.log(`[MediaStream] form_link built: ${callVariables.form_link}`);
-        console.log(`[MediaStream] form2_link built: ${callVariables.form2_link}`);
       } catch (err) {
         console.error(`[MediaStream] Failed to build form_link:`, err);
       }
@@ -946,7 +704,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
                   transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                    const sysMsg = `[SYSTEM EVENT: location_confirmed] address="${addr}" lat=${row.location_lat} lon=${row.location_lon}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just confirmed their location via the SMS link. Read the address back to them naturally in the same language the call is being conducted in (e.g. "Sain asukoha kätte: ${addr}.") then immediately continue to the next missing intake step. DO NOT ask the caller to confirm the address — they already confirmed it on the link. DO NOT ask "kas see on õige?" or any equivalent confirmation question.`;
+                    const sysMsg = `[SYSTEM EVENT: location_confirmed] address="${addr}" lat=${row.location_lat} lon=${row.location_lon}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just confirmed their location via the SMS link. Read the address back to them naturally in the same language the call is being conducted in and ask for confirmation. Do not offer anything else — only confirm the address.`;
                     openaiWs.send(JSON.stringify({
                       type: "conversation.item.create",
                       item: {
@@ -959,28 +717,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                 }
 
-                // 2. Form submission (registration number and/or callback phone)
+                // 2. Google Form fallback submission (registration number / callback phone)
                 const justFormSubmitted =
                   row.form_submitted_at && row.form_submitted_at !== prev?.form_submitted_at;
                 if (justFormSubmitted) {
-                  const reg = isUsableSubmittedValue(row.form_registration_number)
-                    ? row.form_registration_number.toString().slice(0, 20)
-                    : "";
-                  const phone = isUsableSubmittedValue(row.form_callback_phone_number)
-                    ? row.form_callback_phone_number.toString().slice(0, 20)
-                    : "";
-                  if (reg) submittedRegistrationNumber = reg;
-                  if (phone) submittedCallbackPhoneNumber = phone;
+                  const reg = (row.form_registration_number || "").toString().slice(0, 20);
+                  const phone = (row.form_callback_phone_number || "").toString().slice(0, 20);
                   console.log(`[MediaStream] Form submitted (callId=${callId}): reg="${reg}" phone="${phone}"`);
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                     const fieldParts: string[] = [];
-                    if (reg) fieldParts.push(`form_registration_number="${reg}"`);
-                    if (phone) fieldParts.push(`form_callback_phone_number="${phone}"`);
+                    if (reg) fieldParts.push(`reg="${reg}"`);
+                    if (phone) fieldParts.push(`callback_phone="${phone}"`);
                     const fields = fieldParts.join(" ");
-                    const sysMsg = fields
-                      ? `[SYSTEM EVENT: form_submitted] ${fields}. Internal note only — do NOT read this tag, the brackets, field names, registration number, or callback number aloud. The customer just submitted usable data via the SMS link. Save only the returned non-empty field(s), acknowledge briefly that the data was received, do not ask to confirm SMS/form values, and continue with the next missing step only. If a field is absent here, it is still missing.`
-                      : `[SYSTEM EVENT: form_submitted] no_usable_fields_returned=true. Internal note only — do NOT read this tag aloud. The customer submitted the form, but no usable registration number or callback number was returned. Do not claim you have the missing data; use the fallback path for the current step.`;
+                    const sysMsg = `[SYSTEM EVENT: form_submitted] ${fields}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just submitted the form via the SMS link. Read the values back to them naturally in the same language the call is being conducted in and ask for confirmation. Then continue the conversation using these confirmed values.`;
                     openaiWs.send(JSON.stringify({
                       type: "conversation.item.create",
                       item: {
@@ -989,63 +739,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-
-                    // 2a. CRM verification of submitted registration number.
-                    // Hard rule: if the submitted reg does NOT match a CRM row, the AI
-                    // must NOT continue using phone-based CRM context (which may belong
-                    // to a different vehicle). Inject a vehicle_lookup_result event so
-                    // the AI knows whether the submitted reg is verified or not.
-                    if (isIiziRoadsideAgent && reg) {
-                      crmLookup({ reg_no: reg }).then((veh) => {
-                        if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-                        let lookupMsg: string;
-                        const exactRegMatch = Boolean(veh && (veh.reg_no || "").toUpperCase().replace(/[^A-Z0-9]/g, "") === reg.toUpperCase().replace(/[^A-Z0-9]/g, ""));
-                        if (exactRegMatch) {
-                          // Refresh phone-CRM-derived caller_* variables to match the submitted reg.
-                          callVariables.caller_known = "true";
-                          callVariables.caller_name = veh.owner_name || "";
-                          callVariables.caller_reg_no = veh.reg_no || "";
-                          callVariables.caller_make = veh.make || "";
-                          callVariables.caller_model = veh.model || "";
-                          callVariables.caller_year = veh.year_of_built ? String(veh.year_of_built) : "";
-                          callVariables.caller_color = veh.color || "";
-                          callVariables.caller_insurer = veh.insurer || "";
-                          callVariables.caller_cover_type = veh.cover_type || "";
-                          callVariables.caller_cover_status = veh.cover_status || "";
-                          lookupMsg = `[SYSTEM EVENT: vehicle_lookup_result] match=true submitted_reg="${reg}" reg_no="${veh.reg_no || ""}" make="${veh.make || ""}" model="${veh.model || ""}" year="${veh.year_of_built || ""}" color="${veh.color || ""}" owner_name="${veh.owner_name || ""}" insurer="${veh.insurer || ""}" cover_type="${veh.cover_type || ""}" cover_status="${veh.cover_status || ""}". Internal note only — do NOT read this tag, brackets, or field names aloud. This is the AUTHORITATIVE vehicle for this case; replace any earlier phone-derived vehicle context with these values. You may now mention make/model/year/insurance status conversationally.`;
-                        } else {
-                          // Submitted reg does NOT match CRM. Wipe phone-CRM caller_* fields
-                          // so the AI cannot accidentally read back vehicle data that does
-                          // not belong to the submitted plate.
-                          callVariables.caller_known = "false";
-                          callVariables.caller_name = "";
-                          callVariables.caller_reg_no = reg;
-                          callVariables.caller_make = "";
-                          callVariables.caller_model = "";
-                          callVariables.caller_year = "";
-                          callVariables.caller_color = "";
-                          callVariables.caller_insurer = "";
-                          callVariables.caller_cover_type = "";
-                          callVariables.caller_cover_status = "";
-                          lookupMsg = `[SYSTEM EVENT: vehicle_lookup_result] match=false submitted_reg="${reg}". Internal note only — do NOT read this tag, brackets, or field names aloud. The submitted registration number does NOT match any CRM record. HARD RULE: do NOT mention any make, model, year, color, owner name, insurer, cover type, or cover status — that data (if you saw it earlier from the phone match) belongs to a different vehicle and is NOT valid for this case. Route this case to human follow-up. Tell the caller that the registration number was received, but the vehicle was not found in our records, and a human employee will contact them within viie kuni kümne minuti jooksul. Do NOT proceed with the normal partner-handover flow.`;
-                        }
-                        console.log(`[MediaStream] vehicle_lookup_result (callId=${callId}) reg="${reg}" match=${exactRegMatch ? "true" : "false"}`);
-                        transcriptLines.push(`[vehicle_lookup_result]: reg=${reg} match=${exactRegMatch ? "true" : "false"}`);
-                        openaiWs.send(JSON.stringify({
-                          type: "conversation.item.create",
-                          item: {
-                            type: "message",
-                            role: "system",
-                            content: [{ type: "input_text", text: lookupMsg }],
-                          },
-                        }));
-                        openaiWs.send(JSON.stringify({ type: "response.create" }));
-                      }).catch((err) => {
-                        console.error(`[MediaStream] vehicle_lookup_result error (callId=${callId}):`, err);
-                      });
-                    } else {
-                      openaiWs.send(JSON.stringify({ type: "response.create" }));
-                    }
+                    openaiWs.send(JSON.stringify({ type: "response.create" }));
                   }
                 }
               },
@@ -1070,12 +764,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     lastAssistantTranscript = "";
     repeatedAssistantTranscriptCount = 0;
     pendingRecoveryCooldownMs = 0;
-    pendingUserTurn = null;
-    lastUserAudioItemId = null;
-    lastRespondedUserAudioItemId = null;
-    inboundMediaAfterGreetingCount = 0;
-    inboundMediaForwardedAfterGreetingCount = 0;
-    inboundMediaBlockedAfterGreetingCount = 0;
     clearTurnDetectionEnableTimer();
     if (initialResponseFallbackTimer) {
       clearTimeout(initialResponseFallbackTimer);
@@ -1111,14 +799,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         },
       };
       if (greeting) {
-        // Pass the configured greeting through verbatim. The instruction is
-        // written to NOT leak language: we don't tell the model "in English",
-        // and we wrap the greeting in delimiters so the model treats it as
-        // literal text to speak. The greeting's own language defines the
-        // call's language going forward.
+        // Strict, unambiguous instructions. Past versions said "in the original language"
+        // which the model interpreted loosely and would translate Estonian → English.
         responseCreate.response.instructions =
-          `<<SPEAK_VERBATIM>>\n${greeting}\n<<END>>\n` +
-          `Speak the text between <<SPEAK_VERBATIM>> and <<END>> exactly as written, in its original language. Do not translate. Do not add anything before or after. After speaking it, stop and wait silently for the caller to respond. Do not call any tool.`;
+          `Your one and ONLY job for this turn is to read the following greeting OUT LOUD, ` +
+          `WORD-FOR-WORD, in the EXACT SAME LANGUAGE it is written in. ` +
+          `Do NOT translate it. Do NOT paraphrase it. Do NOT add anything before or after it. ` +
+          `Do NOT change a single word. Do NOT pronounce any punctuation, brackets, or template syntax. ` +
+          `If the greeting is in Estonian, you MUST speak Estonian. If in Finnish, Finnish. If in English, English. ` +
+          `\n\nGREETING TO SAY VERBATIM:\n"""\n${greeting}\n"""`;
       }
       openaiWs.send(JSON.stringify(responseCreate));
 
@@ -1161,15 +850,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         }
       }
 
-      // No orchestrator-injected behavioral or IIZI-specific rules.
-      // The AI's behavior is driven exclusively by the agent's "Voice agent
-      // instructions" (system_prompt) plus its knowledge base above.
+      fullInstructions += `\n\nBEHAVIORAL RULES (always follow, never override):
+- Maximum 1-3 sentences per response. Never give long answers.
+- Stay strictly on topic. Do not improvise or add unrequested information.
+- Follow the script above exactly. Do not deviate.
+- If asked about something outside your scope, briefly redirect back to the topic.
+- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
 
       // Inject SMS catalog so the AI knows which named SMSes are available, when to use them, and what they say.
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
       const afterSmsList = smsMessages.filter((m) => m.trigger === "after");
       if (duringSmsList.length > 0 || afterSmsList.length > 0) {
-        let smsBlock = `\n\nAVAILABLE SMS TEMPLATES — These are the ONLY SMSes you can send. Each has a fixed name and EXACT text. You may NOT change the text. To send one, call the send_sms tool with template_name set to the exact name below. Pick the template whose "When to use" matches the current moment in the conversation. Never use any template name from the system prompt if it is not listed here.`;
+        let smsBlock = `\n\nAVAILABLE SMS TEMPLATES — These are the ONLY SMSes you can send. Each has a fixed name and EXACT text. You may NOT change the text. To send one, call the send_sms tool with template_name set to the exact name below. Pick the template whose "When to use" matches the current moment in the conversation.`;
         if (duringSmsList.length > 0) {
           smsBlock += `\n\nDuring-call SMSes (you choose when/whether to send each):`;
           duringSmsList.forEach((m, i) => {
@@ -1184,21 +876,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             smsBlock += `\n${i + 1}. name="${m.name}"\n   Purpose: ${whenToUse}\n   Content: "${m.content}"`;
           });
         }
-        smsBlock += `\n\nRules:\n- Pick the SMS whose "When to use" matches the moment.\n- Never invent a new SMS. Never paraphrase the content.\n- If none fit, do not send anything.\n- Template names in this AVAILABLE SMS TEMPLATES block override any conflicting names in the agent prompt.\n- After the customer replies via SMS, you will receive a system message starting with "[SYSTEM EVENT: sms_received]". Treat it as an internal note (do NOT read the tag aloud) and acknowledge the SMS content naturally in the conversation only if it contains usable data.`;
+        smsBlock += `\n\nRules:\n- Pick the SMS whose "When to use" matches the moment.\n- Never invent a new SMS. Never paraphrase the content.\n- If none fit, do not send anything.\n- After the customer replies via SMS, you will receive a system message starting with "[SYSTEM EVENT: sms_received]". Treat it as an internal note (do NOT read the tag aloud) and acknowledge the SMS content naturally in the conversation (e.g. confirm a number back to them).`;
         fullInstructions += smsBlock;
       }
 
       const tools: any[] = [];
 
-      // Do not expose end_call in the live Realtime session. In practice the
-      // model can call tools without speaking first, which makes the phone
-      // appear to hang up right after the caller says something. Calls still
-      // end normally via caller hangup, Twilio status, or max_call_duration.
-      if (false && agentTools.includes("end_call")) {
+      if (agentTools.includes("end_call")) {
         tools.push({
           type: "function",
           name: "end_call",
-          description: "End the current phone call. Use only when the conversation is finished according to your instructions.",
+          description: "End the current phone call. STRICT RULES: (1) Never call this during or immediately after the greeting. (2) Never call this before the caller has spoken at least one substantive sentence to you. (3) Only call this AFTER the caller has clearly said goodbye (e.g. 'aitäh, head aega', 'tšau', 'bye'), OR the caller explicitly asked to hang up, OR all required intake information has been collected AND you have confirmed the next step with the caller. If you are unsure, do NOT call this — keep the conversation going.",
           parameters: {
             type: "object",
             properties: {
@@ -1216,17 +904,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "lookup_vehicle",
-          description: "Look up a vehicle in the CRM by registration plate or free-text description. Returns owner name, vehicle, insurer, cover type/status, or found:false if no match.",
+          description: "Look up a vehicle in the CRM. Call this ONLY when the caller has SPOKEN one of the following out loud during the live conversation: (a) a registration plate (e.g. '484DLC'), or (b) a free-text description of the car (make/model/color/year, e.g. 'must BMW 535D 2006'). DO NOT call this just because you know the caller's phone number — the system already attempted a phone-based match before connecting you. DO NOT call this during or immediately after the greeting. DO NOT call this before the caller has actually spoken to you. Returns owner name, vehicle, insurer, cover type/status. If no match, returns found:false.",
           parameters: {
             type: "object",
             properties: {
               reg_no: {
                 type: "string",
-                description: "Registration plate, e.g. '495BJS'.",
+                description: "Estonian registration plate the caller spoke aloud, e.g. '495BJS'. Strip spaces, uppercase. Pass even if you are not 100% sure — server does fuzzy matching.",
               },
               description: {
                 type: "string",
-                description: "Free-text vehicle description, e.g. 'must BMW 535D 2006'.",
+                description: "Free-text vehicle description the caller spoke aloud, in any language (Estonian preferred), e.g. 'must BMW 535D 2006' or 'punane Saab 9-5'. Use when caller describes the car instead of giving the plate.",
               },
             },
           },
@@ -1241,7 +929,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "send_sms",
-          description: `Send one of the pre-configured SMS templates to the other party on this call (${recipientHint}). The server sends the template text verbatim — you do not write the message and you do not pass a phone number. Allowed template_name values: ${allowedNames}. Returns success:true with sid on success, or success:false with error on failure.`,
+          description: `Send one of the pre-configured SMS templates to the other party RIGHT NOW. The recipient is the other party on this call (${recipientHint}) — you do NOT pass a phone number. You also do NOT write the message yourself: pick one of the configured templates by its EXACT name (see AVAILABLE SMS TEMPLATES in your instructions). The server sends the template text VERBATIM. Allowed template_name values: ${allowedNames}. After it sends, briefly confirm to the caller in their language.`,
           parameters: {
             type: "object",
             properties: {
@@ -1328,34 +1016,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "response.created":
-            clearPendingUserSpeechResponseTimer();
-            clearResponseCreateWatchdog();
-            clearResponseAudioDoneFallback();
-            clearResponseAudioWatchdog();
             activeResponseId = event.response?.id || null;
-            assistantResponding = true;
-            responseCreateInFlight = false;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
             responseAudioDone = false;
             responseDoneReceived = false;
-            currentResponseCreatedAt = Date.now();
-            currentResponseAudioDeltaCount = 0;
-            currentResponseOutboundFrameCount = 0;
             ignoreAudioUntilNextResponse = false;
             aiIsSpeaking = true; // Keep this true until Twilio confirms playback completion.
             lastResponseFinishReason = null;
             lastResponseOutputTokens = null;
-            console.log(`[MediaStream] <<< response.created (callId=${callId}, responseId=${activeResponseId || "unknown"})`);
-            responseAudioWatchdogTimer = setTimeout(() => {
-              if (assistantResponding && activeResponseId && !responseHasAudio) {
-                console.error(`[MediaStream] HARD ERROR: response.created but no assistant audio delta within 5s (callId=${callId}, responseId=${activeResponseId})`);
-              }
-            }, 5000);
             break;
 
-          case "response.audio.delta":
-          case "response.output_audio.delta": {
+          case "response.audio.delta": {
             const responseId = event.response_id || activeResponseId || null;
             if (ignoreAudioUntilNextResponse) {
               break;
@@ -1364,19 +1036,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
             responseHasAudio = true;
-            pendingUserResponseRetry = false;
-            currentResponseAudioDeltaCount += 1;
-            if (currentResponseAudioDeltaCount === 1) {
-              clearResponseAudioWatchdog();
-              console.log(`[MediaStream] First assistant audio delta received (callId=${callId}, responseId=${responseId}, event=${event.type})`);
-            }
-            clearResponseAudioDoneFallback();
-            responseAudioDoneFallbackTimer = setTimeout(() => {
-              if (!activeResponseId || responseAudioDone || !responseDoneReceived) return;
-              console.warn(`[MediaStream] response.audio.done missing after audio; force-completing audio state (callId=${callId}, responseId=${activeResponseId})`);
-              responseAudioDone = true;
-              maybeCompleteAiTurn("response.audio.done-fallback");
-            }, 1200);
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
               // OpenAI sends large audio chunks (~200ms). Twilio Media Streams plays smoothest
               // when each `media` event carries ~20ms of ulaw audio (160 bytes @ 8kHz).
@@ -1386,28 +1045,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const FRAME = 160; // 20ms @ 8kHz mu-law
                 for (let offset = 0; offset < raw.length; offset += FRAME) {
                   const chunk = raw.subarray(offset, Math.min(offset + FRAME, raw.length));
-                  currentResponseOutboundFrameCount += 1;
                   twilioWs.send(JSON.stringify({
                     event: "media",
                     streamSid,
                     media: { payload: chunk.toString("base64") },
-                  }), (err) => {
-                    if (err) console.error(`[MediaStream] Twilio outbound media send error (callId=${callId}, responseId=${responseId}):`, err);
-                  });
+                  }));
                 }
               } catch (e) {
                 // Fallback: forward as-is if buffer ops fail
-                currentResponseOutboundFrameCount += 1;
                 twilioWs.send(JSON.stringify({
                   event: "media",
                   streamSid,
                   media: { payload: event.delta },
-                }), (err) => {
-                  if (err) console.error(`[MediaStream] Twilio outbound media send error (fallback) (callId=${callId}, responseId=${responseId}):`, err);
-                });
+                }));
               }
-            } else {
-              console.error(`[MediaStream] HARD ERROR: assistant audio delta received but no Twilio media sent (callId=${callId}, responseId=${responseId}, streamSid=${streamSid || "none"}, twilioReadyState=${twilioWs.readyState}, hasDelta=${Boolean(event.delta)})`);
             }
             break;
           }
@@ -1416,9 +1067,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             const assistantTranscript = (event.transcript || "").toString();
             console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
             transcriptLines.push(`[Agent]: ${assistantTranscript}`);
-            if (!greetingInProgress) {
-              postGreetingAssistantTurnCount += 1;
-            }
 
             // Detect the model repeating itself (echo loop). If it says effectively the
             // same line twice in a row without the user speaking in between, extend the
@@ -1440,39 +1088,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
-          case "conversation.item.input_audio_transcription.completed": {
-            const userTranscript = (event.transcript || "").toString();
-            lastUserAudioItemId = event.item_id || lastUserAudioItemId || null;
-            console.log(`[MediaStream] conversation.item.input_audio_transcription.completed (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"}) transcript="${userTranscript.slice(0, 200)}"`);
-            transcriptLines.push(`[User]: ${userTranscript}`);
+          case "conversation.item.input_audio_transcription.completed":
+            console.log(`[MediaStream] User said (callId=${callId}): ${event.transcript}`);
+            transcriptLines.push(`[User]: ${event.transcript}`);
             // Real user speech resets the repeat counter.
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
-            if (normalizeTranscript(userTranscript)) {
-              callerHasSpokenSinceGreeting = true;
-              callerSubstantiveTurnCount += 1;
-              const turnId = lastUserAudioItemId || `transcript:${Date.now()}`;
-              pendingUserTurn = { id: turnId, transcript: userTranscript, source: "input_audio_transcription.completed", createdAt: Date.now() };
-              scheduleManualResponseAfterUserSpeech("input_audio_transcription.completed", 0);
-            }
-            break;
-          }
-
-          case "conversation.item.input_audio_transcription.failed":
-            console.warn(`[MediaStream] User transcription failed (callId=${callId}):`, event.error || event);
-            break;
-
-          case "conversation.item.created":
-            console.log(`[MediaStream] conversation.item.created (callId=${callId}, itemId=${event.item?.id || event.item_id || "unknown"}, role=${event.item?.role || "unknown"}, type=${event.item?.type || "unknown"})`);
-            break;
-
-          case "response.output_item.added":
-            console.log(`[MediaStream] response.output_item.added (callId=${callId}, responseId=${event.response_id || activeResponseId || "unknown"}, itemId=${event.item?.id || event.item_id || "unknown"}, type=${event.item?.type || "unknown"})`);
-            break;
-
-          case "response.content_part.added":
-            console.log(`[MediaStream] response.content_part.added (callId=${callId}, responseId=${event.response_id || activeResponseId || "unknown"}, itemId=${event.item_id || "unknown"}, partType=${event.part?.type || event.content_part?.type || "unknown"})`);
             break;
 
           case "response.function_call_arguments.done": {
@@ -1486,9 +1108,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 reason = args.reason || reason;
               } catch {}
 
-              // No orchestrator-side guard on end_call. The agent's prompt is
-              // the sole authority on when the call should end.
-
               console.log(`[MediaStream] END CALL requested: ${reason} (callId=${callId})`);
               transcriptLines.push(`[System]: Call ended — ${reason}`);
 
@@ -1501,7 +1120,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 },
               };
               openaiWs!.send(JSON.stringify(toolResult));
-              openaiWs!.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
+              openaiWs!.send(JSON.stringify({ type: "response.create" }));
 
               setTimeout(() => {
                 console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
@@ -1528,7 +1147,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   output: JSON.stringify(output),
                 },
               }));
-              openaiWs!.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
+              openaiWs!.send(JSON.stringify({ type: "response.create" }));
               transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
             }
 
@@ -1542,47 +1161,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
               console.log(`[MediaStream] send_sms INVOKED (callId=${callId}) requestedName="${requestedName}" callDirection=${callDirection} fromNumber="${fromNumber}" calledNumber="${calledNumber}" recipient="${recipient}" availableTemplates=[${smsMessages.map((m) => `${m.name}(${m.trigger})`).join(", ")}]`);
 
-              const requestedPurpose = classifySmsPurpose(requestedName);
-              let tpl = resolveDuringSmsTemplate(requestedName);
-              if (isIiziRoadsideAgent && requestedPurpose !== "unknown") {
-                const purposeTpl = findDuringSmsByPurpose(requestedPurpose);
-                if (purposeTpl && purposeTpl.name !== tpl?.name) {
-                  console.warn(`[MediaStream] send_sms purpose override requested="${requestedName}" purpose=${requestedPurpose}: using configured template="${purposeTpl.name}" instead of "${tpl?.name || "none"}" (callId=${callId})`);
-                  tpl = purposeTpl;
-                }
-              }
-
-              const tplPurpose = tpl ? classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) : "unknown";
-              if (isIiziRoadsideAgent && tpl && tplPurpose === "registration" && !tpl.content.includes("{{form1_link}}")) {
-                console.warn(`[MediaStream] send_sms guard: registration template "${tpl.name}" did not contain {{form1_link}}; forcing reg-only link text (callId=${callId})`);
-                tpl = { ...tpl, content: `Palun sisestage oma numbrimärk: {{form1_link}}` };
-              }
-              if (isIiziRoadsideAgent && tplPurpose === "registration" && submittedRegistrationNumber) {
-                const callbackTpl = findDuringSmsByPurpose("callback");
-                if (callbackTpl) {
-                  console.warn(`[MediaStream] send_sms guard: registration already submitted (${submittedRegistrationNumber}); switching to callback SMS "${callbackTpl.name}" (callId=${callId})`);
-                  tpl = callbackTpl;
-                }
-              }
-              // Extra safety: if we already sent the registration SMS at least once and the
-              // model is asking for it again WITHOUT a submitted reg, it almost certainly
-              // intends the next-stage callback SMS (common LLM confusion between "send
-              // registration link again" vs "send the next link"). If a callback template
-              // exists and has not been sent yet, switch.
-              {
-                const tplPurposeNow = tpl ? classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) : "unknown";
-                if (isIiziRoadsideAgent && tplPurposeNow === "registration" && tpl && smsSentNames.has(tpl.name)) {
-                  const callbackTpl = findDuringSmsByPurpose("callback");
-                  if (callbackTpl && !smsSentNames.has(callbackTpl.name)) {
-                    console.warn(`[MediaStream] send_sms guard: registration template "${tpl.name}" already sent; switching to unsent callback SMS "${callbackTpl.name}" (callId=${callId})`);
-                    tpl = callbackTpl;
-                  }
-                }
-              }
-              if (isIiziRoadsideAgent && tpl && classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) === "callback" && !tpl.content.includes("{{form2_link}}")) {
-                console.warn(`[MediaStream] send_sms guard: callback template "${tpl.name}" did not contain {{form2_link}}; forcing phone-only link text (callId=${callId})`);
-                tpl = { ...tpl, content: `Palun sisestage oma tagasihelistamise number siin lingil: {{form2_link}}` };
-              }
+              // Look up the configured during-call template by exact name.
+              // We NEVER use AI-supplied content — only the verbatim configured template.
+              const tpl = smsMessages.find(
+                (m) => m.trigger === "during" && m.name === requestedName,
+              );
 
               let result: { ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string };
               let bodyForLog = "";
@@ -1594,11 +1177,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const allowed = smsMessages.filter((m) => m.trigger === "during").map((m) => m.name).join(", ");
                 result = { ok: false, error: `Unknown template_name "${requestedName}". Allowed: ${allowed || "(none)"}` };
               } else {
-                const substitutedBody = substituteVarsRef(tpl.content);
-                const finalTplPurpose = classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`);
-                bodyForLog = finalTplPurpose === "registration"
-                  ? normalizeRegistrationSmsLink(substitutedBody)
-                  : substitutedBody;
+                bodyForLog = substituteVarsRef(tpl.content);
                 result = await sendSms(recipient, bodyForLog);
                 if (result.ok) {
                   smsSentNames.add(tpl.name);
@@ -1624,11 +1203,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   type: "function_call_output",
                   call_id: event.call_id,
                   output: JSON.stringify(result.ok
-                    ? { success: true, sid: result.sid || null, template_name: tpl?.name || requestedName }
-                    : { success: false, error: result.error, template_name: tpl?.name || requestedName }),
+                    ? { success: true, message: `SMS template "${requestedName}" sent. Briefly confirm to the caller in their language.` }
+                    : { success: false, error: result.error, instruction: `Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent.` }),
                 },
               }));
-              openaiWs!.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
+              openaiWs!.send(JSON.stringify({ type: "response.create" }));
             }
             break;
           }
@@ -1639,10 +1218,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
 
-            clearResponseAudioDoneFallback();
-
             responseAudioDone = true;
-            console.log(`[MediaStream] response.audio.done (callId=${callId}, responseId=${responseId}, audioDeltas=${currentResponseAudioDeltaCount}, outboundTwilioFrames=${currentResponseOutboundFrameCount})`);
 
             if (!responseHasAudio) {
               maybeCompleteAiTurn("response.audio.done(no-audio)");
@@ -1692,35 +1268,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
             responseDoneReceived = true;
             console.log(
-              `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens} audioDeltas=${currentResponseAudioDeltaCount} outboundTwilioFrames=${currentResponseOutboundFrameCount}`
+              `[MediaStream] response.done callId=${callId} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} cap=${greetingTokenLimitRaised ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS : configuredMaxResponseOutputTokens}`
             );
-            if (responseHasAudio && !responseAudioDone) {
-              clearResponseAudioDoneFallback();
-              responseAudioDoneFallbackTimer = setTimeout(() => {
-                if (!activeResponseId || responseAudioDone) return;
-                console.warn(`[MediaStream] response.done arrived without response.audio.done; force-completing audio state (callId=${callId}, responseId=${activeResponseId})`);
-                responseAudioDone = true;
-                maybeCompleteAiTurn("response.done-audio-fallback");
-              }, 1200);
-            }
-            if (!responseHasAudio && pendingUserResponseRetry && !greetingInProgress) {
-              pendingUserResponseRetry = false;
-              console.error(`[MediaStream] HARD ERROR: post-user response.done had no assistant audio (callId=${callId}, responseId=${responseId})`);
-            }
             maybeCompleteAiTurn("response.done");
             break;
           }
-
-          case "input_audio_buffer.speech_stopped":
-            console.log(`[MediaStream] Speech stopped (callId=${callId}, itemId=${event.item_id || "unknown"})`);
-            break;
-
-          case "input_audio_buffer.committed":
-            lastUserAudioItemId = event.item_id || lastUserAudioItemId || null;
-            pendingUserTurn = { id: lastUserAudioItemId || `commit:${Date.now()}`, source: "input_audio_buffer.committed", createdAt: Date.now() };
-            console.log(`[MediaStream] input_audio_buffer.committed; queued user turn (callId=${callId}, itemId=${pendingUserTurn.id}, previous=${event.previous_item_id || "none"})`);
-            scheduleManualResponseAfterUserSpeech("input_audio_buffer.committed", 900);
-            break;
 
           case "input_audio_buffer.speech_started":
             // If greeting is in progress, completely ignore user speech and clear any buffered audio
@@ -1735,31 +1287,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
               break;
             }
-            // Only barge-in / cancel when there is actually an active assistant response.
-            // Sending response.cancel with no active response causes OpenAI to error and can
-            // leave the conversation in a state where the next VAD-triggered response never
-            // fires — the user spoke but the agent stayed silent forever.
-            if (activeResponseId) {
-              console.log(`[MediaStream] Speech started during AI response, cancelling (callId=${callId}, responseId=${activeResponseId})`);
-              resetResponseState();
-              ignoreAudioUntilNextResponse = true;
-              aiIsSpeaking = false;
-              if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-                twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
-              }
-              openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
-            } else {
-              console.log(`[MediaStream] Speech started (no active response — waiting for VAD commit, then manual response) (callId=${callId}, itemId=${event.item_id || "unknown"})`);
+            console.log(`[MediaStream] Speech started, clearing buffer (callId=${callId}, responseId=${activeResponseId})`);
+            resetResponseState();
+            ignoreAudioUntilNextResponse = true;
+            aiIsSpeaking = false;
+            if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+              twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
             }
+            openaiWs!.send(JSON.stringify({ type: "response.cancel" }));
             break;
 
           case "error":
             console.error(`[MediaStream] OpenAI error (callId=${callId}):`, event.error);
-            if (responseCreateInFlight) {
-              console.error(`[MediaStream] response.error after response.create (callId=${callId}):`, event.error);
-              responseCreateInFlight = false;
-              clearResponseCreateWatchdog();
-            }
             break;
 
           default:
@@ -1776,7 +1315,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         initialResponseFallbackTimer = null;
       }
       clearMarkFallback();
-      clearResponseAudioDoneFallback();
       clearTurnDetectionEnableTimer();
       console.log(`[MediaStream] OpenAI WS closed (callId=${callId}): ${code} ${reason}`);
       openaiWs = null;
@@ -1812,8 +1350,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callId) return;
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
-    clearPendingUserSpeechResponseTimer();
-    clearResponseAudioDoneFallback();
 
     // Stop listening for inbound SMS replies for this call
     if (inboundSmsChannel) {
@@ -1927,36 +1463,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           if (greetingInProgress) {
             break;
           }
-          inboundMediaAfterGreetingCount += 1;
           // Short cooldown after AI speech finishes — prevents the model from hearing its
           // own just-played audio (echo loop) and re-triggering the same response.
           if (Date.now() < inboundAudioCooldownUntil) {
-            inboundMediaBlockedAfterGreetingCount += 1;
-            if (inboundMediaBlockedAfterGreetingCount === 1 || inboundMediaBlockedAfterGreetingCount % 50 === 0) {
-              console.log(`[MediaStream] Twilio inbound media blocked by cooldown after greeting (callId=${callId}, blocked=${inboundMediaBlockedAfterGreetingCount}, total=${inboundMediaAfterGreetingCount})`);
-            }
             break;
           }
           // Don't forward audio when anti-barge-in is active and AI is speaking
           if (antiBargeinEnabled && aiIsSpeaking) {
-            inboundMediaBlockedAfterGreetingCount += 1;
-            if (inboundMediaBlockedAfterGreetingCount === 1 || inboundMediaBlockedAfterGreetingCount % 50 === 0) {
-              console.log(`[MediaStream] Twilio inbound media blocked by anti-barge-in after greeting (callId=${callId}, blocked=${inboundMediaBlockedAfterGreetingCount}, total=${inboundMediaAfterGreetingCount})`);
-            }
             break;
           }
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN && sessionConfigured) {
-            inboundMediaForwardedAfterGreetingCount += 1;
-            if (inboundMediaForwardedAfterGreetingCount === 1 || inboundMediaForwardedAfterGreetingCount % 50 === 0) {
-              console.log(`[MediaStream] Twilio inbound media forwarded to OpenAI after greeting (callId=${callId}, forwarded=${inboundMediaForwardedAfterGreetingCount}, total=${inboundMediaAfterGreetingCount})`);
-            }
             openaiWs.send(JSON.stringify({
               type: "input_audio_buffer.append",
               audio: msg.media.payload,
             }));
-          } else {
-            inboundMediaBlockedAfterGreetingCount += 1;
-            console.error(`[MediaStream] Twilio inbound media NOT forwarded after greeting (callId=${callId}, openaiReadyState=${openaiWs?.readyState ?? "null"}, sessionConfigured=${sessionConfigured}, blocked=${inboundMediaBlockedAfterGreetingCount}, total=${inboundMediaAfterGreetingCount})`);
           }
           break;
 

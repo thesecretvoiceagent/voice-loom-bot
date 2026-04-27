@@ -8,26 +8,19 @@ const corsHeaders = {
 
 // Override with FRONTEND_BASE_URL secret if you change domains again.
 const FRONTEND_BASE_URL = (Deno.env.get("FRONTEND_BASE_URL") || "https://app.beyondcode.ai").replace(/\/$/, "");
-const SUPABASE_FUNCTIONS_BASE_URL = `${(Deno.env.get("SUPABASE_URL") || "").replace(/\/+$/, "")}/functions/v1`;
 
 function substituteVars(template: string, caseId: string, locationToken: string): string {
   const locationLink = `${FRONTEND_BASE_URL}/location?caseId=${encodeURIComponent(
     caseId,
   )}&token=${encodeURIComponent(locationToken)}`;
-  // Registration form bypasses the published frontend bundle so it can only ask for reg number.
-  const baseFormLink = `${FRONTEND_BASE_URL}/form?caseId=${encodeURIComponent(
+  // Form link reuses the same signed token so FormSubmit treats it as a valid signed link
+  const formLink = `${FRONTEND_BASE_URL}/form?caseId=${encodeURIComponent(
     caseId,
   )}&token=${encodeURIComponent(locationToken)}`;
-  const formLink = `${SUPABASE_FUNCTIONS_BASE_URL}/iizi-reg-form?caseId=${encodeURIComponent(
-    caseId,
-  )}&token=${encodeURIComponent(locationToken)}`;
-  const form2Link = `${baseFormLink}&mode=phone`;
 
   return template
     .replaceAll("{{location_link}}", locationLink)
-    .replaceAll("{{form1_link}}", formLink)
     .replaceAll("{{form_link}}", formLink)
-    .replaceAll("{{form2_link}}", form2Link)
     .replaceAll("{{caller_name}}", "Henri-Georg Eiche")
     .replaceAll("{{first_name}}", "Henri-Georg")
     .replaceAll("{{caller_reg_no}}", "484DLC");
