@@ -522,13 +522,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
         }
       }
+
+      const scopeText = `${(agentConfig as any).name || ""} ${(agentConfig as any).system_prompt || ""}`;
+      isIiziRoadsideAgent = /iizi/i.test(scopeText) && /(autoabi|roadside)/i.test(scopeText);
+      if (isIiziRoadsideAgent) {
+        console.log(`[MediaStream] IIZI roadside runtime guards enabled (callId=${callId})`);
+      }
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
 
     // Inbound CRM prefetch: identify caller by phone number so the agent knows who's calling.
     // Exposed via callVariables so the system prompt can reference {{caller_name}}, {{caller_reg_no}}, etc.
-    if (callDirection === "inbound" && fromNumber) {
+    if (isIiziRoadsideAgent && callDirection === "inbound" && fromNumber) {
       const vehicle = await crmLookup({ phone_number: fromNumber });
       if (vehicle) {
         console.log(`[MediaStream] CRM hit for ${fromNumber}: ${vehicle.owner_name} / ${vehicle.reg_no} (callId=${callId})`);
