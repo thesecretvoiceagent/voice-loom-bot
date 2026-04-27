@@ -1622,6 +1622,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   // Save final call data to DB
   const finalizeCall = () => {
     if (!callId) return;
+    if (callFinalized) return;
+    callFinalized = true;
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
     clearPendingUserResponseTimer();
@@ -1634,9 +1636,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       `[Diag-Final] callId=${callId} ` +
       `inFrames=${twilioInboundFrames}(fwd=${twilioInboundFramesForwarded},dropG=${twilioInboundFramesDropGreeting},dropC=${twilioInboundFramesDropCooldown},dropAB=${twilioInboundFramesDropAntiBargein},postGreeting=${twilioInboundFramesAfterGreeting}) ` +
       `vad{started=${speechStartedCount},stopped=${speechStoppedCount},committed=${bufferCommittedCount},transcripts=${userTranscriptCount}} ` +
-      `resp{created=${responseCreatedCount},done=${responseDoneCount},sent=${responseCreateSentCount},err=${responseErrorCount}} ` +
-      `audio{deltas=${assistantAudioDeltaCount},twilioOut=${twilioOutboundFrames},sendErr=${twilioOutboundSendErrors}} ` +
-      `session{created=${openaiSessionCreatedAt?"yes":"no"},updated=${openaiSessionUpdatedAt?"yes":"no"},greetingCompletedAt=${greetingCompletedAt?"yes":"no"}}`
+      `items{created=${conversationItemCreatedCount}} ` +
+      `resp{createSent=${responseCreateSentCount},created=${responseCreatedCount},done=${responseDoneCount},err=${responseErrorCount},active=${activeResponseId || "none"}} ` +
+      `audio{response.audio.delta=${assistantAudioDeltaCount},response.output_audio.delta=${assistantOutputAudioDeltaCount},firstDeltaAt=${firstAssistantAudioDeltaAt || "none"},bytes=${totalAssistantAudioBytes},twilioOut=${twilioOutboundFrames},firstTwilioOutAt=${firstTwilioOutboundAt || "none"},sendErr=${twilioOutboundSendErrors}} ` +
+      `twilio{start=${twilioStartReceived},stop=${twilioStopReceived},greetingMark=${twilioGreetingMarkReceived},firstCallerMediaAfterGreetingAt=${firstCallerMediaAfterGreetingAt || "none"}} ` +
+      `session{created=${openaiSessionCreatedAt?"yes":"no"},updated=${openaiSessionUpdatedAt?"yes":"no"},config=${lastSessionConfigSent ? JSON.stringify(lastSessionConfigSent) : "none"}} ` +
+      diagState() + ` break="${diagnoseBreakPoint()}"`
     );
 
     // Stop listening for inbound SMS replies for this call
