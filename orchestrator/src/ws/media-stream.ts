@@ -185,13 +185,11 @@ async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: s
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
-const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
-1. NEVER go off-topic. Only discuss what your instructions cover.
-2. Keep every response to 1-3 short sentences maximum.
-3. Do NOT elaborate unless explicitly asked.
-4. Do NOT make up information not in your instructions or knowledge base.
-5. If unsure, say you will follow up — do not guess.
-6. Stay in character at all times. Follow the script exactly.`;
+// Empty fallback — the real instructions come from the agent's "Voice agent
+// instructions" (system_prompt) field. The orchestrator must not inject any
+// behavioral rules of its own; only the prompt configured in the UI drives
+// the AI's behavior.
+const DEFAULT_INSTRUCTIONS = "";
 
 /**
  * Handles a single Twilio Media Stream WebSocket connection.
@@ -366,9 +364,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.warn(`[MediaStream] Manual response.create fallback after user speech (${source}) (callId=${callId})`);
       const response: Record<string, unknown> = {
         modalities: ["text", "audio"],
-        instructions: callerHasSpokenSinceGreeting
-          ? "Respond now to the caller's latest message. Continue the normal intake script in the caller's language. Do not stay silent."
-          : "The caller may have spoken but transcription was empty. Say briefly in Estonian that you did not hear clearly and ask them to repeat how you can help. Do not stay silent.",
       };
       if (!callerHasSpokenSinceGreeting) response.tool_choice = "none";
       pendingUserResponseRetry = true;
@@ -979,15 +974,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         },
       };
       if (greeting) {
-        // Strict, unambiguous instructions. Past versions said "in the original language"
-        // which the model interpreted loosely and would translate Estonian → English.
+        // Pass the configured greeting through verbatim — no extra prompt rules.
+        // The agent's "Voice agent instructions" prompt is the sole source of behavior.
         responseCreate.response.instructions =
-          `Your one and ONLY job for this turn is to read the following greeting OUT LOUD, ` +
-          `WORD-FOR-WORD, in the EXACT SAME LANGUAGE it is written in. ` +
-          `Do NOT translate it. Do NOT paraphrase it. Do NOT add anything before or after it. ` +
-          `Do NOT change a single word. Do NOT pronounce any punctuation, brackets, or template syntax. ` +
-          `If the greeting is in Estonian, you MUST speak Estonian. If in Finnish, Finnish. If in English, English. ` +
-          `\n\nGREETING TO SAY VERBATIM:\n"""\n${greeting}\n"""`;
+          `Say the following greeting now, exactly as written:\n${greeting}`;
       }
       openaiWs.send(JSON.stringify(responseCreate));
 
@@ -1030,21 +1020,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         }
       }
 
-      fullInstructions += `\n\nBEHAVIORAL RULES (always follow, never override):
-- Maximum 1-3 sentences per response. Never give long answers.
-- Stay strictly on topic. Do not improvise or add unrequested information.
-- Follow the script above exactly. Do not deviate.
-- If asked about something outside your scope, briefly redirect back to the topic.
-- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
-
-      if (isIiziRoadsideAgent) {
-        fullInstructions += `\n\nIIZI ROADSIDE RUNTIME RULES (apply only to this IIZI autoabi agent):
-- LIVE DATA HARD RULE: You do NOT have a registration number or callback phone number unless it is present in runtime variables, returned by lookup_vehicle, or arrives in a [SYSTEM EVENT: form_submitted] field. A caller asking "did you get it?" or saying they opened/sent the link is NOT data. If the system event has not arrived, say you do not see it yet and ask them to submit the form.
-- SMS LINK HARD RULE: registration SMS must use the template containing {{form1_link}} (legacy {{form_link}} also resolves to the same reg-only page); callback-number SMS must use the template containing {{form2_link}}. Never use the registration SMS for callback number collection. When the moment in the script is "collect callback number via SMS", you MUST pick the template whose name/description contains "callback" / "tagasihelistamise" — NOT the registration template.
-- SMS SENT HARD RULE: NEVER say "Saatsin Teile tekstisõnumi", "saatsin SMSi", "ma saatsin", "I sent the SMS", "the SMS is on its way", or any equivalent confirmation BEFORE you have called the send_sms tool AND received a function_call_output with success:true. The correct sequence is: (1) decide to send → (2) call send_sms → (3) wait for the tool result → (4) only then speak the confirmation. If send_sms returns success:false, tell the caller the SMS could not be sent — do not pretend it was. Do not pre-announce the SMS in the same turn as the tool call.
-- VEHICLE DATA HARD RULE: Only use vehicle/insurance details (make, model, year, color, insurer, cover type, cover status) that are present in current runtime variables. After a [SYSTEM EVENT: vehicle_lookup_result] message arrives, those values are AUTHORITATIVE: if match=false, treat all vehicle/insurance fields as unknown — do NOT use any phone-derived vehicle context, do NOT read back any make/model/year/insurer to the caller. Only when match=true may you reference the returned fields.
-- PRONUNCIATION RULE: Do NOT say the word "kindlustuskate" — Estonian TTS mispronounces it as "kindlustuskade". Instead say "kindlustuse kaitse" or "kindlustuse staatus" depending on context. Apply the same to all forms ("kindlustuskatte", "kindlustuskatet" → "kindlustuse kaitset" / "kindlustuse staatust").`;
-      }
+      // No orchestrator-injected behavioral or IIZI-specific rules.
+      // The AI's behavior is driven exclusively by the agent's "Voice agent
+      // instructions" (system_prompt) plus its knowledge base above.
 
       // Inject SMS catalog so the AI knows which named SMSes are available, when to use them, and what they say.
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
@@ -1075,7 +1053,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "end_call",
-          description: "End the current phone call. STRICT RULES: (1) Never call this during or immediately after the greeting. (2) Never call this before the caller has spoken at least one substantive sentence to you. (3) Only call this AFTER the caller has clearly said goodbye (e.g. 'aitäh, head aega', 'tšau', 'bye'), OR the caller explicitly asked to hang up, OR all required intake information has been collected AND you have confirmed the next step with the caller. If you are unsure, do NOT call this — keep the conversation going.",
+          description: "End the current phone call. Use only when the conversation is finished according to your instructions.",
           parameters: {
             type: "object",
             properties: {
@@ -1093,17 +1071,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "lookup_vehicle",
-          description: "Look up a vehicle in the CRM. Call this ONLY when the caller has SPOKEN one of the following out loud during the live conversation: (a) a registration plate (e.g. '484DLC'), or (b) a free-text description of the car (make/model/color/year, e.g. 'must BMW 535D 2006'). DO NOT call this just because you know the caller's phone number — the system already attempted a phone-based match before connecting you. DO NOT call this during or immediately after the greeting. DO NOT call this before the caller has actually spoken to you. Returns owner name, vehicle, insurer, cover type/status. If no match, returns found:false.",
+          description: "Look up a vehicle in the CRM by registration plate or free-text description. Returns owner name, vehicle, insurer, cover type/status, or found:false if no match.",
           parameters: {
             type: "object",
             properties: {
               reg_no: {
                 type: "string",
-                description: "Estonian registration plate the caller spoke aloud, e.g. '495BJS'. Strip spaces, uppercase. Pass even if you are not 100% sure — server does fuzzy matching.",
+                description: "Registration plate, e.g. '495BJS'.",
               },
               description: {
                 type: "string",
-                description: "Free-text vehicle description the caller spoke aloud, in any language (Estonian preferred), e.g. 'must BMW 535D 2006' or 'punane Saab 9-5'. Use when caller describes the car instead of giving the plate.",
+                description: "Free-text vehicle description, e.g. 'must BMW 535D 2006'.",
               },
             },
           },
@@ -1118,7 +1096,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "send_sms",
-          description: `Send one of the pre-configured SMS templates to the other party RIGHT NOW. The recipient is the other party on this call (${recipientHint}) — you do NOT pass a phone number. You also do NOT write the message yourself: pick one of the configured templates by its EXACT name (see AVAILABLE SMS TEMPLATES in your instructions). The server sends the template text VERBATIM. Allowed template_name values: ${allowedNames}. If the requested template name is not one of these exact values, the send will fail. STRICT ORDERING: do NOT speak any "SMS sent / saatsin SMSi" confirmation in the same turn as this tool call. Call the tool first and stay silent; the server will return success:true or success:false. ONLY AFTER the success:true result arrives, briefly confirm to the caller in their language. If success:false, tell the caller it could not be sent — never claim it was sent.`,
+          description: `Send one of the pre-configured SMS templates to the other party on this call (${recipientHint}). The server sends the template text verbatim — you do not write the message and you do not pass a phone number. Allowed template_name values: ${allowedNames}. Returns success:true with sid on success, or success:false with error on failure.`,
           parameters: {
             type: "object",
             properties: {
@@ -1311,26 +1289,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 reason = args.reason || reason;
               } catch {}
 
-              if (isIiziRoadsideAgent && callerSubstantiveTurnCount < 2) {
-                console.warn(`[MediaStream] Blocked premature end_call for IIZI (callId=${callId}, userTurns=${callerSubstantiveTurnCount}, reason=${reason})`);
-                openaiWs!.send(JSON.stringify({
-                  type: "conversation.item.create",
-                  item: {
-                    type: "function_call_output",
-                    call_id: event.call_id,
-                    output: JSON.stringify({ success: false, error: "Premature end_call blocked. Continue the intake; ask how you can help or ask the next required question." }),
-                  },
-                }));
-                openaiWs!.send(JSON.stringify({
-                  type: "response.create",
-                  response: {
-                    modalities: ["text", "audio"],
-                    tool_choice: "none",
-                    instructions: "Do not end the call. Respond to the caller now in Estonian and continue the autoabi intake with the next necessary question.",
-                  },
-                }));
-                break;
-              }
+              // No orchestrator-side guard on end_call. The agent's prompt is
+              // the sole authority on when the call should end.
 
               console.log(`[MediaStream] END CALL requested: ${reason} (callId=${callId})`);
               transcriptLines.push(`[System]: Call ended — ${reason}`);
@@ -1467,8 +1427,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   type: "function_call_output",
                   call_id: event.call_id,
                   output: JSON.stringify(result.ok
-                    ? { success: true, sid: result.sid || null, template_name: tpl?.name || requestedName, message: `SMS template "${tpl?.name || requestedName}" was sent successfully (sid=${result.sid || "n/a"}). NOW you may briefly confirm to the caller in their language that the SMS has been sent (e.g. "Saatsin Teile tekstisõnumi.") and then continue. Do not say anything before this point about the SMS being sent.` }
-                    : { success: false, error: result.error, template_name: tpl?.name || requestedName, instruction: `The SMS could not be sent. Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent. Do NOT say "saatsin" or "I sent". Suggest trying again in a moment.` }),
+                    ? { success: true, sid: result.sid || null, template_name: tpl?.name || requestedName }
+                    : { success: false, error: result.error, template_name: tpl?.name || requestedName }),
                 },
               }));
               openaiWs!.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
@@ -1544,7 +1504,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   response: {
                     modalities: ["text", "audio"],
                     tool_choice: "none",
-                    instructions: "You produced no audio. Speak now in Estonian. Ask one concise next intake question for IIZI autoabi and do not call any tool in this turn.",
                   },
                 }));
               }, 150);
