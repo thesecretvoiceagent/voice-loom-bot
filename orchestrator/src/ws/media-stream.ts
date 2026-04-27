@@ -217,6 +217,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   type SmsMessage = { id?: string; name: string; description?: string; content: string; trigger: "during" | "after"; order?: number };
   let smsMessages: SmsMessage[] = [];
   const smsSentNames = new Set<string>();
+  let submittedRegistrationNumber = "";
+  let submittedCallbackPhoneNumber = "";
   let inboundSmsChannel: RealtimeChannel | null = null;
   let locationConfirmChannel: RealtimeChannel | null = null;
   let resolvedAgentIdRef: string | null = null;
@@ -285,10 +287,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const normalizeSmsTemplateName = (value: string) => normalizeTranscript(value).replace(/sms$/i, "").trim();
 
+  type SmsPurpose = "registration" | "callback" | "location" | "unknown";
+  const classifySmsPurpose = (text: string): SmsPurpose => {
+    const normalized = normalizeTranscript(text);
+    if (/form2_link|callback|tagasihelist/.test(text) || /callback|tagasihelist/.test(normalized)) return "callback";
+    if (/location_link/.test(text) || /location|asukoht/.test(normalized)) return "location";
+    if (/form_link/.test(text) || /registration|registreerimis|numbrim[aä]rk/.test(normalized)) return "registration";
+    return "unknown";
+  };
+
+  const findDuringSmsByPurpose = (purpose: SmsPurpose): SmsMessage | undefined => {
+    if (purpose === "unknown") return undefined;
+    return smsMessages
+      .filter((m) => m.trigger === "during")
+      .find((m) => classifySmsPurpose(`${m.name} ${m.description || ""} ${m.content}`) === purpose);
+  };
+
   const resolveDuringSmsTemplate = (requestedName: string): SmsMessage | undefined => {
     const during = smsMessages.filter((m) => m.trigger === "during");
     const exact = during.find((m) => m.name === requestedName);
     if (exact) return exact;
+
+    const sameNormalizedName = during.find((m) => normalizeSmsTemplateName(m.name) === normalizeSmsTemplateName(requestedName));
+    if (sameNormalizedName) return sameNormalizedName;
 
     const normalized = normalizeSmsTemplateName(requestedName);
     const aliasMap: Record<string, RegExp> = {
@@ -760,6 +781,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   const phone = isUsableSubmittedValue(row.form_callback_phone_number)
                     ? row.form_callback_phone_number.toString().slice(0, 20)
                     : "";
+                  if (reg) submittedRegistrationNumber = reg;
+                  if (phone) submittedCallbackPhoneNumber = phone;
                   console.log(`[MediaStream] Form submitted (callId=${callId}): reg="${reg}" phone="${phone}"`);
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
@@ -894,7 +917,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - Stay strictly on topic. Do not improvise or add unrequested information.
 - Follow the script above exactly. Do not deviate.
 - If asked about something outside your scope, briefly redirect back to the topic.
-- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
+- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.
+- LIVE DATA HARD RULE: You do NOT have a registration number or callback phone number unless it is present in runtime variables, returned by lookup_vehicle, or arrives in a [SYSTEM EVENT: form_submitted] field. A caller asking “did you get it?” or saying they opened/sent the link is NOT data. If the system event has not arrived, say you do not see it yet and ask them to submit the form.
+- SMS LINK HARD RULE: registration SMS must use the template containing {{form_link}}; callback-number SMS must use the template containing {{form2_link}}. Never use the registration SMS for callback number collection.`;
 
       // Inject SMS catalog so the AI knows which named SMSes are available, when to use them, and what they say.
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
@@ -1200,9 +1225,28 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
               console.log(`[MediaStream] send_sms INVOKED (callId=${callId}) requestedName="${requestedName}" callDirection=${callDirection} fromNumber="${fromNumber}" calledNumber="${calledNumber}" recipient="${recipient}" availableTemplates=[${smsMessages.map((m) => `${m.name}(${m.trigger})`).join(", ")}]`);
 
-              // Look up the configured during-call template by exact name.
-              // We NEVER use AI-supplied content — only the verbatim configured template.
-              const tpl = resolveDuringSmsTemplate(requestedName);
+              const requestedPurpose = classifySmsPurpose(requestedName);
+              let tpl = resolveDuringSmsTemplate(requestedName);
+              if (requestedPurpose !== "unknown") {
+                const purposeTpl = findDuringSmsByPurpose(requestedPurpose);
+                if (purposeTpl && purposeTpl.name !== tpl?.name) {
+                  console.warn(`[MediaStream] send_sms purpose override requested="${requestedName}" purpose=${requestedPurpose}: using configured template="${purposeTpl.name}" instead of "${tpl?.name || "none"}" (callId=${callId})`);
+                  tpl = purposeTpl;
+                }
+              }
+
+              const tplPurpose = tpl ? classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) : "unknown";
+              if (tplPurpose === "registration" && submittedRegistrationNumber) {
+                const callbackTpl = findDuringSmsByPurpose("callback");
+                if (callbackTpl) {
+                  console.warn(`[MediaStream] send_sms guard: registration already submitted (${submittedRegistrationNumber}); switching to callback SMS "${callbackTpl.name}" (callId=${callId})`);
+                  tpl = callbackTpl;
+                }
+              }
+              if (tpl && classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) === "callback" && !tpl.content.includes("{{form2_link}}")) {
+                console.warn(`[MediaStream] send_sms guard: callback template "${tpl.name}" did not contain {{form2_link}}; forcing phone-only link text (callId=${callId})`);
+                tpl = { ...tpl, content: `Palun sisestage oma tagasihelistamise number siin lingil: {{form2_link}}` };
+              }
 
               let result: { ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string };
               let bodyForLog = "";

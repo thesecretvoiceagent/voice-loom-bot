@@ -95,6 +95,8 @@ Deno.serve(async (req) => {
   const tokenRaw = body.token;
   const regNoRaw = body.reg_no;
   const phoneRaw = body.callback_phone_number;
+  const modeRaw = typeof body.mode === "string" ? body.mode.trim().toLowerCase() : "both";
+  const mode = modeRaw === "reg" ? "reg" : modeRaw === "phone" ? "phone" : "both";
 
   if (typeof caseIdRaw !== "string" || !UUID_RE.test(caseIdRaw.trim())) {
     return jsonResponse(
@@ -119,6 +121,12 @@ Deno.serve(async (req) => {
 
   let regNo: string | null = null;
   if (hasReg) {
+    if (mode === "phone") {
+      return jsonResponse(
+        { ok: false, error: "Registration number is not allowed on this phone-number form", correlation_id: correlationId },
+        400,
+      );
+    }
     const normalized = normalizeRegNo((regNoRaw as string).trim());
     if (!REG_NO_RE.test(normalized)) {
       return jsonResponse(
@@ -131,6 +139,12 @@ Deno.serve(async (req) => {
 
   let phone: string | null = null;
   if (hasPhone) {
+    if (mode === "reg") {
+      return jsonResponse(
+        { ok: false, error: "Callback phone number is not allowed on this registration form", correlation_id: correlationId },
+        400,
+      );
+    }
     const normalized = normalizePhone((phoneRaw as string).trim());
     if (!PHONE_RE.test((phoneRaw as string).trim()) || normalized.replace(/\D/g, "").length < 6) {
       return jsonResponse(
@@ -150,7 +164,7 @@ Deno.serve(async (req) => {
     return jsonResponse({ ok: false, error: "Invalid token", correlation_id: correlationId }, 403);
   }
 
-  console.log(`[${correlationId}] Form submit caseId=${caseId} reg=${regNo} phone=${phone}`);
+  console.log(`[${correlationId}] Form submit caseId=${caseId} mode=${mode} reg=${regNo} phone=${phone}`);
 
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
@@ -160,7 +174,7 @@ Deno.serve(async (req) => {
   const update: Record<string, unknown> = {
     form_submitted_at: new Date().toISOString(),
     form_submission_source: "lovable_form_page",
-    form_raw: { reg_no: regNo, callback_phone_number: phone, correlation_id: correlationId },
+    form_raw: { mode, reg_no: regNo, callback_phone_number: phone, correlation_id: correlationId },
   };
   if (regNo) update.form_registration_number = regNo;
   if (phone) update.form_callback_phone_number = phone;

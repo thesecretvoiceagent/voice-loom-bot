@@ -56,7 +56,7 @@ export default function FormSubmit() {
     setSubmit({ kind: "loading" });
 
     try {
-      const body: Record<string, unknown> = { caseId, token };
+      const body: Record<string, unknown> = { caseId, token, mode };
       if (showReg) body.reg_no = reg;
       if (showPhone) body.callback_phone_number = ph;
 
