@@ -17,7 +17,9 @@ function substituteVars(template: string, caseId: string, locationToken: string)
   const baseFormLink = `${FRONTEND_BASE_URL}/form?caseId=${encodeURIComponent(
     caseId,
   )}&token=${encodeURIComponent(locationToken)}`;
-  const formLink = `${baseFormLink}&mode=reg`;
+  const formLink = `${Deno.env.get("SUPABASE_URL")!.replace(/\/+$/, "")}/functions/v1/iizi-reg-form?caseId=${encodeURIComponent(
+    caseId,
+  )}&token=${encodeURIComponent(locationToken)}`;
   const form2Link = `${baseFormLink}&mode=phone`;
 
   return template
