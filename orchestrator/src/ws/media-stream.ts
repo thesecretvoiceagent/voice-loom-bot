@@ -399,33 +399,76 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const sendUserTurnResponseCreate = (source: string) => {
-    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
-    if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return false;
-    if (lastUserAudioItemId && lastRespondedUserAudioItemId === lastUserAudioItemId) return false;
-    lastRespondedUserAudioItemId = lastUserAudioItemId;
-    console.warn(`[MediaStream] Creating AI response after user speech (${source}) (callId=${callId}, itemId=${lastUserAudioItemId || "unknown"})`);
-    pendingUserResponseRetry = true;
-    const response: Record<string, unknown> = {
-      modalities: ["text", "audio"],
-    };
-    if (postGreetingAssistantTurnCount === 0) {
-      response.tool_choice = "none";
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
+      console.error(`[MediaStream] response.create blocked: OpenAI websocket not open (callId=${callId}, source=${source}, itemId=${pendingUserTurn?.id || lastUserAudioItemId || "unknown"})`);
+      return false;
     }
-    openaiWs.send(JSON.stringify({
-      type: "response.create",
-      response,
-    }));
+    if (!sessionConfigured) {
+      console.warn(`[MediaStream] response.create blocked: session not configured (callId=${callId}, source=${source})`);
+      return false;
+    }
+    if (greetingInProgress) {
+      console.warn(`[MediaStream] response.create queued: greeting still playing (callId=${callId}, source=${source}, itemId=${pendingUserTurn?.id || "unknown"})`);
+      return false;
+    }
+    if (activeResponseId && currentResponseCreatedAt && Date.now() - currentResponseCreatedAt > 15000) {
+      console.error(`[MediaStream] response.create blocked by stale active response; cancelling first (callId=${callId}, staleResponseId=${activeResponseId}, ageMs=${Date.now() - currentResponseCreatedAt})`);
+      try {
+        openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+      } catch (err) {
+        console.error(`[MediaStream] response.cancel failed before user response.create (callId=${callId}):`, err);
+      }
+      resetResponseState();
+      aiIsSpeaking = false;
+    }
+    if (responseCreateInFlight || assistantResponding || activeResponseId) {
+      console.warn(`[MediaStream] response.create blocked: assistant response active (callId=${callId}, source=${source}, inFlight=${responseCreateInFlight}, assistantResponding=${assistantResponding}, responseId=${activeResponseId || "none"})`);
+      return false;
+    }
+    if (aiIsSpeaking && !responsePlaybackMarkName) {
+      console.warn(`[MediaStream] Clearing stale aiIsSpeaking before user response.create (callId=${callId}, source=${source})`);
+      aiIsSpeaking = false;
+    }
+
+    const turn = pendingUserTurn || (lastUserAudioItemId ? { id: lastUserAudioItemId, source, createdAt: Date.now() } : null);
+    if (!turn) {
+      console.warn(`[MediaStream] response.create blocked: no committed user turn (callId=${callId}, source=${source})`);
+      return false;
+    }
+    if (lastRespondedUserAudioItemId === turn.id) {
+      console.warn(`[MediaStream] response.create deduped for user turn (callId=${callId}, source=${source}, itemId=${turn.id})`);
+      pendingUserTurn = null;
+      return false;
+    }
+
+    lastRespondedUserAudioItemId = turn.id;
+    pendingUserTurn = null;
+    responseCreateInFlight = true;
+    pendingUserResponseRetry = true;
+    const response: Record<string, unknown> = { modalities: ["text", "audio"] };
+    console.warn(`[MediaStream] >>> response.create sent after committed user turn (callId=${callId}, source=${source}, itemId=${turn.id}, transcript="${(turn.transcript || "").slice(0, 120)}")`);
+    openaiWs.send(JSON.stringify({ type: "response.create", response }));
+    clearResponseCreateWatchdog();
+    responseCreateWatchdogTimer = setTimeout(() => {
+      if (responseCreateInFlight && !activeResponseId) {
+        console.error(`[MediaStream] HARD ERROR: response.create sent but no response.created/response.error within 3s (callId=${callId}, itemId=${turn.id}, source=${source})`);
+        responseCreateInFlight = false;
+      }
+    }, 3000);
     return true;
   };
 
-  const scheduleManualResponseAfterUserSpeech = (source: string, delayMs = 700) => {
-    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-    if (!sessionConfigured || greetingInProgress || aiIsSpeaking || activeResponseId) return;
-    clearPendingUserSpeechResponseTimer();
-    pendingUserSpeechResponseTimer = setTimeout(() => {
-      pendingUserSpeechResponseTimer = null;
-      sendUserTurnResponseCreate(source);
-    }, delayMs);
+  const processPendingUserTurn = (source: string) => {
+    if (!pendingUserTurn) return false;
+    const sent = sendUserTurnResponseCreate(source);
+    if (!sent) {
+      clearPendingUserSpeechResponseTimer();
+      pendingUserSpeechResponseTimer = setTimeout(() => {
+        pendingUserSpeechResponseTimer = null;
+        processPendingUserTurn(`${source}:retry`);
+      }, 250);
+    }
+    return sent;
   };
 
   const enableTurnDetection = () => {
