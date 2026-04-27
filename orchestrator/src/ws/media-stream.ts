@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import { createClient, SupabaseClient, RealtimeChannel } from "@supabase/supabase-js";
-import { config } from "../config.js";
+import { config, getDeploymentIdentity } from "../config.js";
 import {
   fetchAgentConfig,
   fetchAgentByPhoneNumber,
@@ -292,9 +292,23 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let lastInjectedUserTranscript = "";
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
+  let assistantOutputAudioDeltaCount = 0;
+  let firstAssistantAudioDeltaAt: string | null = null;
+  let totalAssistantAudioBytes = 0;
   let twilioOutboundFrames = 0;
+  let firstTwilioOutboundAt: string | null = null;
   let twilioOutboundSendErrors = 0;
   let diagnosticSnapshotTimer: ReturnType<typeof setInterval> | null = null;
+  let twilioStartReceived = false;
+  let twilioStopReceived = false;
+  let twilioGreetingMarkReceived = false;
+  let firstCallerMediaAfterGreetingAt: string | null = null;
+  let conversationItemCreatedCount = 0;
+  let lastSessionConfigSent: Record<string, unknown> | null = null;
+  let loadedAgentName = "(none)";
+
+  const diagState = () =>
+    `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
 
   const clearMarkFallback = () => {
     if (markFallbackTimer) {
