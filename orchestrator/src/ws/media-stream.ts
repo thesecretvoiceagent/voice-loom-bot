@@ -185,13 +185,11 @@ async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: s
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
-const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
-1. NEVER go off-topic. Only discuss what your instructions cover.
-2. Keep every response to 1-3 short sentences maximum.
-3. Do NOT elaborate unless explicitly asked.
-4. Do NOT make up information not in your instructions or knowledge base.
-5. If unsure, say you will follow up — do not guess.
-6. Stay in character at all times. Follow the script exactly.`;
+// Empty fallback — the real instructions come from the agent's "Voice agent
+// instructions" (system_prompt) field. The orchestrator must not inject any
+// behavioral rules of its own; only the prompt configured in the UI drives
+// the AI's behavior.
+const DEFAULT_INSTRUCTIONS = "";
 
 /**
  * Handles a single Twilio Media Stream WebSocket connection.
