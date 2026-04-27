@@ -322,10 +322,31 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.warn(`[Diag-TestB] skipped reason=${reason} streamSid=${streamSid || "empty"} twilioState=${twilioWs.readyState} (callId=${callId})`);
       return;
     }
+    const linearToMuLaw = (sample: number) => {
+      const BIAS = 0x84;
+      const CLIP = 32635;
+      let sign = (sample >> 8) & 0x80;
+      if (sign !== 0) sample = -sample;
+      if (sample > CLIP) sample = CLIP;
+      sample += BIAS;
+      let exponent = 7;
+      for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; expMask >>= 1) exponent -= 1;
+      const mantissa = (sample >> (exponent + 3)) & 0x0f;
+      return (~(sign | (exponent << 4) | mantissa)) & 0xff;
+    };
+    const sampleRate = 8000;
+    const toneHz = 880;
     const frames = 60;
-    const payload = Buffer.alloc(160, 0xff).toString("base64");
+    const framePayloads = Array.from({ length: frames }, (_, frameIndex) => {
+      const frame = Buffer.alloc(160);
+      for (let i = 0; i < 160; i += 1) {
+        const t = (frameIndex * 160 + i) / sampleRate;
+        frame[i] = linearToMuLaw(Math.round(Math.sin(2 * Math.PI * toneHz * t) * 12000));
+      }
+      return frame.toString("base64");
+    });
     console.warn(`[Diag-TestB] sending hardcoded outbound Twilio media tone frames=${frames} reason=${reason} (callId=${callId})`);
-    for (let i = 0; i < frames; i += 1) {
+    for (const payload of framePayloads) {
       try {
         twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload } }));
         twilioOutboundFrames += 1;
