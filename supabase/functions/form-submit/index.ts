@@ -95,8 +95,8 @@ Deno.serve(async (req) => {
   const tokenRaw = body.token;
   const regNoRaw = body.reg_no;
   const phoneRaw = body.callback_phone_number;
-  const modeRaw = typeof body.mode === "string" ? body.mode.trim().toLowerCase() : "both";
-  const mode = modeRaw === "reg" ? "reg" : modeRaw === "phone" ? "phone" : "both";
+  const modeRaw = typeof body.mode === "string" ? body.mode.trim().toLowerCase() : "reg";
+  const mode = modeRaw === "phone" ? "phone" : modeRaw === "both" ? "both" : "reg";
 
   if (typeof caseIdRaw !== "string" || !UUID_RE.test(caseIdRaw.trim())) {
     return jsonResponse(
