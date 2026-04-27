@@ -4,6 +4,34 @@ import { updateCall } from "../supabase.js";
 
 export const formsRouter = Router();
 
+const REG_NO_RE = /^[A-Z0-9 \-]{2,12}$/i;
+
+function esc(value: string): string {
+  return value.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch] || ch));
+}
+
+function verifyLocationToken(caseId: string, token: string): boolean {
+  const secret = process.env.LOCATION_TOKEN_SECRET || "";
+  if (!secret) return false;
+  const expected = crypto.createHmac("sha256", secret).update(caseId).digest("hex");
+  try {
+    return token.length === expected.length && crypto.timingSafeEqual(Buffer.from(token, "hex"), Buffer.from(expected, "hex"));
+  } catch {
+    return false;
+  }
+}
+
+function extractSignedParams(req: Request): { caseId: string; token: string } {
+  const src = typeof req.query.src === "string" ? req.query.src : "";
+  const caseId = (typeof req.query.caseId === "string" ? req.query.caseId : "") || src.match(/caseId=([0-9a-f-]{36})/i)?.[1] || "";
+  const token = (typeof req.query.token === "string" ? req.query.token : "") || src.match(/token=([0-9a-f]{64})/i)?.[1] || "";
+  return { caseId: caseId.trim(), token: token.trim() };
+}
+
+function renderRegForm(caseId: string, token: string, message = ""): string {
+  return `<!doctype html><html lang="et"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Registreerimisnumber</title><style>body{margin:0;background:#050308;color:#f4f0f6;font-family:Arial,sans-serif}.wrap{padding:24px 20px;max-width:520px}.field{display:block;margin:22px 0 8px;font-size:14px;font-weight:700}input{box-sizing:border-box;width:100%;height:52px;border:1px solid #342e3d;border-radius:8px;background:#24202d;color:#fff;font-size:18px;padding:0 14px;text-transform:uppercase;letter-spacing:.08em}button{width:100%;height:56px;margin-top:18px;border:0;border-radius:8px;background:#23966f;color:#07100d;font-size:17px;font-weight:800}.err{margin-top:16px;color:#ffb4ab}.ok{margin-top:20px;color:#91f3c3;font-weight:800}.muted{color:#9c94a8}</style></head><body><main class="wrap"><h1>Sisesta oma sõiduki andmed</h1><form method="post"><input type="hidden" name="caseId" value="${esc(caseId)}"><input type="hidden" name="token" value="${esc(token)}"><label class="field" for="reg">Auto registreerimisnumber</label><input id="reg" name="reg_no" maxlength="12" required autofocus autocomplete="off" autocapitalize="characters" spellcheck="false">${message}<button type="submit">Saada</button></form></main></body></html>`;
+}
+
 interface IiziFallbackBody {
   secret?: unknown;
   caseId?: unknown;
