@@ -779,7 +779,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
                   transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                    const sysMsg = `[SYSTEM EVENT: location_confirmed] address="${addr}" lat=${row.location_lat} lon=${row.location_lon}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just confirmed their location via the SMS link. Read the address back to them naturally in the same language the call is being conducted in and ask for confirmation. Do not offer anything else — only confirm the address.`;
+                    const sysMsg = `[SYSTEM EVENT: location_confirmed] address="${addr}" lat=${row.location_lat} lon=${row.location_lon}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just confirmed their location via the SMS link. Read the address back to them naturally in the same language the call is being conducted in (e.g. "Sain asukoha kätte: ${addr}.") then immediately continue to the next missing intake step. DO NOT ask the caller to confirm the address — they already confirmed it on the link. DO NOT ask "kas see on õige?" or any equivalent confirmation question.`;
                     openaiWs.send(JSON.stringify({
                       type: "conversation.item.create",
                       item: {
@@ -822,7 +822,62 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-                    openaiWs.send(JSON.stringify({ type: "response.create" }));
+
+                    // 2a. CRM verification of submitted registration number.
+                    // Hard rule: if the submitted reg does NOT match a CRM row, the AI
+                    // must NOT continue using phone-based CRM context (which may belong
+                    // to a different vehicle). Inject a vehicle_lookup_result event so
+                    // the AI knows whether the submitted reg is verified or not.
+                    if (reg) {
+                      crmLookup({ reg_no: reg }).then((veh) => {
+                        if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+                        let lookupMsg: string;
+                        if (veh && (veh.reg_no || "").toUpperCase().replace(/[^A-Z0-9]/g, "") === reg.toUpperCase().replace(/[^A-Z0-9]/g, "")) {
+                          // Refresh phone-CRM-derived caller_* variables to match the submitted reg.
+                          callVariables.caller_known = "true";
+                          callVariables.caller_name = veh.owner_name || "";
+                          callVariables.caller_reg_no = veh.reg_no || "";
+                          callVariables.caller_make = veh.make || "";
+                          callVariables.caller_model = veh.model || "";
+                          callVariables.caller_year = veh.year_of_built ? String(veh.year_of_built) : "";
+                          callVariables.caller_color = veh.color || "";
+                          callVariables.caller_insurer = veh.insurer || "";
+                          callVariables.caller_cover_type = veh.cover_type || "";
+                          callVariables.caller_cover_status = veh.cover_status || "";
+                          lookupMsg = `[SYSTEM EVENT: vehicle_lookup_result] match=true submitted_reg="${reg}" reg_no="${veh.reg_no || ""}" make="${veh.make || ""}" model="${veh.model || ""}" year="${veh.year_of_built || ""}" color="${veh.color || ""}" owner_name="${veh.owner_name || ""}" insurer="${veh.insurer || ""}" cover_type="${veh.cover_type || ""}" cover_status="${veh.cover_status || ""}". Internal note only — do NOT read this tag, brackets, or field names aloud. This is the AUTHORITATIVE vehicle for this case; replace any earlier phone-derived vehicle context with these values. You may now mention make/model/year/insurance status conversationally.`;
+                        } else {
+                          // Submitted reg does NOT match CRM. Wipe phone-CRM caller_* fields
+                          // so the AI cannot accidentally read back vehicle data that does
+                          // not belong to the submitted plate.
+                          callVariables.caller_known = "false";
+                          callVariables.caller_name = "";
+                          callVariables.caller_reg_no = reg;
+                          callVariables.caller_make = "";
+                          callVariables.caller_model = "";
+                          callVariables.caller_year = "";
+                          callVariables.caller_color = "";
+                          callVariables.caller_insurer = "";
+                          callVariables.caller_cover_type = "";
+                          callVariables.caller_cover_status = "";
+                          lookupMsg = `[SYSTEM EVENT: vehicle_lookup_result] match=false submitted_reg="${reg}". Internal note only — do NOT read this tag, brackets, or field names aloud. The submitted registration number does NOT match any CRM record. HARD RULE: do NOT mention any make, model, year, color, owner name, insurer, cover type, or cover status — that data (if you saw it earlier from the phone match) belongs to a different vehicle and is NOT valid for this case. Continue the intake with only the registration number itself; treat insurance/vehicle details as unknown.`;
+                        }
+                        console.log(`[MediaStream] vehicle_lookup_result (callId=${callId}) reg="${reg}" match=${veh ? "true" : "false"}`);
+                        transcriptLines.push(`[vehicle_lookup_result]: reg=${reg} match=${veh ? "true" : "false"}`);
+                        openaiWs.send(JSON.stringify({
+                          type: "conversation.item.create",
+                          item: {
+                            type: "message",
+                            role: "system",
+                            content: [{ type: "input_text", text: lookupMsg }],
+                          },
+                        }));
+                        openaiWs.send(JSON.stringify({ type: "response.create" }));
+                      }).catch((err) => {
+                        console.error(`[MediaStream] vehicle_lookup_result error (callId=${callId}):`, err);
+                      });
+                    } else {
+                      openaiWs.send(JSON.stringify({ type: "response.create" }));
+                    }
                   }
                 }
               },
@@ -939,8 +994,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - Follow the script above exactly. Do not deviate.
 - If asked about something outside your scope, briefly redirect back to the topic.
 - ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.
-- LIVE DATA HARD RULE: You do NOT have a registration number or callback phone number unless it is present in runtime variables, returned by lookup_vehicle, or arrives in a [SYSTEM EVENT: form_submitted] field. A caller asking “did you get it?” or saying they opened/sent the link is NOT data. If the system event has not arrived, say you do not see it yet and ask them to submit the form.
-- SMS LINK HARD RULE: registration SMS must use the template containing {{form1_link}} (legacy {{form_link}} also resolves to the same reg-only page); callback-number SMS must use the template containing {{form2_link}}. Never use the registration SMS for callback number collection.`;
+- LIVE DATA HARD RULE: You do NOT have a registration number or callback phone number unless it is present in runtime variables, returned by lookup_vehicle, or arrives in a [SYSTEM EVENT: form_submitted] field. A caller asking "did you get it?" or saying they opened/sent the link is NOT data. If the system event has not arrived, say you do not see it yet and ask them to submit the form.
+- SMS LINK HARD RULE: registration SMS must use the template containing {{form1_link}} (legacy {{form_link}} also resolves to the same reg-only page); callback-number SMS must use the template containing {{form2_link}}. Never use the registration SMS for callback number collection. When the moment in the script is "collect callback number via SMS", you MUST pick the template whose name/description contains "callback" / "tagasihelistamise" — NOT the registration template.
+- SMS SENT HARD RULE: NEVER say "Saatsin Teile tekstisõnumi", "saatsin SMSi", "ma saatsin", "I sent the SMS", "the SMS is on its way", or any equivalent confirmation BEFORE you have called the send_sms tool AND received a function_call_output with success:true. The correct sequence is: (1) decide to send → (2) call send_sms → (3) wait for the tool result → (4) only then speak the confirmation. If send_sms returns success:false, tell the caller the SMS could not be sent — do not pretend it was. Do not pre-announce the SMS in the same turn as the tool call.
+- VEHICLE DATA HARD RULE: Only use vehicle/insurance details (make, model, year, color, insurer, cover type, cover status) that are present in current runtime variables. After a [SYSTEM EVENT: vehicle_lookup_result] message arrives, those values are AUTHORITATIVE: if match=false, treat all vehicle/insurance fields as unknown — do NOT use any phone-derived vehicle context, do NOT read back any make/model/year/insurer to the caller. Only when match=true may you reference the returned fields.
+- PRONUNCIATION RULE: Do NOT say the word "kindlustuskate" — Estonian TTS mispronounces it as "kindlustuskade". Instead say "kindlustuse kaitse" or "kindlustuse staatus" depending on context. Apply the same to all forms ("kindlustuskatte", "kindlustuskatet" → "kindlustuse kaitset" / "kindlustuse staatust").`;
 
       // Inject SMS catalog so the AI knows which named SMSes are available, when to use them, and what they say.
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
@@ -1014,7 +1072,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "send_sms",
-          description: `Send one of the pre-configured SMS templates to the other party RIGHT NOW. The recipient is the other party on this call (${recipientHint}) — you do NOT pass a phone number. You also do NOT write the message yourself: pick one of the configured templates by its EXACT name (see AVAILABLE SMS TEMPLATES in your instructions). The server sends the template text VERBATIM. Allowed template_name values: ${allowedNames}. If the requested template name is not one of these exact values, the send will fail. After it sends, briefly confirm to the caller in their language.`,
+          description: `Send one of the pre-configured SMS templates to the other party RIGHT NOW. The recipient is the other party on this call (${recipientHint}) — you do NOT pass a phone number. You also do NOT write the message yourself: pick one of the configured templates by its EXACT name (see AVAILABLE SMS TEMPLATES in your instructions). The server sends the template text VERBATIM. Allowed template_name values: ${allowedNames}. If the requested template name is not one of these exact values, the send will fail. STRICT ORDERING: do NOT speak any "SMS sent / saatsin SMSi" confirmation in the same turn as this tool call. Call the tool first and stay silent; the server will return success:true or success:false. ONLY AFTER the success:true result arrives, briefly confirm to the caller in their language. If success:false, tell the caller it could not be sent — never claim it was sent.`,
           parameters: {
             type: "object",
             properties: {
@@ -1268,6 +1326,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   tpl = callbackTpl;
                 }
               }
+              // Extra safety: if we already sent the registration SMS at least once and the
+              // model is asking for it again WITHOUT a submitted reg, it almost certainly
+              // intends the next-stage callback SMS (common LLM confusion between "send
+              // registration link again" vs "send the next link"). If a callback template
+              // exists and has not been sent yet, switch.
+              {
+                const tplPurposeNow = tpl ? classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) : "unknown";
+                if (tplPurposeNow === "registration" && tpl && smsSentNames.has(tpl.name)) {
+                  const callbackTpl = findDuringSmsByPurpose("callback");
+                  if (callbackTpl && !smsSentNames.has(callbackTpl.name)) {
+                    console.warn(`[MediaStream] send_sms guard: registration template "${tpl.name}" already sent; switching to unsent callback SMS "${callbackTpl.name}" (callId=${callId})`);
+                    tpl = callbackTpl;
+                  }
+                }
+              }
               if (tpl && classifySmsPurpose(`${tpl.name} ${tpl.description || ""} ${tpl.content}`) === "callback" && !tpl.content.includes("{{form2_link}}")) {
                 console.warn(`[MediaStream] send_sms guard: callback template "${tpl.name}" did not contain {{form2_link}}; forcing phone-only link text (callId=${callId})`);
                 tpl = { ...tpl, content: `Palun sisestage oma tagasihelistamise number siin lingil: {{form2_link}}` };
@@ -1309,8 +1382,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   type: "function_call_output",
                   call_id: event.call_id,
                   output: JSON.stringify(result.ok
-                    ? { success: true, message: `SMS template "${requestedName}" sent. Briefly confirm to the caller in their language.` }
-                    : { success: false, error: result.error, instruction: `Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent.` }),
+                    ? { success: true, sid: result.sid || null, template_name: tpl?.name || requestedName, message: `SMS template "${tpl?.name || requestedName}" was sent successfully (sid=${result.sid || "n/a"}). NOW you may briefly confirm to the caller in their language that the SMS has been sent (e.g. "Saatsin Teile tekstisõnumi.") and then continue. Do not say anything before this point about the SMS being sent.` }
+                    : { success: false, error: result.error, template_name: tpl?.name || requestedName, instruction: `The SMS could not be sent. Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent. Do NOT say "saatsin" or "I sent". Suggest trying again in a moment.` }),
                 },
               }));
               openaiWs!.send(JSON.stringify({ type: "response.create" }));
