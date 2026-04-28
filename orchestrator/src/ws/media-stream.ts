@@ -1566,14 +1566,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             pendingRecoveryCooldownMs = 0;
             if (callDirection === "inbound") {
               const fallbackSeq = ++inboundTranscriptFallbackSeq;
+              const transcriptText = String(event.transcript || "").trim();
+              latestCompletedInboundTranscript = { seq: fallbackSeq, text: transcriptText, at: Date.now() };
+              inboundRecoveryAttemptSeq = fallbackSeq;
+              inboundRecoveryAttemptsForSeq = 0;
               clearInboundTranscriptFallbackTimer();
-              console.log(`[Diag-InboundTurn] transcript.completed seq=${fallbackSeq} text="${String(event.transcript || "").slice(0, 160)}" responseCreated=${responseCreatedCount} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
+              console.log(`[Diag-InboundTurn] transcript.completed seq=${fallbackSeq} at=${new Date(latestCompletedInboundTranscript.at).toISOString()} text="${transcriptText.slice(0, 160)}" responseCreated=${responseCreatedCount} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
               inboundTranscriptFallbackTimer = setTimeout(() => {
                 inboundTranscriptFallbackTimer = null;
-                if (fallbackSeq !== inboundTranscriptFallbackSeq || activeResponseId || greetingInProgress) return;
-                console.warn(`[Diag-InboundTurn] fallback forcing response.create seq=${fallbackSeq} reason=transcript-no-response activeResponse=${activeResponseId || "none"} (callId=${callId})`);
-                sendResponseCreate("inbound-transcript-fallback", { modalities: ["text", "audio"] });
+                if (fallbackSeq !== inboundTranscriptFallbackSeq || greetingInProgress) return;
+                if (responseHasAudio) return;
+                if (activeResponseId) {
+                  console.warn(`[Diag-InboundTurn] fallback active response has no audio yet; escalating seq=${fallbackSeq} activeResponse=${activeResponseId} (callId=${callId})`);
+                  triggerInboundTranscriptRecovery("inbound-transcript-fallback-active-no-audio", activeResponseId);
+                  return;
+                }
+                console.warn(`[Diag-InboundTurn] fallback scheduled fired seq=${fallbackSeq} reason=transcript-no-response activeResponse=${activeResponseId || "none"} text="${transcriptText.slice(0, 160)}" (callId=${callId})`);
+                triggerInboundTranscriptRecovery("inbound-transcript-fallback", null);
               }, 900);
+              console.log(`[Diag-InboundTurn] fallback scheduled seq=${fallbackSeq} timeoutMs=900 text="${transcriptText.slice(0, 160)}" (callId=${callId})`);
             } else {
               scheduleUserResponseCreate("user-transcript", 150, event.transcript);
             }
