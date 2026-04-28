@@ -544,7 +544,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.6,             // Slightly less strict so quieter callers still trigger
         prefix_padding_ms: 400,
         silence_duration_ms: 700,   // Faster end-of-turn detection
-        create_response: false,     // Deterministic bridge: we commit audio and send response.create ourselves
+        create_response: callDirection === "inbound", // Inbound now mirrors the working automatic Realtime turn flow
         interrupt_response: true,   // Allow caller to barge in on assistant audio
       },
     };
@@ -555,7 +555,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       toolsActivated = true;
       console.log(`[MediaStream] Activating ${pendingToolsForActivation.length} tools post-greeting (callId=${callId})`);
     }
-    console.log(`[Diag-OpenAI-Config] callId=${callId} session.update patch=${JSON.stringify({ turn_detection: sessionPatch.turn_detection, tools_count: Array.isArray(sessionPatch.tools) ? sessionPatch.tools.length : 0 })}`);
+    console.log(`[Diag-OpenAI-Config] callId=${callId} direction=${callDirection} session.update patch=${JSON.stringify({ turn_detection: sessionPatch.turn_detection, tools_count: Array.isArray(sessionPatch.tools) ? sessionPatch.tools.length : 0 })}`);
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: sessionPatch,
