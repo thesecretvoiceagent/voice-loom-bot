@@ -295,8 +295,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let pendingUserResponseTranscript: string | null = null;
   let inboundTranscriptFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let inboundTranscriptFallbackSeq = 0;
+  let latestCompletedInboundTranscript: { seq: number; text: string; at: number } | null = null;
   let lastInjectedInboundTranscript = "";
+  let lastInjectedInboundTranscriptSeq = 0;
+  let inboundNoAudioTimer: ReturnType<typeof setTimeout> | null = null;
   let responseDoneFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let inboundRecoveryAttemptSeq = 0;
+  let inboundRecoveryAttemptsForSeq = 0;
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
   let assistantOutputAudioDeltaCount = 0;
@@ -320,6 +325,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callFinalized = false;
   let lastResponseCreateReason = "(none)";
   let activeResponseReason = "(none)";
+  let activeResponseInboundTranscriptSeq = 0;
+  let activeResponseTwilioChunks = 0;
+  let activeResponseTwilioBytes = 0;
 
   const diagState = () =>
     `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
