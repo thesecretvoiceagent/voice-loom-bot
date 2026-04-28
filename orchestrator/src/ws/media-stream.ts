@@ -300,6 +300,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseDoneFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let inboundRecoveryAttemptSeq = 0;
   let inboundRecoveryAttemptsForSeq = 0;
+  let pendingInboundRecoveryAfterCancel: {
+    reason: string;
+    failedResponseId: string | null;
+    transcriptSeq: number;
+    transcriptText: string;
+    timer: ReturnType<typeof setTimeout> | null;
+  } | null = null;
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
   let assistantOutputAudioDeltaCount = 0;
@@ -429,6 +436,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       clearTimeout(responseDoneFallbackTimer);
       responseDoneFallbackTimer = null;
     }
+  };
+
+  const clearPendingInboundRecoveryAfterCancel = () => {
+    if (pendingInboundRecoveryAfterCancel?.timer) {
+      clearTimeout(pendingInboundRecoveryAfterCancel.timer);
+    }
+    pendingInboundRecoveryAfterCancel = null;
   };
 
   const clearCallerSpeechWatchdog = () => {
