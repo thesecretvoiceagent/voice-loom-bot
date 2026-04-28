@@ -1442,10 +1442,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
             }
+            const hasUsableAudioDelta = typeof event.delta === "string" && event.delta.length > 0;
             if (event.type === "response.output_audio.delta") assistantOutputAudioDeltaCount += 1;
             else assistantAudioDeltaCount += 1;
-            responseHasAudio = true;
-            if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && !responseAudioDeltaLogged) {
+            if (hasUsableAudioDelta) responseHasAudio = true;
+            if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && !responseAudioDeltaLogged && hasUsableAudioDelta) {
               responseAudioDeltaLogged = true;
               clearInboundTranscriptFallbackTimer();
               clearInboundNoAudioTimer();
