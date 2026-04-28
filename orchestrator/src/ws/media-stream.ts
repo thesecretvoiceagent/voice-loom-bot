@@ -583,8 +583,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
     console.warn(`[Diag-InboundTurn] recovery triggered reason=${reason} seq=${latestCompletedInboundTranscript.seq} failedResponseId=${failedResponseId || "none"} text="${latestCompletedInboundTranscript.text.slice(0, 160)}" attempts=${inboundRecoveryAttemptsForSeq} (callId=${callId})`);
     const shouldCancelActiveResponse = Boolean(failedResponseId && activeResponseId === failedResponseId && !responseDoneReceived);
+    const recoveryTranscriptSeq = latestCompletedInboundTranscript.seq;
+    const recoveryTranscriptText = latestCompletedInboundTranscript.text;
     if (shouldCancelActiveResponse) {
       try {
+        clearPendingInboundRecoveryAfterCancel();
+        pendingInboundRecoveryAfterCancel = {
+          reason,
+          failedResponseId: failedResponseId || null,
+          transcriptSeq: recoveryTranscriptSeq,
+          transcriptText: recoveryTranscriptText,
+          timer: null,
+        };
         openaiWs.send(JSON.stringify({ type: "response.cancel" }));
         console.warn(`[Diag-InboundTurn] response.cancel sent for failed no-audio responseId=${failedResponseId} seq=${latestCompletedInboundTranscript.seq} (callId=${callId})`);
       } catch (err) {
@@ -604,7 +614,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     activeResponseTwilioChunks = 0;
     activeResponseTwilioBytes = 0;
     aiIsSpeaking = false;
-    ignoreAudioUntilNextResponse = false;
+    ignoreAudioUntilNextResponse = shouldCancelActiveResponse;
     const sendRecoveryResponse = () => {
       if (!latestCompletedInboundTranscript?.text || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
       injectInboundTranscriptAsUserText(latestCompletedInboundTranscript.text, reason, latestCompletedInboundTranscript.seq);
@@ -612,8 +622,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.warn(`[Diag-InboundTurn] fallback sent seq=${latestCompletedInboundTranscript.seq} reason=${reason} text="${latestCompletedInboundTranscript.text.slice(0, 160)}" (callId=${callId})`);
       sendResponseCreate(reason, { modalities: ["text", "audio"] });
     };
-    if (shouldCancelActiveResponse) setTimeout(sendRecoveryResponse, 120);
-    else sendRecoveryResponse();
+    if (shouldCancelActiveResponse) {
+      if (pendingInboundRecoveryAfterCancel) {
+        pendingInboundRecoveryAfterCancel.timer = setTimeout(() => {
+          const pending = pendingInboundRecoveryAfterCancel;
+          if (!pending || pending.transcriptSeq !== recoveryTranscriptSeq) return;
+          console.warn(`[Diag-InboundTurn] cancel recovery fallback timer fired seq=${recoveryTranscriptSeq} failedResponseId=${failedResponseId || "none"}; forcing recovery create (callId=${callId})`);
+          clearPendingInboundRecoveryAfterCancel();
+          ignoreAudioUntilNextResponse = false;
+          sendRecoveryResponse();
+        }, 650);
+      }
+    } else sendRecoveryResponse();
   };
 
   const armInboundNoAudioTimer = (responseId: string | null, transcriptSeq: number, reason: string, timeoutMs = 1400) => {
