@@ -607,6 +607,37 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     else sendRecoveryResponse();
   };
 
+  const armInboundNoAudioTimer = (responseId: string | null, transcriptSeq: number, reason: string, timeoutMs = 1400) => {
+    if (callDirection !== "inbound" || greetingInProgress || !responseId) return;
+    clearInboundNoAudioTimer();
+    inboundNoAudioTimer = setTimeout(() => {
+      inboundNoAudioTimer = null;
+      if (callDirection !== "inbound" || greetingInProgress) return;
+      if (activeResponseId !== responseId) return;
+      if (responseHasAudio) return;
+      console.error(`[Diag-InboundTurn] no-audio timeout reason=${reason} responseId=${responseId} seq=${transcriptSeq} text="${latestCompletedInboundTranscript?.text?.slice(0, 160) || ""}" (callId=${callId})`);
+      triggerInboundTranscriptRecovery(`inbound-no-audio-${reason}`, responseId);
+    }, timeoutMs);
+    console.log(`[Diag-InboundTurn] no-audio timer armed reason=${reason} responseId=${responseId} seq=${transcriptSeq} timeoutMs=${timeoutMs} (callId=${callId})`);
+  };
+
+  const armResponseDoneNoAudioGrace = (responseId: string | null, transcriptSeq: number, reason: string, timeoutMs = 450) => {
+    if (callDirection !== "inbound" || greetingInProgress || !responseId) return;
+    clearResponseDoneFallbackTimer();
+    responseDoneFallbackTimer = setTimeout(() => {
+      responseDoneFallbackTimer = null;
+      if (callDirection !== "inbound" || greetingInProgress) return;
+      if (activeResponseId !== responseId) return;
+      if (responseHasAudio) {
+        maybeCompleteAiTurn(`${reason}-audio-arrived`);
+        return;
+      }
+      console.error(`[Diag-InboundTurn] response.done no-audio grace expired responseId=${responseId} seq=${transcriptSeq} text="${latestCompletedInboundTranscript?.text?.slice(0, 160) || ""}" (callId=${callId})`);
+      triggerInboundTranscriptRecovery("inbound-response-done-no-audio", responseId);
+    }, timeoutMs);
+    console.warn(`[Diag-InboundTurn] response.done no-audio grace armed responseId=${responseId} seq=${transcriptSeq} timeoutMs=${timeoutMs} (callId=${callId})`);
+  };
+
   const resetResponseState = () => {
     activeResponseId = null;
     responsePlaybackMarkName = null;
