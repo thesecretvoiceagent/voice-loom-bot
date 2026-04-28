@@ -1418,7 +1418,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
-            scheduleUserResponseCreate("user-transcript", 150, event.transcript);
+            if (callDirection === "inbound") {
+              const fallbackSeq = ++inboundTranscriptFallbackSeq;
+              clearInboundTranscriptFallbackTimer();
+              console.log(`[Diag-InboundTurn] transcript.completed seq=${fallbackSeq} text="${String(event.transcript || "").slice(0, 160)}" responseCreated=${responseCreatedCount} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
+              inboundTranscriptFallbackTimer = setTimeout(() => {
+                inboundTranscriptFallbackTimer = null;
+                if (fallbackSeq !== inboundTranscriptFallbackSeq || activeResponseId || greetingInProgress) return;
+                console.warn(`[Diag-InboundTurn] fallback forcing response.create seq=${fallbackSeq} reason=transcript-no-response activeResponse=${activeResponseId || "none"} (callId=${callId})`);
+                sendResponseCreate("inbound-transcript-fallback", { modalities: ["text", "audio"] });
+              }, 900);
+            } else {
+              scheduleUserResponseCreate("user-transcript", 150, event.transcript);
+            }
             break;
 
           case "response.function_call_arguments.done": {
@@ -1650,13 +1662,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             speechStoppedCount += 1;
             clearCallerSpeechWatchdog();
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
-            commitAudioAndCreateResponse("speech-stopped", 120);
+            if (callDirection !== "inbound") commitAudioAndCreateResponse("speech-stopped", 120);
             break;
 
           case "input_audio_buffer.committed":
             bufferCommittedCount += 1;
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
-            scheduleUserResponseCreate("audio-commit", 1200);
+            if (callDirection !== "inbound") scheduleUserResponseCreate("audio-commit", 1200);
             break;
 
           case "response.error":
