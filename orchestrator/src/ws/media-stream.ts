@@ -1525,6 +1525,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             const assistantTranscript = (event.transcript || "").toString();
             console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
             transcriptLines.push(`[Agent]: ${assistantTranscript}`);
+            if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+              clearInboundTranscriptFallbackTimer();
+              clearInboundNoAudioTimer();
+              clearResponseDoneFallbackTimer();
+              console.log(`[Diag-InboundTurn] response.audio_transcript.done seq=${activeResponseInboundTranscriptSeq} responseId=${activeResponseId || "none"} text="${assistantTranscript.slice(0, 160)}" (callId=${callId})`);
+            }
 
             // Detect the model repeating itself (echo loop). If it says effectively the
             // same line twice in a row without the user speaking in between, extend the
