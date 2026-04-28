@@ -261,6 +261,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseHasAudio = false;
   let responseAudioDone = false;
   let responseDoneReceived = false;
+  let responseAudioDeltaLogged = false;
   let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   // ---- Diagnostic counters (A–E from runbook) ----
@@ -535,7 +536,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseHasAudio = false;
     responseAudioDone = false;
     responseDoneReceived = false;
+    responseAudioDeltaLogged = false;
     clearMarkFallback();
+    clearInboundTranscriptFallbackTimer();
     if (responseDoneFallbackTimer) {
       clearTimeout(responseDoneFallbackTimer);
       responseDoneFallbackTimer = null;
