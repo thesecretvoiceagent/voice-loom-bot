@@ -292,6 +292,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let pendingUserResponseReason: string | null = null;
   let pendingUserResponseAttempts = 0;
   let pendingUserResponseTranscript: string | null = null;
+  let lastInjectedInboundTranscript = "";
+  let responseDoneFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
   let assistantOutputAudioDeltaCount = 0;
@@ -502,6 +504,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(`[MediaStream] Inbound audio cooldown ${ms}ms after ${reason} (callId=${callId})`);
   };
 
+  const injectInboundTranscriptAsUserText = (transcript: string, reason: string) => {
+    const clean = transcript.trim();
+    if (!clean || callDirection !== "inbound" || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    if (clean === lastInjectedInboundTranscript) return;
+    lastInjectedInboundTranscript = clean;
+    openaiWs.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: clean }],
+      },
+    }));
+    console.warn(`[Diag] inbound transcript injected as user text reason=${reason} text="${clean.slice(0, 120)}" (callId=${callId})`);
+  };
+
   const resetResponseState = () => {
     activeResponseId = null;
     responsePlaybackMarkName = null;
@@ -509,6 +527,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseAudioDone = false;
     responseDoneReceived = false;
     clearMarkFallback();
+    if (responseDoneFallbackTimer) {
+      clearTimeout(responseDoneFallbackTimer);
+      responseDoneFallbackTimer = null;
+    }
   };
 
   const enableTurnDetection = () => {
@@ -522,7 +544,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.6,             // Slightly less strict so quieter callers still trigger
         prefix_padding_ms: 400,
         silence_duration_ms: 700,   // Faster end-of-turn detection
-        create_response: false,     // Deterministic bridge: we commit audio and send response.create ourselves
+        create_response: callDirection === "inbound", // Inbound now mirrors the working automatic Realtime turn flow
         interrupt_response: true,   // Allow caller to barge in on assistant audio
       },
     };
@@ -533,7 +555,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       toolsActivated = true;
       console.log(`[MediaStream] Activating ${pendingToolsForActivation.length} tools post-greeting (callId=${callId})`);
     }
-    console.log(`[Diag-OpenAI-Config] callId=${callId} session.update patch=${JSON.stringify({ turn_detection: sessionPatch.turn_detection, tools_count: Array.isArray(sessionPatch.tools) ? sessionPatch.tools.length : 0 })}`);
+    console.log(`[Diag-OpenAI-Config] callId=${callId} direction=${callDirection} session.update patch=${JSON.stringify({ turn_detection: sessionPatch.turn_detection, tools_count: Array.isArray(sessionPatch.tools) ? sessionPatch.tools.length : 0 })}`);
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: sessionPatch,
@@ -1387,6 +1409,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
+            if (callDirection === "inbound") {
+              injectInboundTranscriptAsUserText(event.transcript || "", "transcript-fallback");
+              scheduleUserResponseCreate("inbound-transcript-fallback", 1400, event.transcript);
+              break;
+            }
             scheduleUserResponseCreate("user-transcript", 150, event.transcript);
             break;
 
@@ -1619,12 +1646,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             speechStoppedCount += 1;
             clearCallerSpeechWatchdog();
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
+            if (callDirection === "inbound") {
+              console.log(`[Diag] inbound speech_stopped: relying on server_vad create_response=true (callId=${callId})`);
+              break;
+            }
             commitAudioAndCreateResponse("speech-stopped", 120);
             break;
 
           case "input_audio_buffer.committed":
             bufferCommittedCount += 1;
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
+            if (callDirection === "inbound") break;
             scheduleUserResponseCreate("audio-commit", 1200);
             break;
 
