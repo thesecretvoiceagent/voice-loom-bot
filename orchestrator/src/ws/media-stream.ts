@@ -295,8 +295,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let pendingUserResponseTranscript: string | null = null;
   let inboundTranscriptFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let inboundTranscriptFallbackSeq = 0;
-  let lastInjectedInboundTranscript = "";
+  let latestCompletedInboundTranscript: { seq: number; text: string; at: number } | null = null;
+  let inboundNoAudioTimer: ReturnType<typeof setTimeout> | null = null;
   let responseDoneFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let inboundRecoveryAttemptSeq = 0;
+  let inboundRecoveryAttemptsForSeq = 0;
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
   let assistantOutputAudioDeltaCount = 0;
@@ -320,6 +323,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let callFinalized = false;
   let lastResponseCreateReason = "(none)";
   let activeResponseReason = "(none)";
+  let activeResponseInboundTranscriptSeq = 0;
+  let activeResponseTwilioChunks = 0;
+  let activeResponseTwilioBytes = 0;
 
   const diagState = () =>
     `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
@@ -408,6 +414,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (inboundTranscriptFallbackTimer) {
       clearTimeout(inboundTranscriptFallbackTimer);
       inboundTranscriptFallbackTimer = null;
+    }
+  };
+
+  const clearInboundNoAudioTimer = () => {
+    if (inboundNoAudioTimer) {
+      clearTimeout(inboundNoAudioTimer);
+      inboundNoAudioTimer = null;
+    }
+  };
+
+  const clearResponseDoneFallbackTimer = () => {
+    if (responseDoneFallbackTimer) {
+      clearTimeout(responseDoneFallbackTimer);
+      responseDoneFallbackTimer = null;
     }
   };
 
@@ -514,11 +534,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(`[MediaStream] Inbound audio cooldown ${ms}ms after ${reason} (callId=${callId})`);
   };
 
-  const injectInboundTranscriptAsUserText = (transcript: string, reason: string) => {
+  const injectInboundTranscriptAsUserText = (transcript: string, reason: string, seq = latestCompletedInboundTranscript?.seq || 0) => {
     const clean = transcript.trim();
     if (!clean || callDirection !== "inbound" || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-    if (clean === lastInjectedInboundTranscript) return;
-    lastInjectedInboundTranscript = clean;
     openaiWs.send(JSON.stringify({
       type: "conversation.item.create",
       item: {
@@ -527,7 +545,92 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         content: [{ type: "input_text", text: clean }],
       },
     }));
-    console.warn(`[Diag] inbound transcript injected as user text reason=${reason} text="${clean.slice(0, 120)}" (callId=${callId})`);
+    console.warn(`[Diag-InboundTurn] transcript.injected seq=${seq} reason=${reason} text="${clean.slice(0, 160)}" (callId=${callId})`);
+  };
+
+  const triggerInboundTranscriptRecovery = (reason: string, failedResponseId?: string | null) => {
+    if (callDirection !== "inbound" || greetingInProgress) return;
+    if (!latestCompletedInboundTranscript?.text) {
+      console.warn(`[Diag-InboundTurn] recovery skipped reason=${reason} skip=no_transcript responseId=${failedResponseId || "none"} (callId=${callId})`);
+      return;
+    }
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
+      console.warn(`[Diag-InboundTurn] recovery skipped reason=${reason} skip=openai_ws_not_open responseId=${failedResponseId || "none"} openaiState=${openaiWs?.readyState ?? "null"} (callId=${callId})`);
+      return;
+    }
+    if (inboundRecoveryAttemptSeq !== latestCompletedInboundTranscript.seq) {
+      inboundRecoveryAttemptSeq = latestCompletedInboundTranscript.seq;
+      inboundRecoveryAttemptsForSeq = 0;
+    }
+    inboundRecoveryAttemptsForSeq += 1;
+    if (inboundRecoveryAttemptsForSeq > 2) {
+      console.error(`[Diag-InboundTurn] recovery abandoned reason=${reason} seq=${latestCompletedInboundTranscript.seq} attempts=${inboundRecoveryAttemptsForSeq} responseId=${failedResponseId || "none"} text="${latestCompletedInboundTranscript.text.slice(0, 160)}" (callId=${callId})`);
+      return;
+    }
+    console.warn(`[Diag-InboundTurn] recovery triggered reason=${reason} seq=${latestCompletedInboundTranscript.seq} failedResponseId=${failedResponseId || "none"} text="${latestCompletedInboundTranscript.text.slice(0, 160)}" attempts=${inboundRecoveryAttemptsForSeq} (callId=${callId})`);
+    const shouldCancelActiveResponse = Boolean(failedResponseId && activeResponseId === failedResponseId && !responseDoneReceived);
+    if (shouldCancelActiveResponse) {
+      try {
+        openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+        console.warn(`[Diag-InboundTurn] response.cancel sent for failed no-audio responseId=${failedResponseId} seq=${latestCompletedInboundTranscript.seq} (callId=${callId})`);
+      } catch (err) {
+        console.error(`[Diag-InboundTurn] response.cancel failed responseId=${failedResponseId} (callId=${callId}):`, err);
+      }
+    }
+    clearInboundTranscriptFallbackTimer();
+    clearInboundNoAudioTimer();
+    clearResponseDoneFallbackTimer();
+    clearMarkFallback();
+    activeResponseId = null;
+    responsePlaybackMarkName = null;
+    responseHasAudio = false;
+    responseAudioDone = false;
+    responseDoneReceived = false;
+    responseAudioDeltaLogged = false;
+    activeResponseTwilioChunks = 0;
+    activeResponseTwilioBytes = 0;
+    aiIsSpeaking = false;
+    ignoreAudioUntilNextResponse = false;
+    const sendRecoveryResponse = () => {
+      if (!latestCompletedInboundTranscript?.text || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+      injectInboundTranscriptAsUserText(latestCompletedInboundTranscript.text, reason, latestCompletedInboundTranscript.seq);
+      lastResponseCreateReason = reason;
+      console.warn(`[Diag-InboundTurn] fallback sent seq=${latestCompletedInboundTranscript.seq} reason=${reason} text="${latestCompletedInboundTranscript.text.slice(0, 160)}" (callId=${callId})`);
+      sendResponseCreate(reason, { modalities: ["text", "audio"] });
+    };
+    if (shouldCancelActiveResponse) setTimeout(sendRecoveryResponse, 120);
+    else sendRecoveryResponse();
+  };
+
+  const armInboundNoAudioTimer = (responseId: string | null, transcriptSeq: number, reason: string, timeoutMs = 1400) => {
+    if (callDirection !== "inbound" || greetingInProgress || !responseId) return;
+    clearInboundNoAudioTimer();
+    inboundNoAudioTimer = setTimeout(() => {
+      inboundNoAudioTimer = null;
+      if (callDirection !== "inbound" || greetingInProgress) return;
+      if (activeResponseId !== responseId) return;
+      if (responseHasAudio) return;
+      console.error(`[Diag-InboundTurn] no-audio timeout reason=${reason} responseId=${responseId} seq=${transcriptSeq} text="${latestCompletedInboundTranscript?.text?.slice(0, 160) || ""}" (callId=${callId})`);
+      triggerInboundTranscriptRecovery(`inbound-no-audio-${reason}`, responseId);
+    }, timeoutMs);
+    console.log(`[Diag-InboundTurn] no-audio timer armed reason=${reason} responseId=${responseId} seq=${transcriptSeq} timeoutMs=${timeoutMs} (callId=${callId})`);
+  };
+
+  const armResponseDoneNoAudioGrace = (responseId: string | null, transcriptSeq: number, reason: string, timeoutMs = 450) => {
+    if (callDirection !== "inbound" || greetingInProgress || !responseId) return;
+    clearResponseDoneFallbackTimer();
+    responseDoneFallbackTimer = setTimeout(() => {
+      responseDoneFallbackTimer = null;
+      if (callDirection !== "inbound" || greetingInProgress) return;
+      if (activeResponseId !== responseId) return;
+      if (responseHasAudio) {
+        maybeCompleteAiTurn(`${reason}-audio-arrived`);
+        return;
+      }
+      console.error(`[Diag-InboundTurn] response.done no-audio grace expired responseId=${responseId} seq=${transcriptSeq} text="${latestCompletedInboundTranscript?.text?.slice(0, 160) || ""}" (callId=${callId})`);
+      triggerInboundTranscriptRecovery("inbound-response-done-no-audio", responseId);
+    }, timeoutMs);
+    console.warn(`[Diag-InboundTurn] response.done no-audio grace armed responseId=${responseId} seq=${transcriptSeq} timeoutMs=${timeoutMs} (callId=${callId})`);
   };
 
   const resetResponseState = () => {
@@ -537,12 +640,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseAudioDone = false;
     responseDoneReceived = false;
     responseAudioDeltaLogged = false;
+    activeResponseInboundTranscriptSeq = 0;
+    activeResponseTwilioChunks = 0;
+    activeResponseTwilioBytes = 0;
     clearMarkFallback();
     clearInboundTranscriptFallbackTimer();
-    if (responseDoneFallbackTimer) {
-      clearTimeout(responseDoneFallbackTimer);
-      responseDoneFallbackTimer = null;
-    }
+    clearInboundNoAudioTimer();
+    clearResponseDoneFallbackTimer();
   };
 
   const enableTurnDetection = () => {
@@ -1302,7 +1406,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.created":
             clearPendingUserResponseTimer();
-            clearInboundTranscriptFallbackTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
             activeResponseReason = callDirection === "inbound" && !greetingInProgress && lastResponseCreateReason === "initial-greeting"
@@ -1314,13 +1417,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             responseAudioDone = false;
             responseDoneReceived = false;
             responseAudioDeltaLogged = false;
+            activeResponseInboundTranscriptSeq = callDirection === "inbound" && !greetingInProgress
+              ? latestCompletedInboundTranscript?.seq || inboundTranscriptFallbackSeq
+              : 0;
+            activeResponseTwilioChunks = 0;
+            activeResponseTwilioBytes = 0;
             ignoreAudioUntilNextResponse = false;
             aiIsSpeaking = true;
             lastResponseFinishReason = null;
             lastResponseOutputTokens = null;
             console.log(`[Diag] response.created #${responseCreatedCount} reason=${activeResponseReason} responseId=${activeResponseId} (callId=${callId})`);
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
-              console.log(`[Diag-InboundTurn] response.created seq=${inboundTranscriptFallbackSeq} responseId=${activeResponseId} reason=${activeResponseReason} (callId=${callId})`);
+              console.log(`[Diag-InboundTurn] response.created seq=${activeResponseInboundTranscriptSeq} responseId=${activeResponseId} reason=${activeResponseReason} transcript="${latestCompletedInboundTranscript?.text?.slice(0, 160) || ""}" (callId=${callId})`);
+              armInboundNoAudioTimer(activeResponseId, activeResponseInboundTranscriptSeq, "response.created");
             }
             break;
 
@@ -1333,12 +1442,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
             }
+            const hasUsableAudioDelta = typeof event.delta === "string" && event.delta.length > 0;
             if (event.type === "response.output_audio.delta") assistantOutputAudioDeltaCount += 1;
             else assistantAudioDeltaCount += 1;
-            responseHasAudio = true;
-            if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && !responseAudioDeltaLogged) {
+            if (hasUsableAudioDelta) responseHasAudio = true;
+            if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && !responseAudioDeltaLogged && hasUsableAudioDelta) {
               responseAudioDeltaLogged = true;
-              console.log(`[Diag-InboundTurn] response.audio.delta first type=${event.type} responseId=${responseId} hasDelta=${!!event.delta} (callId=${callId})`);
+              clearInboundTranscriptFallbackTimer();
+              clearInboundNoAudioTimer();
+              clearResponseDoneFallbackTimer();
+              console.log(`[Diag-InboundTurn] response.audio.delta first type=${event.type} responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} hasDelta=${!!event.delta} (callId=${callId})`);
             }
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
               try {
@@ -1363,6 +1476,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     }));
                     twilioOutboundFrames += 1;
                     if (activeResponseReason !== "initial-greeting") userTwilioOutboundFrames += 1;
+                    activeResponseTwilioChunks += 1;
+                    activeResponseTwilioBytes += chunk.length;
+                    if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && (activeResponseTwilioChunks <= 3 || activeResponseTwilioChunks % 25 === 0)) {
+                      console.log(`[Diag-InboundTurn] twilio.media.forwarded responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} chunk=${activeResponseTwilioChunks} chunkBytes=${chunk.length} responseBytes=${activeResponseTwilioBytes} totalTwilioOut=${twilioOutboundFrames} (callId=${callId})`);
+                    }
                     if (!firstTwilioOutboundAt) {
                       firstTwilioOutboundAt = new Date().toISOString();
                       console.log(`[Diag] first outbound media to Twilio at=${firstTwilioOutboundAt} twilioState=${twilioWs.readyState} (callId=${callId})`);
@@ -1380,6 +1498,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     media: { payload: event.delta },
                   }));
                   twilioOutboundFrames += 1;
+                  activeResponseTwilioChunks += 1;
+                  activeResponseTwilioBytes += Buffer.byteLength(String(event.delta), "base64");
+                  if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+                    console.log(`[Diag-InboundTurn] twilio.media.forwarded fallback responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} chunk=${activeResponseTwilioChunks} responseBytes=${activeResponseTwilioBytes} totalTwilioOut=${twilioOutboundFrames} (callId=${callId})`);
+                  }
                   if (!firstTwilioOutboundAt) {
                     firstTwilioOutboundAt = new Date().toISOString();
                     console.log(`[Diag] first outbound media to Twilio at=${firstTwilioOutboundAt} twilioState=${twilioWs.readyState} (callId=${callId})`);
@@ -1399,6 +1522,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             const assistantTranscript = (event.transcript || "").toString();
             console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
             transcriptLines.push(`[Agent]: ${assistantTranscript}`);
+            if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+              clearInboundTranscriptFallbackTimer();
+              clearInboundNoAudioTimer();
+              clearResponseDoneFallbackTimer();
+              console.log(`[Diag-InboundTurn] response.audio_transcript.done seq=${activeResponseInboundTranscriptSeq} responseId=${activeResponseId || "none"} text="${assistantTranscript.slice(0, 160)}" (callId=${callId})`);
+            }
 
             // Detect the model repeating itself (echo loop). If it says effectively the
             // same line twice in a row without the user speaking in between, extend the
@@ -1434,14 +1563,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             pendingRecoveryCooldownMs = 0;
             if (callDirection === "inbound") {
               const fallbackSeq = ++inboundTranscriptFallbackSeq;
+              const transcriptText = String(event.transcript || "").trim();
+              latestCompletedInboundTranscript = { seq: fallbackSeq, text: transcriptText, at: Date.now() };
+              inboundRecoveryAttemptSeq = fallbackSeq;
+              inboundRecoveryAttemptsForSeq = 0;
               clearInboundTranscriptFallbackTimer();
-              console.log(`[Diag-InboundTurn] transcript.completed seq=${fallbackSeq} text="${String(event.transcript || "").slice(0, 160)}" responseCreated=${responseCreatedCount} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
+              console.log(`[Diag-InboundTurn] transcript.completed seq=${fallbackSeq} at=${new Date(latestCompletedInboundTranscript.at).toISOString()} text="${transcriptText.slice(0, 160)}" responseCreated=${responseCreatedCount} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
               inboundTranscriptFallbackTimer = setTimeout(() => {
                 inboundTranscriptFallbackTimer = null;
-                if (fallbackSeq !== inboundTranscriptFallbackSeq || activeResponseId || greetingInProgress) return;
-                console.warn(`[Diag-InboundTurn] fallback forcing response.create seq=${fallbackSeq} reason=transcript-no-response activeResponse=${activeResponseId || "none"} (callId=${callId})`);
-                sendResponseCreate("inbound-transcript-fallback", { modalities: ["text", "audio"] });
+                if (fallbackSeq !== inboundTranscriptFallbackSeq || greetingInProgress) return;
+                if (responseHasAudio) return;
+                if (activeResponseId) {
+                  console.warn(`[Diag-InboundTurn] fallback active response has no audio yet; escalating seq=${fallbackSeq} activeResponse=${activeResponseId} (callId=${callId})`);
+                  triggerInboundTranscriptRecovery("inbound-transcript-fallback-active-no-audio", activeResponseId);
+                  return;
+                }
+                console.warn(`[Diag-InboundTurn] fallback scheduled fired seq=${fallbackSeq} reason=transcript-no-response activeResponse=${activeResponseId || "none"} text="${transcriptText.slice(0, 160)}" (callId=${callId})`);
+                triggerInboundTranscriptRecovery("inbound-transcript-fallback", null);
               }, 900);
+              console.log(`[Diag-InboundTurn] fallback scheduled seq=${fallbackSeq} timeoutMs=900 text="${transcriptText.slice(0, 160)}" (callId=${callId})`);
             } else {
               scheduleUserResponseCreate("user-transcript", 150, event.transcript);
             }
@@ -1595,6 +1735,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             responseAudioDone = true;
 
             if (!responseHasAudio) {
+              if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+                console.warn(`[Diag-InboundTurn] response.audio.done no-audio responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} activeResponseReason=${activeResponseReason} (callId=${callId})`);
+                armResponseDoneNoAudioGrace(responseId, activeResponseInboundTranscriptSeq, "response.audio.done-no-audio", 350);
+                break;
+              }
               maybeCompleteAiTurn("response.audio.done(no-audio)");
               break;
             }
@@ -1607,6 +1752,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 streamSid,
                 mark: { name: responsePlaybackMarkName },
               }));
+              if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+                console.log(`[Diag-InboundTurn] twilio.playback.mark sent mark=${responsePlaybackMarkName} responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} chunks=${activeResponseTwilioChunks} bytes=${activeResponseTwilioBytes} (callId=${callId})`);
+              }
 
               // Safety fallback: if Twilio never sends the mark back, force-complete the turn.
               // For the initial greeting this must be short; otherwise the caller's first
@@ -1647,6 +1795,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(
               `[Diag] response.done #${responseDoneCount} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} hasAudio=${responseHasAudio} audioDeltas=${assistantAudioDeltaCount} (callId=${callId})`
             );
+            if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+              console.log(`[Diag-InboundTurn] response.done responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} hasAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} twilioBytes=${activeResponseTwilioBytes} finish=${finishReason} output_tokens=${outputTokens} (callId=${callId})`);
+              if (!responseHasAudio) {
+                armResponseDoneNoAudioGrace(responseId, activeResponseInboundTranscriptSeq, "response.done-no-audio", 450);
+                break;
+              }
+            }
             maybeCompleteAiTurn("response.done");
             break;
           }
@@ -1709,6 +1864,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       clearTurnDetectionEnableTimer();
       clearPendingUserResponseTimer();
       clearInboundTranscriptFallbackTimer();
+      clearInboundNoAudioTimer();
+      clearResponseDoneFallbackTimer();
       clearCallerSpeechWatchdog();
       console.log(`[Diag-OpenAI] OpenAI websocket close code=${code} reason=${reason?.toString() || ""} (callId=${callId})`);
       openaiWs = null;
@@ -1748,6 +1905,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     clearTurnDetectionEnableTimer();
     clearPendingUserResponseTimer();
     clearInboundTranscriptFallbackTimer();
+    clearInboundNoAudioTimer();
+    clearResponseDoneFallbackTimer();
     clearCallerSpeechWatchdog();
     if (diagnosticSnapshotTimer) {
       clearInterval(diagnosticSnapshotTimer);
@@ -1937,7 +2096,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (greetingInProgress) twilioGreetingMarkReceived = true;
             console.log(`[Diag-Twilio] twilio.mark greeting received=${greetingInProgress ? "yes" : "no"} mark=${markName} (callId=${callId})`);
             if (callDirection === "inbound" && !greetingInProgress) {
-              console.log(`[Diag-InboundTurn] twilio.playback.mark received mark=${markName} (callId=${callId})`);
+              console.log(`[Diag-InboundTurn] twilio.playback.mark received mark=${markName} responseId=${activeResponseId || "none"} seq=${activeResponseInboundTranscriptSeq} chunks=${activeResponseTwilioChunks} bytes=${activeResponseTwilioBytes} (callId=${callId})`);
             }
             clearMarkFallback();
             responsePlaybackMarkName = null;
@@ -1965,6 +2124,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   twilioWs.on("close", (code, reason) => {
     console.log(`[Diag-Twilio] Twilio websocket close code=${code} reason=${reason?.toString() || ""} (callId=${callId})`);
     clearInboundTranscriptFallbackTimer();
+    clearInboundNoAudioTimer();
+    clearResponseDoneFallbackTimer();
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
       openaiWs.close();
     } else {
