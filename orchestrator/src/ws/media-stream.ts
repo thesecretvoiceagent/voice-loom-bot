@@ -292,6 +292,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let pendingUserResponseReason: string | null = null;
   let pendingUserResponseAttempts = 0;
   let pendingUserResponseTranscript: string | null = null;
+  let inboundTranscriptFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let inboundTranscriptFallbackSeq = 0;
   let lastInjectedInboundTranscript = "";
   let responseDoneFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   // E. Assistant audio back to Twilio
@@ -398,6 +400,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (pendingUserResponseTimer) {
       clearTimeout(pendingUserResponseTimer);
       pendingUserResponseTimer = null;
+    }
+  };
+
+  const clearInboundTranscriptFallbackTimer = () => {
+    if (inboundTranscriptFallbackTimer) {
+      clearTimeout(inboundTranscriptFallbackTimer);
+      inboundTranscriptFallbackTimer = null;
     }
   };
 
