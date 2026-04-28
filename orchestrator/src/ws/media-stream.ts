@@ -1305,7 +1305,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             clearInboundTranscriptFallbackTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
-            activeResponseReason = lastResponseCreateReason;
+            activeResponseReason = callDirection === "inbound" && !greetingInProgress && lastResponseCreateReason === "initial-greeting"
+              ? "inbound-auto-vad"
+              : lastResponseCreateReason;
             if (activeResponseReason !== "initial-greeting") userResponseCreatedCount += 1;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
