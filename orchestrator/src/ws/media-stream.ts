@@ -1611,9 +1611,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               inboundTranscriptFallbackTimer = setTimeout(() => {
                 inboundTranscriptFallbackTimer = null;
                 if (fallbackSeq !== inboundTranscriptFallbackSeq || greetingInProgress) return;
-                if (responseHasAudio) return;
+                if (activeResponseTwilioChunks > 0) return;
                 if (activeResponseId) {
-                  console.warn(`[Diag-InboundTurn] fallback active response has no audio yet; escalating seq=${fallbackSeq} activeResponse=${activeResponseId} (callId=${callId})`);
+                  console.warn(`[Diag-InboundTurn] fallback active response has no usable Twilio audio yet; escalating seq=${fallbackSeq} activeResponse=${activeResponseId} openaiAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} (callId=${callId})`);
                   triggerInboundTranscriptRecovery("inbound-transcript-fallback-active-no-audio", activeResponseId);
                   return;
                 }
@@ -1836,7 +1836,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             );
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
               console.log(`[Diag-InboundTurn] response.done responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} hasAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} twilioBytes=${activeResponseTwilioBytes} finish=${finishReason} output_tokens=${outputTokens} (callId=${callId})`);
-              if (!responseHasAudio) {
+              if (activeResponseTwilioChunks === 0) {
                 armResponseDoneNoAudioGrace(responseId, activeResponseInboundTranscriptSeq, "response.done-no-audio", 450);
                 break;
               }
