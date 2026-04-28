@@ -296,8 +296,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let inboundTranscriptFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let inboundTranscriptFallbackSeq = 0;
   let latestCompletedInboundTranscript: { seq: number; text: string; at: number } | null = null;
-  let lastInjectedInboundTranscript = "";
-  let lastInjectedInboundTranscriptSeq = 0;
   let inboundNoAudioTimer: ReturnType<typeof setTimeout> | null = null;
   let responseDoneFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   let inboundRecoveryAttemptSeq = 0;
@@ -539,8 +537,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const injectInboundTranscriptAsUserText = (transcript: string, reason: string, seq = latestCompletedInboundTranscript?.seq || 0) => {
     const clean = transcript.trim();
     if (!clean || callDirection !== "inbound" || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-    lastInjectedInboundTranscript = clean;
-    lastInjectedInboundTranscriptSeq = seq;
     openaiWs.send(JSON.stringify({
       type: "conversation.item.create",
       item: {
