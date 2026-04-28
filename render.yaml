@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: voice-loom-bot
+    env: node
+    rootDir: /
+    buildCommand: npm install --legacy-peer-deps && npm run build
+    startCommand: npx serve -s dist -l 3000
