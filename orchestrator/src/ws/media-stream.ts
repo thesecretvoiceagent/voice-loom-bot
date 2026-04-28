@@ -1987,6 +1987,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       clearInboundTranscriptFallbackTimer();
       clearInboundNoAudioTimer();
       clearResponseDoneFallbackTimer();
+      clearPendingInboundRecoveryAfterCancel();
       clearCallerSpeechWatchdog();
       console.log(`[Diag-OpenAI] OpenAI websocket close code=${code} reason=${reason?.toString() || ""} (callId=${callId})`);
       openaiWs = null;
@@ -2028,6 +2029,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     clearInboundTranscriptFallbackTimer();
     clearInboundNoAudioTimer();
     clearResponseDoneFallbackTimer();
+    clearPendingInboundRecoveryAfterCancel();
     clearCallerSpeechWatchdog();
     if (diagnosticSnapshotTimer) {
       clearInterval(diagnosticSnapshotTimer);
@@ -2247,6 +2249,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     clearInboundTranscriptFallbackTimer();
     clearInboundNoAudioTimer();
     clearResponseDoneFallbackTimer();
+    clearPendingInboundRecoveryAfterCancel();
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
       openaiWs.close();
     } else {
