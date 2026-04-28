@@ -609,8 +609,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       inboundNoAudioTimer = null;
       if (callDirection !== "inbound" || greetingInProgress) return;
       if (activeResponseId !== responseId) return;
-      if (responseHasAudio) return;
-      console.error(`[Diag-InboundTurn] no-audio timeout reason=${reason} responseId=${responseId} seq=${transcriptSeq} text="${latestCompletedInboundTranscript?.text?.slice(0, 160) || ""}" (callId=${callId})`);
+      if (activeResponseTwilioChunks > 0) return;
+      console.error(`[Diag-InboundTurn] no-usable-audio timeout reason=${reason} responseId=${responseId} seq=${transcriptSeq} openaiAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} text="${latestCompletedInboundTranscript?.text?.slice(0, 160) || ""}" (callId=${callId})`);
       triggerInboundTranscriptRecovery(`inbound-no-audio-${reason}`, responseId);
     }, timeoutMs);
     console.log(`[Diag-InboundTurn] no-audio timer armed reason=${reason} responseId=${responseId} seq=${transcriptSeq} timeoutMs=${timeoutMs} (callId=${callId})`);
@@ -623,11 +623,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       responseDoneFallbackTimer = null;
       if (callDirection !== "inbound" || greetingInProgress) return;
       if (activeResponseId !== responseId) return;
-      if (responseHasAudio) {
+      if (activeResponseTwilioChunks > 0) {
         maybeCompleteAiTurn(`${reason}-audio-arrived`);
         return;
       }
-      console.error(`[Diag-InboundTurn] response.done no-audio grace expired responseId=${responseId} seq=${transcriptSeq} text="${latestCompletedInboundTranscript?.text?.slice(0, 160) || ""}" (callId=${callId})`);
+      console.error(`[Diag-InboundTurn] response.done no-usable-audio grace expired responseId=${responseId} seq=${transcriptSeq} openaiAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} text="${latestCompletedInboundTranscript?.text?.slice(0, 160) || ""}" (callId=${callId})`);
       triggerInboundTranscriptRecovery("inbound-response-done-no-audio", responseId);
     }, timeoutMs);
     console.warn(`[Diag-InboundTurn] response.done no-audio grace armed responseId=${responseId} seq=${transcriptSeq} timeoutMs=${timeoutMs} (callId=${callId})`);
