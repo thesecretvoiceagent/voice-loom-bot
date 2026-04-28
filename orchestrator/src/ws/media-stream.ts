@@ -1873,6 +1873,24 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.done": {
             const responseId = event.response?.id || activeResponseId || null;
+            if (pendingInboundRecoveryAfterCancel && (!responseId || responseId === pendingInboundRecoveryAfterCancel.failedResponseId)) {
+              const pending = pendingInboundRecoveryAfterCancel;
+              clearPendingInboundRecoveryAfterCancel();
+              ignoreAudioUntilNextResponse = false;
+              activeResponseId = null;
+              responsePlaybackMarkName = null;
+              responseHasAudio = false;
+              responseAudioDone = false;
+              responseDoneReceived = false;
+              responseAudioDeltaLogged = false;
+              activeResponseTwilioChunks = 0;
+              activeResponseTwilioBytes = 0;
+              aiIsSpeaking = false;
+              console.warn(`[Diag-InboundTurn] cancelled/stalled response.done received; sending recovery response seq=${pending.transcriptSeq} failedResponseId=${pending.failedResponseId || "none"} reason=${pending.reason} (callId=${callId})`);
+              injectInboundTranscriptAsUserText(pending.transcriptText, pending.reason, pending.transcriptSeq);
+              sendResponseCreate(pending.reason, { modalities: ["text", "audio"] });
+              break;
+            }
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
             }
