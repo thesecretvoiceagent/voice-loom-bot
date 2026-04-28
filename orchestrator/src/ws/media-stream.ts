@@ -553,9 +553,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.6,             // Slightly less strict so quieter callers still trigger
         prefix_padding_ms: 400,
         silence_duration_ms: 700,   // Faster end-of-turn detection
-        // Keep inbound and outbound on the same proven path: VAD detects speech,
-        // then this bridge manually commits audio and sends response.create.
-        create_response: false,
+        create_response: true,
         interrupt_response: true,   // Allow caller to barge in on assistant audio
       },
     };
