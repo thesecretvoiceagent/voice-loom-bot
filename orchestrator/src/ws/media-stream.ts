@@ -539,7 +539,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const injectInboundTranscriptAsUserText = (transcript: string, reason: string, seq = latestCompletedInboundTranscript?.seq || 0) => {
     const clean = transcript.trim();
     if (!clean || callDirection !== "inbound" || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-    if (clean === lastInjectedInboundTranscript && seq === lastInjectedInboundTranscriptSeq) return;
     lastInjectedInboundTranscript = clean;
     lastInjectedInboundTranscriptSeq = seq;
     openaiWs.send(JSON.stringify({
