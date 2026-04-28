@@ -544,7 +544,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         threshold: 0.6,             // Slightly less strict so quieter callers still trigger
         prefix_padding_ms: 400,
         silence_duration_ms: 700,   // Faster end-of-turn detection
-        create_response: callDirection === "inbound", // Inbound now mirrors the working automatic Realtime turn flow
+        // Keep inbound and outbound on the same proven path: VAD detects speech,
+        // then this bridge manually commits audio and sends response.create.
+        create_response: false,
         interrupt_response: true,   // Allow caller to barge in on assistant audio
       },
     };
@@ -1409,11 +1411,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
-            if (callDirection === "inbound") {
-              injectInboundTranscriptAsUserText(event.transcript || "", "transcript-fallback");
-              scheduleUserResponseCreate("inbound-transcript-fallback", 1400, event.transcript);
-              break;
-            }
             scheduleUserResponseCreate("user-transcript", 150, event.transcript);
             break;
 
@@ -1646,17 +1643,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             speechStoppedCount += 1;
             clearCallerSpeechWatchdog();
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
-            if (callDirection === "inbound") {
-              console.log(`[Diag] inbound speech_stopped: relying on server_vad create_response=true (callId=${callId})`);
-              break;
-            }
             commitAudioAndCreateResponse("speech-stopped", 120);
             break;
 
           case "input_audio_buffer.committed":
             bufferCommittedCount += 1;
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
-            if (callDirection === "inbound") break;
             scheduleUserResponseCreate("audio-commit", 1200);
             break;
 
