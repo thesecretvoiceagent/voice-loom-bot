@@ -1454,9 +1454,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (hasUsableAudioDelta) responseHasAudio = true;
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && !responseAudioDeltaLogged && hasUsableAudioDelta) {
               responseAudioDeltaLogged = true;
-              clearInboundTranscriptFallbackTimer();
-              clearInboundNoAudioTimer();
-              clearResponseDoneFallbackTimer();
               console.log(`[Diag-InboundTurn] response.audio.delta first type=${event.type} responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} hasDelta=${!!event.delta} (callId=${callId})`);
             }
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
@@ -1490,6 +1487,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     if (activeResponseReason !== "initial-greeting") userTwilioOutboundFrames += 1;
                     activeResponseTwilioChunks += 1;
                     activeResponseTwilioBytes += chunk.length;
+                    if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && activeResponseTwilioChunks === 1) {
+                      clearInboundTranscriptFallbackTimer();
+                      clearInboundNoAudioTimer();
+                      clearResponseDoneFallbackTimer();
+                    }
                     if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && (activeResponseTwilioChunks <= 3 || activeResponseTwilioChunks % 25 === 0)) {
                       console.log(`[Diag-InboundTurn] twilio.media.forwarded responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} chunk=${activeResponseTwilioChunks} chunkBytes=${chunk.length} responseBytes=${activeResponseTwilioBytes} totalTwilioOut=${twilioOutboundFrames} (callId=${callId})`);
                     }
