@@ -1437,9 +1437,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "response.output_audio.delta": {
             const responseId = event.response_id || activeResponseId || null;
             if (ignoreAudioUntilNextResponse) {
+              if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+                console.warn(`[Diag-InboundTurn] audio.delta discarded reason=ignoreAudioUntilNextResponse responseId=${responseId || "none"} seq=${activeResponseInboundTranscriptSeq} type=${event.type} (callId=${callId})`);
+              }
               break;
             }
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
+              if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+                console.warn(`[Diag-InboundTurn] audio.delta discarded reason=response_mismatch active=${activeResponseId || "none"} eventResponse=${responseId || "none"} seq=${activeResponseInboundTranscriptSeq} type=${event.type} (callId=${callId})`);
+              }
               break;
             }
             const hasUsableAudioDelta = typeof event.delta === "string" && event.delta.length > 0;
@@ -1456,6 +1462,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
               try {
                 const raw = Buffer.from(event.delta, "base64");
+                if (raw.length === 0) {
+                  if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+                    console.warn(`[Diag-InboundTurn] audio.delta decoded to zero bytes responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} deltaLen=${event.delta.length} (callId=${callId})`);
+                  }
+                  break;
+                }
                 totalAssistantAudioBytes += raw.length;
                 if (activeResponseReason !== "initial-greeting") {
                   userAssistantAudioDeltaCount += 1;
