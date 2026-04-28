@@ -1648,6 +1648,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (callDirection === "inbound") {
               const fallbackSeq = ++inboundTranscriptFallbackSeq;
               const transcriptText = String(event.transcript || "").trim();
+              if (!transcriptText) {
+                console.warn(`[Diag-InboundTurn] transcript.completed empty; not arming fallback (callId=${callId})`);
+                break;
+              }
               latestCompletedInboundTranscript = { seq: fallbackSeq, text: transcriptText, at: Date.now() };
               inboundRecoveryAttemptSeq = fallbackSeq;
               inboundRecoveryAttemptsForSeq = 0;
