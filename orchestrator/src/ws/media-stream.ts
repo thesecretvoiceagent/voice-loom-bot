@@ -1514,6 +1514,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   twilioOutboundFrames += 1;
                   activeResponseTwilioChunks += 1;
                   activeResponseTwilioBytes += Buffer.byteLength(String(event.delta), "base64");
+                  if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && activeResponseTwilioChunks === 1) {
+                    clearInboundTranscriptFallbackTimer();
+                    clearInboundNoAudioTimer();
+                    clearResponseDoneFallbackTimer();
+                  }
                   if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
                     console.log(`[Diag-InboundTurn] twilio.media.forwarded fallback responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} chunk=${activeResponseTwilioChunks} responseBytes=${activeResponseTwilioBytes} totalTwilioOut=${twilioOutboundFrames} (callId=${callId})`);
                   }
