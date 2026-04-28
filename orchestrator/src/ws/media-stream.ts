@@ -1409,6 +1409,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastAssistantTranscript = "";
             repeatedAssistantTranscriptCount = 0;
             pendingRecoveryCooldownMs = 0;
+            if (callDirection === "inbound") {
+              injectInboundTranscriptAsUserText(event.transcript || "", "transcript-fallback");
+            }
             scheduleUserResponseCreate("user-transcript", 150, event.transcript);
             break;
 
@@ -1641,12 +1644,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             speechStoppedCount += 1;
             clearCallerSpeechWatchdog();
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
+            if (callDirection === "inbound") {
+              console.log(`[Diag] inbound speech_stopped: relying on server_vad create_response=true (callId=${callId})`);
+              break;
+            }
             commitAudioAndCreateResponse("speech-stopped", 120);
             break;
 
           case "input_audio_buffer.committed":
             bufferCommittedCount += 1;
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
+            if (callDirection === "inbound") break;
             scheduleUserResponseCreate("audio-commit", 1200);
             break;
 
