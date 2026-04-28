@@ -573,6 +573,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       return;
     }
     console.warn(`[Diag-InboundTurn] recovery triggered reason=${reason} seq=${latestCompletedInboundTranscript.seq} failedResponseId=${failedResponseId || "none"} text="${latestCompletedInboundTranscript.text.slice(0, 160)}" attempts=${inboundRecoveryAttemptsForSeq} (callId=${callId})`);
+    const shouldCancelActiveResponse = Boolean(failedResponseId && activeResponseId === failedResponseId && !responseDoneReceived);
+    if (shouldCancelActiveResponse) {
+      try {
+        openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+        console.warn(`[Diag-InboundTurn] response.cancel sent for failed no-audio responseId=${failedResponseId} seq=${latestCompletedInboundTranscript.seq} (callId=${callId})`);
+      } catch (err) {
+        console.error(`[Diag-InboundTurn] response.cancel failed responseId=${failedResponseId} (callId=${callId}):`, err);
+      }
+    }
     clearInboundTranscriptFallbackTimer();
     clearInboundNoAudioTimer();
     clearResponseDoneFallbackTimer();
@@ -587,9 +596,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     activeResponseTwilioBytes = 0;
     aiIsSpeaking = false;
     ignoreAudioUntilNextResponse = false;
-    injectInboundTranscriptAsUserText(latestCompletedInboundTranscript.text, reason, latestCompletedInboundTranscript.seq);
-    lastResponseCreateReason = reason;
-    sendResponseCreate(reason, { modalities: ["text", "audio"] });
+    const sendRecoveryResponse = () => {
+      if (!latestCompletedInboundTranscript?.text || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+      injectInboundTranscriptAsUserText(latestCompletedInboundTranscript.text, reason, latestCompletedInboundTranscript.seq);
+      lastResponseCreateReason = reason;
+      console.warn(`[Diag-InboundTurn] fallback sent seq=${latestCompletedInboundTranscript.seq} reason=${reason} text="${latestCompletedInboundTranscript.text.slice(0, 160)}" (callId=${callId})`);
+      sendResponseCreate(reason, { modalities: ["text", "audio"] });
+    };
+    if (shouldCancelActiveResponse) setTimeout(sendRecoveryResponse, 120);
+    else sendRecoveryResponse();
   };
 
   const resetResponseState = () => {
