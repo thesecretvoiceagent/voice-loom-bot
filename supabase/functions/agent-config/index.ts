@@ -49,14 +49,19 @@ serve(async (req) => {
       const { data: candidates } = await supabase
         .from("agents")
         .select(selectFields)
-        .eq("is_active", true);
+        .eq("is_active", true)
+        .order("updated_at", { ascending: false })
+        .order("created_at", { ascending: false });
 
       const matchingByPhone = (candidates || []).filter(
         (a: any) => digits(a.phone_number) === targetDigits && targetDigits.length > 0
       );
 
       if (matchingByPhone.length > 0) {
-        // Prefer same direction/type when provided
+        // Prefer same direction/type when provided, then newest updated agent.
+        // This mirrors outbound behavior where the UI passes an explicit current
+        // agent_id. Without ordering, inbound calls can bind to an older duplicate
+        // active agent on the same Twilio number and run stale voice settings.
         const typed = dir ? matchingByPhone.find((a: any) => a.type === dir) : null;
         const chosen = typed || matchingByPhone[0];
         console.log(
