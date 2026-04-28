@@ -1479,6 +1479,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     }));
                     twilioOutboundFrames += 1;
                     if (activeResponseReason !== "initial-greeting") userTwilioOutboundFrames += 1;
+                    activeResponseTwilioChunks += 1;
+                    activeResponseTwilioBytes += chunk.length;
+                    if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && (activeResponseTwilioChunks <= 3 || activeResponseTwilioChunks % 25 === 0)) {
+                      console.log(`[Diag-InboundTurn] twilio.media.forwarded responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} chunk=${activeResponseTwilioChunks} chunkBytes=${chunk.length} responseBytes=${activeResponseTwilioBytes} totalTwilioOut=${twilioOutboundFrames} (callId=${callId})`);
+                    }
                     if (!firstTwilioOutboundAt) {
                       firstTwilioOutboundAt = new Date().toISOString();
                       console.log(`[Diag] first outbound media to Twilio at=${firstTwilioOutboundAt} twilioState=${twilioWs.readyState} (callId=${callId})`);
@@ -1496,6 +1501,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     media: { payload: event.delta },
                   }));
                   twilioOutboundFrames += 1;
+                  activeResponseTwilioChunks += 1;
+                  activeResponseTwilioBytes += Buffer.byteLength(String(event.delta), "base64");
+                  if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+                    console.log(`[Diag-InboundTurn] twilio.media.forwarded fallback responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} chunk=${activeResponseTwilioChunks} responseBytes=${activeResponseTwilioBytes} totalTwilioOut=${twilioOutboundFrames} (callId=${callId})`);
+                  }
                   if (!firstTwilioOutboundAt) {
                     firstTwilioOutboundAt = new Date().toISOString();
                     console.log(`[Diag] first outbound media to Twilio at=${firstTwilioOutboundAt} twilioState=${twilioWs.readyState} (callId=${callId})`);
