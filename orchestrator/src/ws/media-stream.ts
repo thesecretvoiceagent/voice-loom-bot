@@ -292,6 +292,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let pendingUserResponseReason: string | null = null;
   let pendingUserResponseAttempts = 0;
   let pendingUserResponseTranscript: string | null = null;
+  let lastInjectedInboundTranscript = "";
+  let responseDoneFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   // E. Assistant audio back to Twilio
   let assistantAudioDeltaCount = 0;
   let assistantOutputAudioDeltaCount = 0;
@@ -502,6 +504,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(`[MediaStream] Inbound audio cooldown ${ms}ms after ${reason} (callId=${callId})`);
   };
 
+  const injectInboundTranscriptAsUserText = (transcript: string, reason: string) => {
+    const clean = transcript.trim();
+    if (!clean || callDirection !== "inbound" || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    if (clean === lastInjectedInboundTranscript) return;
+    lastInjectedInboundTranscript = clean;
+    openaiWs.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: clean }],
+      },
+    }));
+    console.warn(`[Diag] inbound transcript injected as user text reason=${reason} text="${clean.slice(0, 120)}" (callId=${callId})`);
+  };
+
   const resetResponseState = () => {
     activeResponseId = null;
     responsePlaybackMarkName = null;
@@ -509,6 +527,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseAudioDone = false;
     responseDoneReceived = false;
     clearMarkFallback();
+    if (responseDoneFallbackTimer) {
+      clearTimeout(responseDoneFallbackTimer);
+      responseDoneFallbackTimer = null;
+    }
   };
 
   const enableTurnDetection = () => {
