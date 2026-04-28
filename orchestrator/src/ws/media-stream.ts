@@ -1411,6 +1411,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             pendingRecoveryCooldownMs = 0;
             if (callDirection === "inbound") {
               injectInboundTranscriptAsUserText(event.transcript || "", "transcript-fallback");
+              scheduleUserResponseCreate("inbound-transcript-fallback", 1400, event.transcript);
+              break;
             }
             scheduleUserResponseCreate("user-transcript", 150, event.transcript);
             break;
