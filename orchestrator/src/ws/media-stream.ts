@@ -1439,6 +1439,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "response.created":
+            if (pendingInboundRecoveryAfterCancel && event.response?.id !== pendingInboundRecoveryAfterCancel.failedResponseId) {
+              clearPendingInboundRecoveryAfterCancel();
+            }
             clearPendingUserResponseTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
@@ -1466,6 +1469,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               armInboundNoAudioTimer(activeResponseId, activeResponseInboundTranscriptSeq, "response.created");
             }
             break;
+
+          case "response.cancelled":
+          case "response.canceled": {
+            const responseId = event.response?.id || event.response_id || null;
+            if (pendingInboundRecoveryAfterCancel && (!responseId || responseId === pendingInboundRecoveryAfterCancel.failedResponseId)) {
+              const pending = pendingInboundRecoveryAfterCancel;
+              clearPendingInboundRecoveryAfterCancel();
+              ignoreAudioUntilNextResponse = false;
+              activeResponseId = null;
+              responsePlaybackMarkName = null;
+              responseHasAudio = false;
+              responseAudioDone = false;
+              responseDoneReceived = false;
+              responseAudioDeltaLogged = false;
+              activeResponseTwilioChunks = 0;
+              activeResponseTwilioBytes = 0;
+              aiIsSpeaking = false;
+              console.warn(`[Diag-InboundTurn] response.cancelled received; sending recovery response seq=${pending.transcriptSeq} failedResponseId=${pending.failedResponseId || "none"} reason=${pending.reason} (callId=${callId})`);
+              injectInboundTranscriptAsUserText(pending.transcriptText, pending.reason, pending.transcriptSeq);
+              sendResponseCreate(pending.reason, { modalities: ["text", "audio"] });
+            }
+            break;
+          }
 
           case "response.audio.delta":
           case "response.output_audio.delta": {
