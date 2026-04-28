@@ -1738,6 +1738,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             responseAudioDone = true;
 
             if (!responseHasAudio) {
+              if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+                console.warn(`[Diag-InboundTurn] response.audio.done no-audio responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} activeResponseReason=${activeResponseReason} (callId=${callId})`);
+                armResponseDoneNoAudioGrace(responseId, activeResponseInboundTranscriptSeq, "response.audio.done-no-audio", 350);
+                break;
+              }
               maybeCompleteAiTurn("response.audio.done(no-audio)");
               break;
             }
@@ -1750,6 +1755,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 streamSid,
                 mark: { name: responsePlaybackMarkName },
               }));
+              if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+                console.log(`[Diag-InboundTurn] twilio.playback.mark sent mark=${responsePlaybackMarkName} responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} chunks=${activeResponseTwilioChunks} bytes=${activeResponseTwilioBytes} (callId=${callId})`);
+              }
 
               // Safety fallback: if Twilio never sends the mark back, force-complete the turn.
               // For the initial greeting this must be short; otherwise the caller's first
@@ -1790,6 +1798,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(
               `[Diag] response.done #${responseDoneCount} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} hasAudio=${responseHasAudio} audioDeltas=${assistantAudioDeltaCount} (callId=${callId})`
             );
+            if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+              console.log(`[Diag-InboundTurn] response.done responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} hasAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} twilioBytes=${activeResponseTwilioBytes} finish=${finishReason} output_tokens=${outputTokens} (callId=${callId})`);
+              if (!responseHasAudio) {
+                armResponseDoneNoAudioGrace(responseId, activeResponseInboundTranscriptSeq, "response.done-no-audio", 450);
+                break;
+              }
+            }
             maybeCompleteAiTurn("response.done");
             break;
           }
