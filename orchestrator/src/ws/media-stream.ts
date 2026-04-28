@@ -1302,6 +1302,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.created":
             clearPendingUserResponseTimer();
+            clearInboundTranscriptFallbackTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
             activeResponseReason = lastResponseCreateReason;
@@ -1310,11 +1311,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             responseHasAudio = false;
             responseAudioDone = false;
             responseDoneReceived = false;
+            responseAudioDeltaLogged = false;
             ignoreAudioUntilNextResponse = false;
             aiIsSpeaking = true;
             lastResponseFinishReason = null;
             lastResponseOutputTokens = null;
             console.log(`[Diag] response.created #${responseCreatedCount} reason=${activeResponseReason} responseId=${activeResponseId} (callId=${callId})`);
+            if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
+              console.log(`[Diag-InboundTurn] response.created seq=${inboundTranscriptFallbackSeq} responseId=${activeResponseId} reason=${activeResponseReason} (callId=${callId})`);
+            }
             break;
 
           case "response.audio.delta":
@@ -1329,6 +1334,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (event.type === "response.output_audio.delta") assistantOutputAudioDeltaCount += 1;
             else assistantAudioDeltaCount += 1;
             responseHasAudio = true;
+            if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && !responseAudioDeltaLogged) {
+              responseAudioDeltaLogged = true;
+              console.log(`[Diag-InboundTurn] response.audio.delta first type=${event.type} responseId=${responseId} hasDelta=${!!event.delta} (callId=${callId})`);
+            }
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
               try {
                 const raw = Buffer.from(event.delta, "base64");
@@ -1677,6 +1686,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "response.error":
           case "error":
             responseErrorCount += 1;
+            clearInboundTranscriptFallbackTimer();
             console.error(`[Diag] OpenAI error #${responseErrorCount} (callId=${callId}):`, JSON.stringify(event.error || event));
             break;
 
