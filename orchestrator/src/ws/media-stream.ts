@@ -1932,6 +1932,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           if (markName && responsePlaybackMarkName && markName === responsePlaybackMarkName) {
             if (greetingInProgress) twilioGreetingMarkReceived = true;
             console.log(`[Diag-Twilio] twilio.mark greeting received=${greetingInProgress ? "yes" : "no"} mark=${markName} (callId=${callId})`);
+            if (callDirection === "inbound" && !greetingInProgress) {
+              console.log(`[Diag-InboundTurn] twilio.playback.mark received mark=${markName} (callId=${callId})`);
+            }
             clearMarkFallback();
             responsePlaybackMarkName = null;
             maybeCompleteAiTurn("twilio.mark");
