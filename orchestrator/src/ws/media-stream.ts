@@ -1535,10 +1535,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
             transcriptLines.push(`[Agent]: ${assistantTranscript}`);
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
-              clearInboundTranscriptFallbackTimer();
-              clearInboundNoAudioTimer();
-              clearResponseDoneFallbackTimer();
               console.log(`[Diag-InboundTurn] response.audio_transcript.done seq=${activeResponseInboundTranscriptSeq} responseId=${activeResponseId || "none"} text="${assistantTranscript.slice(0, 160)}" (callId=${callId})`);
+              if (activeResponseTwilioChunks > 0) {
+                clearInboundTranscriptFallbackTimer();
+                clearInboundNoAudioTimer();
+                clearResponseDoneFallbackTimer();
+              } else if (activeResponseId) {
+                console.warn(`[Diag-InboundTurn] transcript-only assistant response detected; keeping no-audio recovery armed responseId=${activeResponseId} seq=${activeResponseInboundTranscriptSeq} openaiAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} (callId=${callId})`);
+                armResponseDoneNoAudioGrace(activeResponseId, activeResponseInboundTranscriptSeq, "response.audio_transcript.done-no-twilio-audio", 350);
+              }
             }
 
             // Detect the model repeating itself (echo loop). If it says effectively the
@@ -1580,6 +1585,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               inboundRecoveryAttemptSeq = fallbackSeq;
               inboundRecoveryAttemptsForSeq = 0;
               clearInboundTranscriptFallbackTimer();
+              if (activeResponseId && !responseHasAudio && activeResponseReason !== "initial-greeting") {
+                console.warn(`[Diag-InboundTurn] new user transcript while previous response has no usable audio; resetting stale response state activeResponse=${activeResponseId} seq=${fallbackSeq} previousSeq=${activeResponseInboundTranscriptSeq} (callId=${callId})`);
+                clearInboundNoAudioTimer();
+                clearResponseDoneFallbackTimer();
+                clearMarkFallback();
+                activeResponseId = null;
+                responsePlaybackMarkName = null;
+                responseHasAudio = false;
+                responseAudioDone = false;
+                responseDoneReceived = false;
+                responseAudioDeltaLogged = false;
+                activeResponseTwilioChunks = 0;
+                activeResponseTwilioBytes = 0;
+                aiIsSpeaking = false;
+              }
               console.log(`[Diag-InboundTurn] transcript.completed seq=${fallbackSeq} at=${new Date(latestCompletedInboundTranscript.at).toISOString()} text="${transcriptText.slice(0, 160)}" responseCreated=${responseCreatedCount} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
               inboundTranscriptFallbackTimer = setTimeout(() => {
                 inboundTranscriptFallbackTimer = null;
