@@ -1411,7 +1411,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.created":
             clearPendingUserResponseTimer();
-            clearInboundTranscriptFallbackTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
             activeResponseReason = callDirection === "inbound" && !greetingInProgress && lastResponseCreateReason === "initial-greeting"
@@ -1423,13 +1422,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             responseAudioDone = false;
             responseDoneReceived = false;
             responseAudioDeltaLogged = false;
+            activeResponseInboundTranscriptSeq = callDirection === "inbound" && !greetingInProgress
+              ? latestCompletedInboundTranscript?.seq || inboundTranscriptFallbackSeq
+              : 0;
+            activeResponseTwilioChunks = 0;
+            activeResponseTwilioBytes = 0;
             ignoreAudioUntilNextResponse = false;
             aiIsSpeaking = true;
             lastResponseFinishReason = null;
             lastResponseOutputTokens = null;
             console.log(`[Diag] response.created #${responseCreatedCount} reason=${activeResponseReason} responseId=${activeResponseId} (callId=${callId})`);
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
-              console.log(`[Diag-InboundTurn] response.created seq=${inboundTranscriptFallbackSeq} responseId=${activeResponseId} reason=${activeResponseReason} (callId=${callId})`);
+              console.log(`[Diag-InboundTurn] response.created seq=${activeResponseInboundTranscriptSeq} responseId=${activeResponseId} reason=${activeResponseReason} transcript="${latestCompletedInboundTranscript?.text?.slice(0, 160) || ""}" (callId=${callId})`);
+              armInboundNoAudioTimer(activeResponseId, activeResponseInboundTranscriptSeq, "response.created");
             }
             break;
 
@@ -1447,7 +1452,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             responseHasAudio = true;
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && !responseAudioDeltaLogged) {
               responseAudioDeltaLogged = true;
-              console.log(`[Diag-InboundTurn] response.audio.delta first type=${event.type} responseId=${responseId} hasDelta=${!!event.delta} (callId=${callId})`);
+              clearInboundTranscriptFallbackTimer();
+              clearInboundNoAudioTimer();
+              clearResponseDoneFallbackTimer();
+              console.log(`[Diag-InboundTurn] response.audio.delta first type=${event.type} responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} hasDelta=${!!event.delta} (callId=${callId})`);
             }
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && event.delta) {
               try {
