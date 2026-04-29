@@ -1432,7 +1432,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - Stay strictly on topic. Do not improvise or add unrequested information.
 - Follow the script above exactly. Do not deviate.
 - If asked about something outside your scope, briefly redirect back to the topic.
-- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
+- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.
+- REGISTRATION LOOKUP: When the lookup_vehicle tool returns match:false, you MUST immediately tell the caller you could not find that registration number (e.g. "Ma ei leidnud seda registreerimisnumbrit meie süsteemist. Palun kontrollige numbrit ja proovige uuesti." or in English: "I couldn't find that registration number in our system. Please check the number and try again."). Do NOT continue the flow. Ask the caller to provide the registration number again.`;
 
       // Inject SMS catalog so the AI knows which named SMSes are available, when to use them, and what they say.
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
@@ -1481,7 +1482,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools.push({
           type: "function",
           name: "lookup_vehicle",
-          description: "Look up a vehicle in the CRM. Call this ONLY when the caller has SPOKEN one of the following out loud during the live conversation: (a) a registration plate (e.g. '484DLC'), or (b) a free-text description of the car (make/model/color/year, e.g. 'must BMW 535D 2006'). DO NOT call this just because you know the caller's phone number — the system already attempted a phone-based match before connecting you. DO NOT call this during or immediately after the greeting. DO NOT call this before the caller has actually spoken to you. Returns owner name, vehicle, insurer, cover type/status. If no match, returns found:false.",
+          description: "Look up a vehicle in the CRM by registration plate. Call this ONLY when the caller has SPOKEN a registration plate out loud during the live conversation (e.g. '484DLC'). DO NOT call this just because you know the caller's phone number — the system already attempted a phone-based match before connecting you. DO NOT call this during or immediately after the greeting. DO NOT call this before the caller has actually spoken to you. CRITICAL: After calling this tool, you MUST check the 'match' field in the result. If match is false, you MUST say something like 'I couldn't find that registration number in our system. Could you please check the number and try again?' and ask the caller to provide the registration number again. Do NOT proceed with any next step when match is false. Only continue the flow when match is true.",
           parameters: {
             type: "object",
             properties: {
@@ -1920,14 +1921,32 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (fnName === "lookup_vehicle") {
               let args: any = {};
               try { args = JSON.parse(event.arguments || "{}"); } catch {}
-              const vehicle = await crmLookup({
-                phone_number: args.phone_number,
-                reg_no: args.reg_no,
-                description: args.description,
-              });
-              const output = vehicle
-                ? { found: true, vehicle }
-                : { found: false, message: "No vehicle found in CRM for the given details." };
+              const regNo: string = typeof args.reg_no === "string" ? args.reg_no.trim() : "";
+              const lookupResult = regNo
+                ? await strictLookupVehicleBySubmittedReg(regNo)
+                : null;
+
+              let output: Record<string, unknown>;
+              if (!lookupResult || lookupResult.match === false) {
+                // Registration not found — instruct the AI to reject and re-ask
+                output = {
+                  match: false,
+                  submitted_reg: regNo || args.description || "",
+                  message: "Registration number not found in our system. You MUST tell the caller you could not find that registration number and ask them to provide it again. Do NOT proceed with any next step.",
+                };
+                console.log(`[MediaStream] lookup_vehicle: no match for reg="${regNo}" (callId=${callId})`);
+              } else {
+                output = {
+                  match: true,
+                  submitted_reg: lookupResult.submitted_reg,
+                  normalized_reg: lookupResult.normalized_reg,
+                  vehicle: lookupResult.vehicle,
+                  cover_status: lookupResult.cover_status,
+                  coverage_invalid: lookupResult.coverage_invalid,
+                };
+                console.log(`[MediaStream] lookup_vehicle: match found reg="${lookupResult.normalized_reg}" cover_status="${lookupResult.cover_status}" (callId=${callId})`);
+              }
+
               openaiWs!.send(JSON.stringify({
                 type: "conversation.item.create",
                 item: {
@@ -1937,8 +1956,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 },
               }));
               scheduleUserResponseCreate("tool-result", 50);
-              transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
+              const matchLabel = lookupResult?.match === true
+                ? `${(lookupResult.vehicle as any)?.reg_no ?? regNo} match=true`
+                : `"${regNo}" match=false`;
+              transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${matchLabel}`);
             }
+
 
             if (fnName === "send_sms") {
               let args: any = {};
