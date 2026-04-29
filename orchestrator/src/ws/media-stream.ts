@@ -1270,7 +1270,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                   transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                    const sysMsg = `[SYSTEM EVENT: location_confirmed] address="${addr}" lat=${row.location_lat} lon=${row.location_lon}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just confirmed their location via the SMS link. Read the address back to them naturally in the same language the call is being conducted in and ask for confirmation. Do not offer anything else — only confirm the address.`;
+                    const sysMsg = `[SYSTEM EVENT: location_confirmed] location_confirmed=true address="${addr}" lat=${row.location_lat} lon=${row.location_lon}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just confirmed their location via the SMS link. Read the address back to them naturally in the same language the call is being conducted in. Do not ask for confirmation again. Continue to the next required step.`;
                     openaiWs.send(JSON.stringify({
                       type: "conversation.item.create",
                       item: {
