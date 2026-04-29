@@ -343,9 +343,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let substituteVarsRef: (text: string) => string = (t) => t;
   let maxCallDurationMinutes: number = 0;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
-  let uninterruptibleGreetingEnabled = true;
   let greetingInProgress = true; // Protect initial greeting from interruption
-  let listeningEnabledAfterGreeting = false;
   let activeResponseId: string | null = null; // Track current response to discard stale audio
   let ignoreAudioUntilNextResponse = false;
   let sessionConfigured = false;
@@ -392,7 +390,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let twilioInboundFramesDropGreeting = 0;
   let twilioInboundFramesDropCooldown = 0;
   let twilioInboundFramesDropAntiBargein = 0;
-  let antiBargeInClearSentForSpeakingSegment = false;
   let twilioInboundFramesForwarded = 0;
   let twilioInboundFramesAfterGreeting = 0;
   let firstInboundAudioAfterGreetingLogged = false;
@@ -917,9 +914,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
-    antiBargeInClearSentForSpeakingSegment = false;
-    console.log(`[BargeIn] assistant_speaking=false callId=${callId}`);
-    console.log(`[BargeIn] listening enabled after assistant speech callId=${callId}`);
     startInboundAudioCooldown(recoveryCooldownMs, source);
     if (!greetingInProgress && pendingUserResponseReason) {
       console.log(`[Diag] AI turn completed while user response pending (${pendingUserResponseReason}); scheduling response after cooldown (callId=${callId})`);
@@ -928,10 +922,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
     if (greetingInProgress) {
       greetingInProgress = false;
-      listeningEnabledAfterGreeting = true;
       greetingCompletedAt = Date.now();
       console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after ${recoveryCooldownMs}ms cooldown (callId=${callId}, responseId=${completedResponseId})`);
-      console.log(`[BargeIn] listening enabled after greeting callId=${callId}`);
       clearTurnDetectionEnableTimer();
       turnDetectionEnableTimer = setTimeout(() => {
         turnDetectionEnableTimer = null;
@@ -992,20 +984,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         if (typeof rawCap === "number" && Number.isFinite(rawCap) && rawCap >= 50 && rawCap <= 4096) {
           configuredMaxResponseOutputTokens = Math.round(rawCap);
         }
-        // Read uninterruptible greeting setting (default true).
-        // Backward-compat: accept both snake_case and camelCase keys.
-        const uninterruptibleSetting = (settings as any).uninterruptible_greeting;
-        const uninterruptibleSettingCompat = (settings as any).uninterruptibleGreeting;
-        if (uninterruptibleSetting === false || uninterruptibleSettingCompat === false) {
-          uninterruptibleGreetingEnabled = false;
+        // Read uninterruptible greeting setting (default true)
+        if (settings.uninterruptible_greeting === false) {
           greetingInProgress = false; // Allow interruption from the start
-          listeningEnabledAfterGreeting = true;
         }
-        // Read anti-barge-in setting (default false).
-        // Backward-compat: accept both snake_case and camelCase keys.
-        const antiBargeInSetting = (settings as any).anti_barge_in;
-        const antiBargeInSettingCompat = (settings as any).antiBargeIn;
-        if (antiBargeInSetting === true || antiBargeInSettingCompat === true) {
+        // Read anti-barge-in setting (default false)
+        if (settings.anti_barge_in === true) {
           antiBargeinEnabled = true;
           console.log(`[MediaStream] Anti-barge-in enabled (callId=${callId})`);
         }
@@ -1037,9 +1021,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
-    console.log(
-      `[BargeIn] settings uninterruptibleGreeting=${uninterruptibleGreetingEnabled} antiBargeIn=${antiBargeinEnabled} callId=${callId}`
-    );
 
     // Inbound CRM prefetch: identify caller by phone number so the agent knows who's calling.
     // Exposed via callVariables so the system prompt can reference {{caller_name}}, {{caller_reg_no}}, etc.
@@ -1968,14 +1949,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
 
           case "conversation.item.input_audio_transcription.completed":
-            if (greetingInProgress && uninterruptibleGreetingEnabled) {
-              console.log(`[BargeIn] inbound ignored reason=greeting_in_progress callId=${callId}`);
-              break;
-            }
-            if (antiBargeinEnabled && aiIsSpeaking) {
-              console.log(`[BargeIn] transcript ignored reason=anti_barge_in_assistant_speaking callId=${callId}`);
-              break;
-            }
             clearCallerSpeechWatchdog();
             userTranscriptCount += 1;
             console.log(`[Diag] user_transcript #${userTranscriptCount} (callId=${callId}): "${event.transcript}"`);
@@ -2519,19 +2492,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             speechStartedCount += 1;
             armCallerSpeechWatchdog("speech-started");
             console.log(`[Diag] speech_started #${speechStartedCount} (callId=${callId}) state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},antiBargein=${antiBargeinEnabled}}`);
-            if (greetingInProgress && uninterruptibleGreetingEnabled) {
-              console.log(`[BargeIn] speech_started ignored reason=uninterruptible_greeting callId=${callId}`);
+            if (greetingInProgress) {
+              console.log(`[MediaStream] Ignoring interruption during greeting, clearing buffer (callId=${callId})`);
               openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
               break;
             }
             if (antiBargeinEnabled && aiIsSpeaking) {
-              console.log(`[BargeIn] speech_started ignored reason=anti_barge_in_assistant_speaking callId=${callId}`);
+              console.log(`[MediaStream] Anti-barge-in: ignoring interruption, clearing buffer (callId=${callId})`);
               openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
               break;
             }
             console.log(`[MediaStream] Speech started (callId=${callId}, responseId=${activeResponseId})`);
             aiIsSpeaking = false;
-            antiBargeInClearSentForSpeakingSegment = false;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
             }
@@ -2762,11 +2734,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         case "media":
           twilioInboundFrames += 1;
           // Don't forward audio to OpenAI during greeting (prevents VAD triggering)
-          if (greetingInProgress && uninterruptibleGreetingEnabled) {
+          if (greetingInProgress) {
             twilioInboundFramesDropGreeting += 1;
-            if (twilioInboundFramesDropGreeting === 1 || twilioInboundFramesDropGreeting % 50 === 0) {
-              console.log(`[BargeIn] inbound ignored reason=greeting_in_progress callId=${callId}`);
-            }
             break;
           }
           twilioInboundFramesAfterGreeting += 1;
@@ -2792,13 +2761,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           // Don't forward audio when anti-barge-in is active and AI is speaking
           if (antiBargeinEnabled && aiIsSpeaking) {
             twilioInboundFramesDropAntiBargein += 1;
-            if (!antiBargeInClearSentForSpeakingSegment && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-              openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
-              antiBargeInClearSentForSpeakingSegment = true;
-            }
-            if (twilioInboundFramesDropAntiBargein === 1 || twilioInboundFramesDropAntiBargein % 50 === 0) {
-              console.log(`[BargeIn] inbound ignored reason=anti_barge_in_assistant_speaking callId=${callId}`);
-            }
             break;
           }
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN && sessionConfigured) {
