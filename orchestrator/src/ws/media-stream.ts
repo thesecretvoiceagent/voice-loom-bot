@@ -375,6 +375,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let aiIsSpeaking = false; // Track whether AI is currently outputting audio or Twilio is still playing it
   let suppressNextInputCommitBecauseBargeIn = false;
   let suppressUserAudioUntilMs = 0;
+  const suppressedInputItemIds = new Set<string>();
+  let suppressAutoVadResponseUntilMs = 0;
+  let lastSuppressedInputCommitAtMs = 0;
+  const suppressedResponseIds = new Set<string>();
+  const suppressedResponseAudioDropLogged = new Set<string>();
   // Guardrails against premature end_call right after greeting:
   // 1. We require at least one real user utterance before honoring end_call.
   // 2. We require a minimum elapsed time since greeting completion.
@@ -546,8 +551,24 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(`[BargeInTrace] ${JSON.stringify(extra ? { ...state, ...extra } : state)}`);
   };
 
+  const isBargeInSensitiveResponseReason = (reason: string) =>
+    reason.startsWith("inbound-transcript-fallback") ||
+    reason === "inbound-auto-vad" ||
+    reason === "audio-commit";
+
   const isUserAudioSuppressedByBargeIn = () =>
     suppressNextInputCommitBecauseBargeIn || Date.now() < suppressUserAudioUntilMs;
+
+  const isAntiBargeInputMuted = () =>
+    antiBargeinEnabled &&
+    (
+      (greetingInProgress && uninterruptibleGreetingEnabled) ||
+      aiIsSpeaking === true ||
+      Boolean(activeResponseId) ||
+      Boolean(responsePlaybackMarkName) ||
+      Date.now() < assistantPlaybackProtectedUntilMs ||
+      Date.now() < suppressUserAudioUntilMs
+    );
 
   const OCCUPANT_REQUIRED_TRANSCRIPT_TRIGGERS = [
     "avarii",
@@ -702,6 +723,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const sendResponseCreate = (reason: string, response?: Record<string, unknown>) => {
+    if (
+      callDirection === "inbound" &&
+      isBargeInSensitiveResponseReason(reason) &&
+      (isAntiBargeInputMuted() || Date.now() < suppressAutoVadResponseUntilMs)
+    ) {
+      console.warn(`[BargeIn] skipped response.create while input muted reason=${reason} callId=${callId}`);
+      return false;
+    }
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
       console.warn(`[Diag] response.create skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`);
       return false;
@@ -735,6 +764,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     pendingUserResponseTimer = setTimeout(() => {
       pendingUserResponseTimer = null;
       if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+      if (
+        callDirection === "inbound" &&
+        isBargeInSensitiveResponseReason(reason) &&
+        (isAntiBargeInputMuted() || Date.now() < suppressAutoVadResponseUntilMs)
+      ) {
+        pendingUserResponseReason = null;
+        pendingUserResponseTranscript = null;
+        pendingUserResponseAttempts = 0;
+        console.warn(`[BargeIn] skipped response.create while input muted reason=${reason} callId=${callId}`);
+        return;
+      }
 
       const cooldownLeftMs = Math.max(0, inboundAudioCooldownUntil - Date.now());
       if (activeResponseId || greetingInProgress || cooldownLeftMs > 0) {
@@ -793,7 +833,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const triggerInboundTranscriptRecovery = (reason: string, failedResponseId?: string | null) => {
     if (callDirection !== "inbound" || greetingInProgress) return;
-    if (isUserAudioSuppressedByBargeIn()) {
+    if (isUserAudioSuppressedByBargeIn() || isAntiBargeInputMuted() || Date.now() < suppressAutoVadResponseUntilMs) {
       console.warn(`[BargeIn] skipped fallback response for suppressed anti-barge-in transcript callId=${callId}`);
       return;
     }
@@ -867,7 +907,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       source: "triggerInboundTranscriptRecovery",
     });
     const sendRecoveryResponse = () => {
-      if (isUserAudioSuppressedByBargeIn()) {
+      if (isUserAudioSuppressedByBargeIn() || isAntiBargeInputMuted() || Date.now() < suppressAutoVadResponseUntilMs) {
         console.warn(`[BargeIn] skipped fallback response for suppressed anti-barge-in transcript callId=${callId}`);
         return;
       }
@@ -1875,6 +1915,41 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(`[Diag-InboundTurn] response.created seq=${activeResponseInboundTranscriptSeq} responseId=${activeResponseId} reason=${activeResponseReason} transcript="${latestCompletedInboundTranscript?.text?.slice(0, 160) || ""}" (callId=${callId})`);
               armInboundNoAudioTimer(activeResponseId, activeResponseInboundTranscriptSeq, "response.created");
             }
+            {
+              const responseId = activeResponseId;
+              const reason = activeResponseReason;
+              const transcriptText = latestCompletedInboundTranscript?.text?.trim() || "";
+              const emptyOrSuppressedTranscript = !transcriptText;
+              const recentSuppressedCommit = Date.now() - lastSuppressedInputCommitAtMs < 2000;
+              const hasSuppressedInputItem = suppressedInputItemIds.size > 0;
+              const suppressedInputWindowActive =
+                suppressNextInputCommitBecauseBargeIn ||
+                Date.now() < suppressUserAudioUntilMs ||
+                Date.now() < suppressAutoVadResponseUntilMs;
+              const shouldSuppressCreatedResponse =
+                Boolean(responseId) &&
+                suppressedInputWindowActive &&
+                (isBargeInSensitiveResponseReason(reason) || emptyOrSuppressedTranscript || recentSuppressedCommit || hasSuppressedInputItem);
+              if (responseId && shouldSuppressCreatedResponse) {
+                suppressedResponseIds.add(responseId);
+                suppressedResponseAudioDropLogged.delete(responseId);
+                console.warn(
+                  `[BargeIn] cancelled response created from suppressed anti-barge-in input responseId=${responseId} reason=${reason} callId=${callId}`
+                );
+                if (openaiWs && openaiWs.readyState === WebSocket.OPEN && activeResponseId === responseId && !responseDoneReceived) {
+                  try {
+                    bargeInTrace("response_cancel_send", {
+                      source: "suppressed_response_created_guard",
+                      responseId,
+                      reason,
+                    });
+                    openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+                  } catch (err) {
+                    console.error(`[BargeIn] response.cancel failed for suppressed response responseId=${responseId} (callId=${callId}):`, err);
+                  }
+                }
+              }
+            }
             break;
 
           case "response.cancelled":
@@ -1908,6 +1983,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "response.audio.delta":
           case "response.output_audio.delta": {
             const responseId = event.response_id || activeResponseId || null;
+            if (responseId && suppressedResponseIds.has(responseId)) {
+              if (!suppressedResponseAudioDropLogged.has(responseId)) {
+                suppressedResponseAudioDropLogged.add(responseId);
+                console.warn(`[BargeIn] dropped assistant audio from suppressed response responseId=${responseId} callId=${callId}`);
+              }
+              break;
+            }
             if (smsPendingTemplate && responseId && responseId === activeResponseId && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
               console.warn(
                 `[MediaStream] assistant_cancelled reason=sms_pending templateName="${smsPendingTemplate}" callId=${callId} responseId=${responseId}`
@@ -2089,7 +2171,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }
 
           case "conversation.item.input_audio_transcription.completed":
+            if (isAntiBargeInputMuted()) {
+              const mutedText = String(event.transcript || "").trim();
+              console.log(`[BargeIn] ignored transcript while input muted text="${mutedText.slice(0, 160)}" callId=${callId}`);
+              suppressNextInputCommitBecauseBargeIn = true;
+              suppressUserAudioUntilMs = Date.now() + 1200;
+              latestCompletedInboundTranscript = null;
+              clearInboundTranscriptFallbackTimer();
+              clearPendingInboundRecoveryAfterCancel();
+              break;
+            }
             if (greetingInProgress && uninterruptibleGreetingEnabled) {
+              console.log(`[BargeIn] greeting input muted callId=${callId}`);
               console.log(`[BargeIn] inbound ignored reason=greeting_in_progress callId=${callId}`);
               break;
             }
@@ -2102,6 +2195,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(`[BargeIn] transcript ignored reason=anti_barge_in_assistant_speaking callId=${callId}`);
               break;
             }
+            suppressedInputItemIds.clear();
             clearCallerSpeechWatchdog();
             userTranscriptCount += 1;
             console.log(`[Diag] user_transcript #${userTranscriptCount} (callId=${callId}): "${event.transcript}"`);
@@ -2610,6 +2704,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.done": {
             const responseId = event.response?.id || activeResponseId || null;
+            if (responseId && suppressedResponseIds.has(responseId)) {
+              suppressedResponseIds.delete(responseId);
+              suppressedResponseAudioDropLogged.delete(responseId);
+              if (activeResponseId === responseId) {
+                resetResponseState();
+                ignoreAudioUntilNextResponse = false;
+                aiIsSpeaking = false;
+              }
+              console.warn(`[BargeIn] suppressed response completed responseId=${responseId} callId=${callId}`);
+              break;
+            }
             if (pendingInboundRecoveryAfterCancel && (!responseId || responseId === pendingInboundRecoveryAfterCancel.failedResponseId)) {
               const pending = pendingInboundRecoveryAfterCancel;
               clearPendingInboundRecoveryAfterCancel();
@@ -2693,6 +2798,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
             if (greetingInProgress && uninterruptibleGreetingEnabled) {
+              console.log(`[BargeIn] greeting input muted callId=${callId}`);
               console.log(`[BargeIn] speech_started ignored reason=uninterruptible_greeting callId=${callId}`);
               openaiWs!.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
               break;
@@ -2728,7 +2834,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "input_audio_buffer.committed":
             bufferCommittedCount += 1;
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
-            if (suppressNextInputCommitBecauseBargeIn || Date.now() < suppressUserAudioUntilMs) {
+            if (greetingInProgress && uninterruptibleGreetingEnabled) {
+              console.log(`[BargeIn] greeting input muted callId=${callId}`);
+            }
+            if ((greetingInProgress && uninterruptibleGreetingEnabled) || isAntiBargeInputMuted() || suppressNextInputCommitBecauseBargeIn || Date.now() < suppressUserAudioUntilMs) {
+              const itemId = typeof event.item_id === "string" ? event.item_id : "";
+              if (itemId) suppressedInputItemIds.add(itemId);
+              lastSuppressedInputCommitAtMs = Date.now();
+              suppressAutoVadResponseUntilMs = Date.now() + 1500;
               console.warn(`[BargeIn] ignored committed input from anti-barge-in blocked segment item_id=${event.item_id || "?"} callId=${callId}`);
               suppressNextInputCommitBecauseBargeIn = false;
               clearPendingInboundRecoveryAfterCancel();
@@ -2736,6 +2849,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               clearInboundNoAudioTimer();
               clearResponseDoneFallbackTimer();
               latestCompletedInboundTranscript = null;
+              if (itemId && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+                try {
+                  openaiWs.send(JSON.stringify({
+                    type: "conversation.item.delete",
+                    item_id: itemId,
+                  }));
+                } catch {}
+              }
               break;
             }
             if (callDirection !== "inbound") scheduleUserResponseCreate("audio-commit", 1200);
@@ -2955,6 +3076,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           // Don't forward audio to OpenAI during greeting (prevents VAD triggering)
           if (greetingInProgress && uninterruptibleGreetingEnabled) {
             twilioInboundFramesDropGreeting += 1;
+            if (twilioInboundFramesDropGreeting === 1 || twilioInboundFramesDropGreeting % 50 === 0) {
+              console.log(`[BargeIn] greeting input muted callId=${callId}`);
+            }
             if (twilioInboundFramesDropGreeting === 1 || twilioInboundFramesDropGreeting % 50 === 0) {
               console.log(`[BargeIn] inbound ignored reason=greeting_in_progress callId=${callId}`);
             }
