@@ -357,6 +357,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let pendingToolsForActivation: any[] = [];
   let toolsActivated = false;
 
+  // IIZI vehicle guard: tracks whether strictLookupVehicleBySubmittedReg() has run and its result.
+  // null  = lookup not yet triggered (form not submitted)
+  // "pending" = lookup in progress (reserved for future async use)
+  // "matched" = lookup confirmed a valid vehicle in CRM
+  // "not_matched" = lookup ran but found no matching vehicle
+  let vehicleLookupStatus: "pending" | "matched" | "not_matched" | null = null;
+
   // Anti-barge-in: when true, don't forward user audio to OpenAI while AI is speaking
   let antiBargeinEnabled = false;
   let aiIsSpeaking = false; // Track whether AI is currently outputting audio or Twilio is still playing it
@@ -1291,6 +1298,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           })
                         );
                         console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=true (callId=${callId})`);
+                        vehicleLookupStatus = "matched";
+                        console.log(`[IIZI-VehicleGuard] vehicleLookupStatus set to "matched" (callId=${callId})`);
                         scheduleUserResponseCreate("system-event", 50);
                       } else {
                         const vehicleEvent =
@@ -1313,6 +1322,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           })
                         );
                         console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=false (callId=${callId})`);
+                        vehicleLookupStatus = "not_matched";
+                        console.log(`[IIZI-VehicleGuard] vehicleLookupStatus set to "not_matched" (callId=${callId})`);
                         scheduleUserResponseCreate("system-event", 50);
                       }
                     }
@@ -1949,6 +1960,72 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
 
               console.log(`[MediaStream] send_sms INVOKED (callId=${callId}) requestedName="${requestedName}" callDirection=${callDirection} fromNumber="${fromNumber}" calledNumber="${calledNumber}" recipient="${recipient}" availableTemplates=[${smsMessages.map((m) => `${m.name}(${m.trigger})`).join(", ")}]`);
+
+              // ── IIZI Vehicle Guard ────────────────────────────────────────────────────
+              // Block location SMS ("Asukoha SMS") unless vehicle lookup has confirmed a match.
+              // Also block callback/partner SMS if vehicle was explicitly not matched.
+              const isLocationSms = requestedName === "Asukoha SMS";
+              const isCallbackOrPartnerSms =
+                requestedName === "Retrieval of callback number through SMS" ||
+                requestedName.toLowerCase().includes("partner");
+
+              if (isLocationSms) {
+                if (vehicleLookupStatus === null || vehicleLookupStatus === "pending") {
+                  console.warn(`[IIZI-VehicleGuard] send_sms BLOCKED template="Asukoha SMS" reason="vehicle_lookup_required" vehicleLookupStatus="${vehicleLookupStatus}" (callId=${callId})`);
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "vehicle_lookup_required",
+                        message: "Vehicle lookup has not confirmed a valid vehicle. Do not continue to location. Wait for vehicle_lookup_result or route to human follow-up.",
+                      }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                  break;
+                }
+                if (vehicleLookupStatus === "not_matched") {
+                  console.warn(`[IIZI-VehicleGuard] send_sms BLOCKED template="Asukoha SMS" reason="vehicle_not_matched" vehicleLookupStatus="${vehicleLookupStatus}" (callId=${callId})`);
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "vehicle_not_matched",
+                        message: "Vehicle lookup has not confirmed a valid vehicle. Do not continue to location. Wait for vehicle_lookup_result or route to human follow-up.",
+                      }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                  break;
+                }
+                // vehicleLookupStatus === "matched" — allow send
+                console.log(`[IIZI-VehicleGuard] send_sms ALLOWED template="Asukoha SMS" vehicleLookupStatus="matched" (callId=${callId})`);
+              }
+
+              if (isCallbackOrPartnerSms && vehicleLookupStatus === "not_matched") {
+                console.warn(`[IIZI-VehicleGuard] send_sms BLOCKED template="${requestedName}" reason="vehicle_not_matched" (callId=${callId})`);
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({
+                      success: false,
+                      error: "vehicle_not_matched",
+                      message: "Vehicle lookup has not confirmed a valid vehicle. Do not continue to location. Wait for vehicle_lookup_result or route to human follow-up.",
+                    }),
+                  },
+                }));
+                scheduleUserResponseCreate("tool-result", 50);
+                break;
+              }
+              // ── End IIZI Vehicle Guard ────────────────────────────────────────────────
 
               // Look up the configured during-call template by exact name.
               // We NEVER use AI-supplied content — only the verbatim configured template.
