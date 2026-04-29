@@ -117,6 +117,115 @@ async function crmLookup(params: { phone_number?: string; reg_no?: string; descr
   }
 }
 
+type StrictRegLookupResult =
+  | {
+      match: true;
+      submitted_reg: string;
+      normalized_reg: string;
+      result_count: number;
+      vehicle: Record<string, unknown>;
+      cover_status: string;
+      coverage_invalid: boolean;
+    }
+  | {
+      match: false;
+      submitted_reg: string;
+      normalized_reg: string;
+      result_count: number;
+    };
+
+function normalizeRegistrationStrict(raw: string): string {
+  return raw.toUpperCase().replace(/[\s-]/g, "");
+}
+
+function isCoverageInvalid(coverStatusRaw: unknown): boolean {
+  const value = String(coverStatusRaw || "").trim().toLowerCase();
+  if (!value) return true;
+  if (["active", "valid", "in_force", "in force", "kehtiv", "aktiivne"].includes(value)) return false;
+  if (["inactive", "expired", "missing", "unknown", "none", "puudub", "aegunud", "mitteaktiivne"].includes(value)) return true;
+  return true;
+}
+
+async function strictLookupVehicleBySubmittedReg(submittedReg: string): Promise<StrictRegLookupResult> {
+  const submitted = String(submittedReg || "").trim();
+  const normalizedReg = normalizeRegistrationStrict(submitted);
+  if (!config.supabase.url || !config.supabase.anonKey || !normalizedReg) {
+    return {
+      match: false,
+      submitted_reg: submitted,
+      normalized_reg: normalizedReg,
+      result_count: 0,
+    };
+  }
+
+  const fields = [
+    "reg_no",
+    "make",
+    "model",
+    "year_of_built",
+    "color",
+    "insurer",
+    "cover_type",
+    "cover_status",
+  ].join(",");
+
+  try {
+    const url = `${config.supabase.url.replace(/\/+$/, "")}/rest/v1/crm_vehicles?select=${encodeURIComponent(fields)}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${config.supabase.anonKey}`,
+        apikey: config.supabase.anonKey,
+      },
+    });
+    if (!res.ok) {
+      console.error(`[IIZI-StrictLookup] HTTP ${res.status} while fetching crm_vehicles`);
+      return {
+        match: false,
+        submitted_reg: submitted,
+        normalized_reg: normalizedReg,
+        result_count: 0,
+      };
+    }
+
+    const rows = (await res.json().catch(() => [])) as Record<string, unknown>[];
+    const exactRows = rows.filter((row) => normalizeRegistrationStrict(String(row.reg_no || "")) === normalizedReg);
+    console.log(
+      `[IIZI-StrictLookup] submitted_reg="${submitted}" normalized_reg="${normalizedReg}" exact_result_count=${exactRows.length}`
+    );
+
+    if (exactRows.length === 0) {
+      return {
+        match: false,
+        submitted_reg: submitted,
+        normalized_reg: normalizedReg,
+        result_count: 0,
+      };
+    }
+
+    const vehicle = exactRows[0];
+    const coverStatus = String(vehicle.cover_status || "");
+    const coverageInvalid = isCoverageInvalid(coverStatus);
+    return {
+      match: true,
+      submitted_reg: submitted,
+      normalized_reg: normalizedReg,
+      result_count: exactRows.length,
+      vehicle,
+      cover_status: coverStatus,
+      coverage_invalid: coverageInvalid,
+    };
+  } catch (err) {
+    console.error(`[IIZI-StrictLookup] exception:`, err);
+    return {
+      match: false,
+      submitted_reg: submitted,
+      normalized_reg: normalizedReg,
+      result_count: 0,
+    };
+  }
+}
+
 // Send SMS via Twilio REST API. Returns true on success.
 async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string }> {
   console.log(`[sendSms] >>> attempt to=${to} from=${config.twilio.fromNumber || "(missing)"} bodyLen=${body?.length || 0} bodyPreview="${(body || "").slice(0, 60)}"`);
@@ -1060,7 +1169,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 table: "sms_messages",
                 filter: `call_id=eq.${callId}`,
               },
-              (payload: any) => {
+              async (payload: any) => {
                 const row = payload?.new;
                 if (!row || row.direction !== "inbound") return;
                 const replyBody = (row.body || "").toString().slice(0, 800);
@@ -1104,7 +1213,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 table: "calls",
                 filter: `id=eq.${callId}`,
               },
-              (payload: any) => {
+              async (payload: any) => {
                 const row = payload?.new;
                 const prev = payload?.old;
                 if (!row) return;
@@ -1153,6 +1262,60 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       },
                     }));
                     scheduleUserResponseCreate("system-event", 50);
+
+                    if (reg) {
+                      const lookup = await strictLookupVehicleBySubmittedReg(reg);
+                      if (lookup.match) {
+                        const v = lookup.vehicle as Record<string, unknown>;
+                        const vehicleEvent =
+                          `[SYSTEM EVENT: vehicle_lookup_result] ` +
+                          `match=true submitted_reg="${lookup.submitted_reg}" reg_no="${String(v.reg_no || "")}" ` +
+                          `make="${String(v.make || "")}" model="${String(v.model || "")}" year="${String(v.year_of_built || "")}" ` +
+                          `color="${String(v.color || "")}" insurer="${String(v.insurer || "")}" ` +
+                          `cover_type="${String(v.cover_type || "")}" cover_status="${lookup.cover_status}" ` +
+                          `coverage_invalid=${lookup.coverage_invalid}. ` +
+                          `Internal note only — do NOT read tags/field names aloud. ` +
+                          `If coverage_invalid=true, do NOT continue normal location/callback/partner dispatch route; ` +
+                          `route to human follow-up path.`;
+                        console.log(
+                          `[IIZI-StrictLookup] match=true submitted_reg="${lookup.submitted_reg}" normalized_reg="${lookup.normalized_reg}" result_count=${lookup.result_count} cover_status="${lookup.cover_status}" coverage_invalid=${lookup.coverage_invalid} (callId=${callId})`
+                        );
+                        openaiWs.send(
+                          JSON.stringify({
+                            type: "conversation.item.create",
+                            item: {
+                              type: "message",
+                              role: "system",
+                              content: [{ type: "input_text", text: vehicleEvent }],
+                            },
+                          })
+                        );
+                        console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=true (callId=${callId})`);
+                        scheduleUserResponseCreate("system-event", 50);
+                      } else {
+                        const vehicleEvent =
+                          `[SYSTEM EVENT: vehicle_lookup_result] match=false submitted_reg="${lookup.submitted_reg}". ` +
+                          `Internal note only — do NOT read tags/field names aloud. ` +
+                          `Do NOT continue normal location/callback/partner route. ` +
+                          `Tell the caller the vehicle was not found, that a human will contact them in 5–10 minutes, ` +
+                          `and then call end_call if the tool is available. Do NOT silently hang up.`;
+                        console.log(
+                          `[IIZI-StrictLookup] match=false submitted_reg="${lookup.submitted_reg}" normalized_reg="${lookup.normalized_reg}" result_count=${lookup.result_count} (callId=${callId})`
+                        );
+                        openaiWs.send(
+                          JSON.stringify({
+                            type: "conversation.item.create",
+                            item: {
+                              type: "message",
+                              role: "system",
+                              content: [{ type: "input_text", text: vehicleEvent }],
+                            },
+                          })
+                        );
+                        console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=false (callId=${callId})`);
+                        scheduleUserResponseCreate("system-event", 50);
+                      }
+                    }
                   }
                 }
               },
