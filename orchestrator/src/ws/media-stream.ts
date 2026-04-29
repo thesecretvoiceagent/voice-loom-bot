@@ -1958,6 +1958,28 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(
                 `[MediaStream] send_sms selected template requested="${requestedName}" found=${Boolean(tpl)} trigger="during" (callId=${callId})`
               );
+              if (tpl && smsSentNames.has(tpl.name)) {
+                console.warn(
+                  `[MediaStream] send_sms duplicate blocked callId=${callId} template_name="${tpl.name}" sentTemplates=[${Array.from(smsSentNames).join(", ")}] twilio_send_skipped=true`
+                );
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: true,
+                        already_sent: true,
+                        message:
+                          "SMS template already sent for this call. Do not repeat the sent confirmation. Continue waiting for the caller or the relevant system event.",
+                      }),
+                    },
+                  })
+                );
+                scheduleUserResponseCreate("tool-result", 50);
+                break;
+              }
 
               let result: { ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string };
               let bodyForLog = "";
