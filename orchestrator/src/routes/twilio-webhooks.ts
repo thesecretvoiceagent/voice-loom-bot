@@ -64,7 +64,10 @@ twilioWebhookRouter.post("/voice", async (req: Request, res: Response) => {
     }
   }
 
-  const wsBase = config.publicWsBaseUrl || config.publicBaseUrl.replace("https://", "wss://");
+  const wsBase = config.publicWsBaseUrl
+    || config.publicBaseUrl
+      .replace(/^https:\/\//i, "wss://")
+      .replace(/^http:\/\//i, "ws://");
   const streamUrl = `${wsBase}/twilio/stream`;
   const calledNumber = req.body?.To || "";
   const fromNumber = req.body?.From || "";
@@ -91,7 +94,11 @@ twilioWebhookRouter.post("/voice", async (req: Request, res: Response) => {
   </Connect>
 </Response>`;
 
+  if (!streamUrl.startsWith("wss://")) {
+    console.warn(`[${correlationId}] Twilio stream URL is not secure wss:// (${streamUrl}). Public WS URL should be wss-reachable from Twilio.`);
+  }
   console.log(`[${correlationId}] Returning TwiML with stream → ${streamUrl}`);
+  console.log(`[${correlationId}] TwiML payload:\n${twiml}`);
   return res.type("text/xml").send(twiml);
 });
 

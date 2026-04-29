@@ -323,6 +323,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let twilioStopReceived = false;
   let twilioGreetingMarkReceived = false;
   let firstCallerMediaAfterGreetingAt: string | null = null;
+  let firstInboundAudioForwardedToOpenAiAt: string | null = null;
   let conversationItemCreatedCount = 0;
   let lastSessionConfigSent: Record<string, unknown> | null = null;
   let loadedAgentName = "(none)";
@@ -1829,7 +1830,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
-          case "response.audio.done": {
+          case "response.audio.done":
+          case "response.output_audio.done": {
             const responseId = event.response_id || activeResponseId || null;
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
               break;
@@ -2208,6 +2210,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               audio: msg.media.payload,
             }));
             twilioInboundFramesForwarded += 1;
+            if (!firstInboundAudioForwardedToOpenAiAt) {
+              firstInboundAudioForwardedToOpenAiAt = new Date().toISOString();
+              console.log(
+                `[Diag] first inbound audio forwarded to OpenAI at=${firstInboundAudioForwardedToOpenAiAt} payloadB64Len=${msg.media?.payload?.length || 0} (callId=${callId})`
+              );
+            }
           } else if (twilioInboundFrames % 50 === 0) {
             console.warn(`[Diag] Cannot forward inbound media: openaiState=${openaiWs?.readyState ?? "null"} sessionConfigured=${sessionConfigured} (callId=${callId})`);
           }
