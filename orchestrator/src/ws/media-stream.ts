@@ -462,6 +462,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let activeResponseInboundTranscriptSeq = 0;
   let activeResponseTwilioChunks = 0;
   let activeResponseTwilioBytes = 0;
+  let bargeInTraceSeq = 0;
 
   const diagState = () =>
     `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
@@ -511,6 +512,36 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       withinGraceWindow ||
       withinExplicitProtectedWindow
     );
+  };
+
+  const bargeInTrace = (
+    action: string,
+    extra?: Record<string, string | number | boolean | null | undefined>
+  ) => {
+    bargeInTraceSeq += 1;
+    const state = {
+      callId,
+      streamSid: streamSid || null,
+      seq: bargeInTraceSeq,
+      ts: new Date().toISOString(),
+      action,
+      greetingInProgress,
+      uninterruptibleGreetingEnabled,
+      antiBargeinEnabled,
+      aiIsSpeaking,
+      activeResponseId: activeResponseId || null,
+      activeResponseReason,
+      responsePlaybackMarkName: responsePlaybackMarkName || null,
+      responseDoneReceived,
+      responseAudioDone,
+      responseHasAudio,
+      activeResponseTwilioChunks,
+      activeResponseTwilioBytes,
+      inboundAudioCooldownLeftMs: Math.max(0, inboundAudioCooldownUntil - Date.now()),
+      assistantPlaybackProtectedUntilMs,
+      isProtected: isAssistantPlaybackProtected(),
+    };
+    console.log(`[BargeInTrace] ${JSON.stringify(extra ? { ...state, ...extra } : state)}`);
   };
 
   const OCCUPANT_REQUIRED_TRANSCRIPT_TRIGGERS = [
@@ -792,6 +823,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           transcriptText: recoveryTranscriptText,
           timer: null,
         };
+        bargeInTrace("response_cancel_send", {
+          source: "triggerInboundTranscriptRecovery",
+          reason,
+          failedResponseId: failedResponseId || null,
+        });
         openaiWs.send(JSON.stringify({ type: "response.cancel" }));
         console.warn(`[Diag-InboundTurn] response.cancel sent for failed no-audio responseId=${failedResponseId} seq=${latestCompletedInboundTranscript.seq} (callId=${callId})`);
       } catch (err) {
@@ -811,7 +847,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     activeResponseTwilioChunks = 0;
     activeResponseTwilioBytes = 0;
     aiIsSpeaking = false;
+    bargeInTrace("set_ai_is_speaking", {
+      value: false,
+      source: "triggerInboundTranscriptRecovery",
+      shouldCancelActiveResponse,
+    });
     ignoreAudioUntilNextResponse = shouldCancelActiveResponse;
+    bargeInTrace("set_ignore_audio_until_next_response", {
+      value: shouldCancelActiveResponse,
+      source: "triggerInboundTranscriptRecovery",
+    });
     const sendRecoveryResponse = () => {
       if (!latestCompletedInboundTranscript?.text || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
       injectInboundTranscriptAsUserText(latestCompletedInboundTranscript.text, reason, latestCompletedInboundTranscript.seq);
@@ -944,8 +989,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     pendingRecoveryCooldownMs = 0;
 
     resetResponseState();
+    bargeInTrace("reset_response_state", { source, phase: "maybeCompleteAiTurn" });
     ignoreAudioUntilNextResponse = false;
+    bargeInTrace("set_ignore_audio_until_next_response", { value: false, source });
     aiIsSpeaking = false;
+    bargeInTrace("set_ai_is_speaking", { value: false, source });
     antiBargeInClearSentForSpeakingSegment = false;
     assistantPlaybackProtectedUntilMs = Math.max(assistantPlaybackProtectedUntilMs, Date.now() + 350);
     console.log(`[BargeIn] assistant playback grace started callId=${callId} responseId=${completedResponseId || "none"} protectedUntilMs=${assistantPlaybackProtectedUntilMs}`);
@@ -1454,8 +1502,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     sessionConfigured = false;
     pendingInitialResponse = false;
     resetResponseState();
+    bargeInTrace("reset_response_state", { source: "connectToOpenAI:init" });
     ignoreAudioUntilNextResponse = false;
+    bargeInTrace("set_ignore_audio_until_next_response", { value: false, source: "connectToOpenAI:init" });
     aiIsSpeaking = false;
+    bargeInTrace("set_ai_is_speaking", { value: false, source: "connectToOpenAI:init" });
     inboundAudioCooldownUntil = 0;
     lastAssistantTranscript = "";
     repeatedAssistantTranscriptCount = 0;
@@ -1829,6 +1880,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               activeResponseTwilioChunks = 0;
               activeResponseTwilioBytes = 0;
               aiIsSpeaking = false;
+              bargeInTrace("set_ai_is_speaking", {
+                value: false,
+                source: "response.cancelled",
+                responseId: responseId || null,
+              });
               console.warn(`[Diag-InboundTurn] response.cancelled received; sending recovery response seq=${pending.transcriptSeq} failedResponseId=${pending.failedResponseId || "none"} reason=${pending.reason} (callId=${callId})`);
               injectInboundTranscriptAsUserText(pending.transcriptText, pending.reason, pending.transcriptSeq);
               sendResponseCreate(pending.reason, { modalities: ["text", "audio"] });
@@ -1844,6 +1900,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 `[MediaStream] assistant_cancelled reason=sms_pending templateName="${smsPendingTemplate}" callId=${callId} responseId=${responseId}`
               );
               try {
+                bargeInTrace("response_cancel_send", {
+                  source: "audio_delta_sms_pending_guard",
+                  template: smsPendingTemplate,
+                  responseId,
+                });
                 openaiWs.send(JSON.stringify({ type: "response.cancel" }));
               } catch (err) {
                 console.error(`[MediaStream] response.cancel failed during sms_pending guard (callId=${callId}):`, err);
@@ -1869,6 +1930,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               responseHasAudio = true;
               lastAssistantAudioAtMs = Date.now();
               assistantPlaybackProtectedUntilMs = lastAssistantAudioAtMs + ASSISTANT_PLAYBACK_GRACE_MS;
+              const deltaCount =
+                event.type === "response.output_audio.delta"
+                  ? assistantOutputAudioDeltaCount
+                  : assistantAudioDeltaCount;
+              if (deltaCount <= 3 || deltaCount % 25 === 0) {
+                bargeInTrace("audio_delta_forward_progress", {
+                  source: event.type,
+                  responseId: responseId || null,
+                  deltaCount,
+                  deltaBytes: Buffer.byteLength(event.delta, "base64"),
+                });
+              }
             }
             if (
               hasUsableAudioDelta &&
@@ -2322,6 +2395,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 if (activeResponseId && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                   const responseId = activeResponseId;
                   try {
+                    bargeInTrace("response_cancel_send", {
+                      source: "send_sms_pending_guard",
+                      template: tpl.name,
+                      responseId,
+                    });
                     openaiWs.send(JSON.stringify({ type: "response.cancel" }));
                     console.warn(
                       `[MediaStream] assistant_cancelled reason=sms_pending templateName="${tpl.name}" callId=${callId} responseId=${responseId}`
@@ -2459,6 +2537,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
 
             responseAudioDone = true;
+            bargeInTrace("response_audio_done", { eventType: event.type, responseId: responseId || null });
 
             if (!responseHasAudio) {
               if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
@@ -2472,6 +2551,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
             if (!responsePlaybackMarkName && streamSid && twilioWs.readyState === WebSocket.OPEN) {
               responsePlaybackMarkName = `response-playback:${responseId}:${Date.now()}`;
+              bargeInTrace("twilio_mark_send", {
+                source: "response.audio.done",
+                mark: responsePlaybackMarkName,
+                responseId: responseId || null,
+              });
               console.log(`[MediaStream] Response audio complete, waiting for Twilio playback mark (callId=${callId}, responseId=${responseId}, mark=${responsePlaybackMarkName})`);
               twilioWs.send(JSON.stringify({
                 event: "mark",
@@ -2513,6 +2597,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               activeResponseTwilioChunks = 0;
               activeResponseTwilioBytes = 0;
               aiIsSpeaking = false;
+              bargeInTrace("set_ai_is_speaking", {
+                value: false,
+                source: "response.done:pendingRecoveryAfterCancel",
+                responseId: responseId || null,
+              });
               console.warn(`[Diag-InboundTurn] cancelled/stalled response.done received; sending recovery response seq=${pending.transcriptSeq} failedResponseId=${pending.failedResponseId || "none"} reason=${pending.reason} (callId=${callId})`);
               injectInboundTranscriptAsUserText(pending.transcriptText, pending.reason, pending.transcriptSeq);
               sendResponseCreate(pending.reason, { modalities: ["text", "audio"] });
@@ -2535,6 +2624,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             lastResponseOutputTokens = outputTokens;
 
             responseDoneReceived = true;
+            bargeInTrace("response_done", {
+              responseId: responseId || null,
+              finishReason: finishReason || null,
+              outputTokens: outputTokens ?? null,
+            });
             responseDoneCount += 1;
             console.log(
               `[Diag] response.done #${responseDoneCount} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} hasAudio=${responseHasAudio} audioDeltas=${assistantAudioDeltaCount} (callId=${callId})`
@@ -2555,6 +2649,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             armCallerSpeechWatchdog("speech-started");
             console.log(`[Diag] speech_started #${speechStartedCount} (callId=${callId}) state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},antiBargein=${antiBargeinEnabled}}`);
             const assistantPlaybackProtected = isAssistantPlaybackProtected();
+            bargeInTrace("speech_started", {
+              assistantPlaybackProtected,
+              speechStartedCount,
+            });
             if (assistantPlaybackProtected) {
               console.warn(
                 `[BargeIn] protected assistant response from interruption callId=${callId} responseId=${activeResponseId || "none"}`
@@ -2577,8 +2675,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             console.log(`[MediaStream] Speech started (callId=${callId}, responseId=${activeResponseId})`);
             aiIsSpeaking = false;
+            bargeInTrace("set_ai_is_speaking", { value: false, source: "speech_started:allow_barge_in" });
             antiBargeInClearSentForSpeakingSegment = false;
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+              bargeInTrace("twilio_clear_send", {
+                source: "speech_started:allow_barge_in",
+                reason: "caller_interrupt",
+              });
               twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
             }
             break;
@@ -2879,6 +2982,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         case "mark": {
           const markName = msg.mark?.name || "";
           if (markName && responsePlaybackMarkName && markName === responsePlaybackMarkName) {
+            bargeInTrace("twilio_mark_received", {
+              mark: markName,
+              source: "twilioWs:mark",
+            });
             if (greetingInProgress) twilioGreetingMarkReceived = true;
             console.log(`[Diag-Twilio] twilio.mark greeting received=${greetingInProgress ? "yes" : "no"} mark=${markName} (callId=${callId})`);
             if (callDirection === "inbound" && !greetingInProgress) {
