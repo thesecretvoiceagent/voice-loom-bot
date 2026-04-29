@@ -386,6 +386,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let responseAudioDeltaLogged = false;
   let lastAssistantAudioAtMs = 0;
   const ASSISTANT_PLAYBACK_GRACE_MS = 1000;
+  let assistantPlaybackProtectedUntilMs = 0;
   let markFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   // ---- Diagnostic counters (A–E from runbook) ----
@@ -395,6 +396,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let twilioInboundFramesDropCooldown = 0;
   let twilioInboundFramesDropAntiBargein = 0;
   let antiBargeInClearSentForSpeakingSegment = false;
+  let antiBargeInWasBlockingMedia = false;
+  let lastProtectionWarningAtMs = 0;
   let twilioInboundFramesForwarded = 0;
   let twilioInboundFramesAfterGreeting = 0;
   let firstInboundAudioAfterGreetingLogged = false;
@@ -492,14 +495,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const isAssistantPlaybackProtected = () => {
     if (!antiBargeinEnabled) return false;
+    const now = Date.now();
+    const completedResponseConditions = responseDoneReceived && (responseAudioDone || !responseHasAudio);
     const withinGraceWindow =
-      lastAssistantAudioAtMs > 0 && Date.now() - lastAssistantAudioAtMs < ASSISTANT_PLAYBACK_GRACE_MS;
+      lastAssistantAudioAtMs > 0 && now - lastAssistantAudioAtMs < ASSISTANT_PLAYBACK_GRACE_MS;
+    const withinExplicitProtectedWindow = now < assistantPlaybackProtectedUntilMs;
+    if (completedResponseConditions && !withinGraceWindow && !withinExplicitProtectedWindow) {
+      return false;
+    }
+    const activeResponseStillProducingAudio =
+      Boolean(activeResponseId) && !responseDoneReceived && !responseAudioDone;
     return (
       aiIsSpeaking ||
-      Boolean(activeResponseId) ||
-      Boolean(responsePlaybackMarkName) ||
-      (!responseDoneReceived && (responseHasAudio || !responseAudioDone)) ||
-      withinGraceWindow
+      activeResponseStillProducingAudio ||
+      withinGraceWindow ||
+      withinExplicitProtectedWindow
     );
   };
 
@@ -929,7 +939,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // caller's immediate reply ("tere" / "mul oli avarii"). Echo risk is minimal
     // because the greeting just finished playing and Twilio's mark confirmed it.
     // After normal AI turns we keep the longer cooldown to avoid echo loops.
-    const defaultCooldownMs = greetingInProgress ? 150 : 1200;
+    const defaultCooldownMs = greetingInProgress ? 150 : (antiBargeinEnabled ? 400 : 1200);
     const recoveryCooldownMs = pendingRecoveryCooldownMs || defaultCooldownMs;
     pendingRecoveryCooldownMs = 0;
 
@@ -937,6 +947,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
     antiBargeInClearSentForSpeakingSegment = false;
+    assistantPlaybackProtectedUntilMs = Math.max(assistantPlaybackProtectedUntilMs, Date.now() + 350);
+    console.log(`[BargeIn] assistant playback grace started callId=${callId} responseId=${completedResponseId || "none"} protectedUntilMs=${assistantPlaybackProtectedUntilMs}`);
     console.log(`[BargeIn] assistant_speaking=false callId=${callId}`);
     console.log(`[BargeIn] listening enabled after assistant speech callId=${callId}`);
     startInboundAudioCooldown(recoveryCooldownMs, source);
@@ -1856,6 +1868,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (hasUsableAudioDelta) {
               responseHasAudio = true;
               lastAssistantAudioAtMs = Date.now();
+              assistantPlaybackProtectedUntilMs = lastAssistantAudioAtMs + ASSISTANT_PLAYBACK_GRACE_MS;
             }
             if (
               hasUsableAudioDelta &&
@@ -2822,8 +2835,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             break;
           }
-          // Don't forward audio when anti-barge-in is active and AI is speaking
+          // Don't forward audio when anti-barge-in protection is active
           if (isAssistantPlaybackProtected()) {
+            antiBargeInWasBlockingMedia = true;
+            const completedResponseConditions = responseDoneReceived && (responseAudioDone || !responseHasAudio);
+            if (completedResponseConditions && Date.now() - lastProtectionWarningAtMs > 1000) {
+              lastProtectionWarningAtMs = Date.now();
+              console.warn(
+                `[BargeIn] WARNING protection active after completed response callId=${callId} state{aiIsSpeaking=${aiIsSpeaking}, activeResponseId=${activeResponseId || "none"}, responsePlaybackMarkName=${responsePlaybackMarkName || "none"}, responseDoneReceived=${responseDoneReceived}, responseAudioDone=${responseAudioDone}, responseHasAudio=${responseHasAudio}, protectedUntilMs=${assistantPlaybackProtectedUntilMs}}`
+              );
+            }
             twilioInboundFramesDropAntiBargein += 1;
             if (!antiBargeInClearSentForSpeakingSegment && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
               openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
@@ -2833,6 +2854,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(`[BargeIn] inbound ignored reason=anti_barge_in_assistant_speaking callId=${callId}`);
             }
             break;
+          }
+          if (antiBargeInWasBlockingMedia) {
+            antiBargeInWasBlockingMedia = false;
+            console.log(`[BargeIn] inbound listening resumed callId=${callId}`);
           }
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN && sessionConfigured) {
             openaiWs.send(JSON.stringify({
