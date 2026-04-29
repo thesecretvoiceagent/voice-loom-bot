@@ -2,10 +2,11 @@ import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 
+type FormMode = "registration" | "callback";
 type SubmitState =
   | { kind: "idle" }
   | { kind: "loading" }
-  | { kind: "success"; reg: string; phone: string }
+  | { kind: "success"; reg?: string; phone?: string; mode: FormMode }
   | { kind: "error"; message: string };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -14,10 +15,15 @@ export default function FormSubmit() {
   const [params] = useSearchParams();
   const caseId = params.get("caseId") || "";
   const token = params.get("token") || "";
+  const modeParam = (params.get("mode") || "").toLowerCase();
+  const mode: FormMode = modeParam === "callback" ? "callback" : "registration";
+  const isRegistrationMode = mode === "registration";
+  const isCallbackMode = mode === "callback";
 
   const [regNo, setRegNo] = useState("");
   const [phone, setPhone] = useState("");
   const [submit, setSubmit] = useState<SubmitState>({ kind: "idle" });
+  console.log(`[FormSubmit] mode detected mode=${mode} caseId=${caseId}`);
 
   const paramsValid = useMemo(
     () => UUID_RE.test(caseId) && token.length > 0,
@@ -31,11 +37,11 @@ export default function FormSubmit() {
     const reg = regNo.trim();
     const ph = phone.trim();
 
-    if (!reg) {
+    if (isRegistrationMode && !reg) {
       setSubmit({ kind: "error", message: "Sisesta auto registreerimisnumber." });
       return;
     }
-    if (!ph) {
+    if (isCallbackMode && !ph) {
       setSubmit({ kind: "error", message: "Sisesta tagasihelistamise number." });
       return;
     }
@@ -51,13 +57,14 @@ export default function FormSubmit() {
     setSubmit({ kind: "loading" });
 
     try {
+      const body: Record<string, string> = { caseId, token };
+      if (isRegistrationMode) body.reg_no = reg;
+      if (isCallbackMode) body.callback_phone_number = ph;
+      console.log(
+        `[FormSubmit] submitting mode=${mode} has_reg=${Boolean(body.reg_no)} has_phone=${Boolean(body.callback_phone_number)} caseId=${caseId}`
+      );
       const { data, error } = await supabase.functions.invoke("form-submit", {
-        body: {
-          caseId,
-          token,
-          reg_no: reg,
-          callback_phone_number: ph,
-        },
+        body,
       });
 
       if (error) {
@@ -71,6 +78,7 @@ export default function FormSubmit() {
 
       setSubmit({
         kind: "success",
+        mode,
         reg: data.reg_no || reg,
         phone: data.callback_phone_number || ph,
       });
@@ -99,10 +107,12 @@ export default function FormSubmit() {
     <div className="bg-background flex flex-col" style={{ minHeight: "100dvh" }}>
       <header className="px-5 pt-6 pb-3 space-y-2 shrink-0">
         <h1 className="text-2xl font-semibold text-foreground leading-tight">
-          Sisesta oma andmed
+          {isRegistrationMode ? "Sisesta auto registreerimisnumber" : "Sisesta tagasihelistamise number"}
         </h1>
         <p className="text-sm text-muted-foreground">
-          AI assistent loeb need vestluses tagasi ja kasutab edaspidi.
+          {isRegistrationMode
+            ? "AI assistent loeb registreerimisnumbri vestluses tagasi."
+            : "AI assistent loeb telefoni numbri vestluses tagasi."}
         </p>
       </header>
 
@@ -110,43 +120,47 @@ export default function FormSubmit() {
         onSubmit={handleSubmit}
         className="flex-1 px-5 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-4"
       >
-        <div className="space-y-1.5">
-          <label htmlFor="reg" className="text-sm font-medium text-foreground">
-            Auto registreerimisnumber
-          </label>
-          <input
-            id="reg"
-            type="text"
-            inputMode="text"
-            autoCapitalize="characters"
-            autoCorrect="off"
-            spellCheck={false}
-            value={regNo}
-            onChange={(e) => setRegNo(e.target.value.toUpperCase())}
-            placeholder="nt 484DLC"
-            maxLength={12}
-            disabled={disabled}
-            className="w-full h-12 px-3 rounded-md bg-muted border border-border text-base text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary tracking-wider font-mono"
-          />
-        </div>
+        {isRegistrationMode && (
+          <div className="space-y-1.5">
+            <label htmlFor="reg" className="text-sm font-medium text-foreground">
+              Auto registreerimisnumber
+            </label>
+            <input
+              id="reg"
+              type="text"
+              inputMode="text"
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
+              value={regNo}
+              onChange={(e) => setRegNo(e.target.value.toUpperCase())}
+              placeholder="nt 484DLC"
+              maxLength={12}
+              disabled={disabled}
+              className="w-full h-12 px-3 rounded-md bg-muted border border-border text-base text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary tracking-wider font-mono"
+            />
+          </div>
+        )}
 
-        <div className="space-y-1.5">
-          <label htmlFor="phone" className="text-sm font-medium text-foreground">
-            Tagasihelistamise number
-          </label>
-          <input
-            id="phone"
-            type="tel"
-            inputMode="tel"
-            autoComplete="tel"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="nt +372 5555 5555"
-            maxLength={20}
-            disabled={disabled}
-            className="w-full h-12 px-3 rounded-md bg-muted border border-border text-base text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-          />
-        </div>
+        {isCallbackMode && (
+          <div className="space-y-1.5">
+            <label htmlFor="phone" className="text-sm font-medium text-foreground">
+              Tagasihelistamise number
+            </label>
+            <input
+              id="phone"
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="nt +372 5555 5555"
+              maxLength={20}
+              disabled={disabled}
+              className="w-full h-12 px-3 rounded-md bg-muted border border-border text-base text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+            />
+          </div>
+        )}
 
         {token === "preview" && (
           <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
@@ -170,9 +184,11 @@ export default function FormSubmit() {
           >
             <div className="font-semibold">Andmed saadetud</div>
             <div className="text-sm opacity-90">
-              Reg: <span className="font-mono">{submit.reg}</span>
-              <br />
-              Tel: <span className="font-mono">{submit.phone}</span>
+              {submit.mode === "registration" ? (
+                <>Reg: <span className="font-mono">{submit.reg}</span></>
+              ) : (
+                <>Tel: <span className="font-mono">{submit.phone}</span></>
+              )}
             </div>
             <div className="text-xs opacity-75">
               AI assistent loeb need sulle vestluses tagasi.
@@ -181,7 +197,7 @@ export default function FormSubmit() {
         ) : (
           <button
             type="submit"
-            disabled={disabled || !regNo.trim() || !phone.trim()}
+            disabled={disabled || (isRegistrationMode ? !regNo.trim() : !phone.trim())}
             className="w-full h-14 rounded-lg bg-primary text-primary-foreground text-lg font-semibold shadow-md active:scale-[0.99] transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {submit.kind === "loading" ? "Saadan…" : "Saada"}

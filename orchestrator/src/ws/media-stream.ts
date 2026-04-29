@@ -949,6 +949,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }
     }
     const tokenSecret = process.env.LOCATION_TOKEN_SECRET || "";
+    const maskToken = (token: string) =>
+      token.length > 10 ? `${token.slice(0, 6)}...${token.slice(-4)}` : "***";
     if (callId && tokenSecret) {
       try {
         const crypto = await import("crypto");
@@ -958,8 +960,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         // Detect by extension/path: if base ends with a host (no path), use /location.
         const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
         const path = isLovableLike ? "/location" : "/index.html";
-        callVariables.location_link = `${locationPageBase}${path}?caseId=${encodeURIComponent(callId)}&token=${locToken}`;
-        console.log(`[MediaStream] location_link built: ${callVariables.location_link}`);
+        const baseLocationUrl = `${locationPageBase}${path}?caseId=${encodeURIComponent(callId)}`;
+        callVariables.location_link = `${baseLocationUrl}&token=${locToken}`;
+        console.log(`[MediaStream] link generated type=location caseId=${callId} token=${maskToken(locToken)} url=${baseLocationUrl}&token=<masked>`);
       } catch (err) {
         console.error(`[MediaStream] Failed to build location_link:`, err);
       }
@@ -979,8 +982,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const formToken = crypto.createHmac("sha256", tokenSecret).update(callId).digest("hex");
         const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
         const formPath = isLovableLike ? "/form" : "/form.html";
-        callVariables.form_link = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}&token=${formToken}`;
-        console.log(`[MediaStream] form_link built: ${callVariables.form_link}`);
+        const formBase = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}`;
+        callVariables.form_link = `${formBase}&token=${formToken}&mode=registration`;
+        // Backward-compatible alias only; NOT a separate 4th link.
+        callVariables.form1_link = callVariables.form_link;
+        callVariables.form2_link = `${formBase}&token=${formToken}&mode=callback`;
+        console.log(`[MediaStream] link generated type=registration caseId=${callId} token=${maskToken(formToken)} url=${formBase}&token=<masked>&mode=registration`);
+        console.log(`[MediaStream] link generated type=callback caseId=${callId} token=${maskToken(formToken)} url=${formBase}&token=<masked>&mode=callback`);
       } catch (err) {
         console.error(`[MediaStream] Failed to build form_link:`, err);
       }
@@ -1783,6 +1791,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               // We NEVER use AI-supplied content — only the verbatim configured template.
               const tpl = smsMessages.find(
                 (m) => m.trigger === "during" && m.name === requestedName,
+              );
+              console.log(
+                `[MediaStream] send_sms selected template requested="${requestedName}" found=${Boolean(tpl)} trigger="during" (callId=${callId})`
               );
 
               let result: { ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string };
