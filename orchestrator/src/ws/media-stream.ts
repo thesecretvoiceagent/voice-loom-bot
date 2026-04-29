@@ -334,6 +334,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let lastLoggedSmsAudioAfterResultAt = 0;
   let locationStatus: "unknown" | "pending" | "confirmed" | "failed" = "unknown";
   let locationConfirmedValue: { address?: string; lat?: number | null; lon?: number | null } | null = null;
+  let incidentNeedsOccupantCount = false;
+  let occupantCountStatus: "unknown" | "pending" | "confirmed" = "unknown";
+  let occupantCountValue: string | null = null;
   let inboundSmsChannel: RealtimeChannel | null = null;
   let locationConfirmChannel: RealtimeChannel | null = null;
   let resolvedAgentIdRef: string | null = null;
@@ -481,6 +484,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       `[MediaStream] locationStatus transition from=${prev} to=${next} reason=${reason} address="${locationConfirmedValue?.address || ""}" lat=${locationConfirmedValue?.lat ?? "null"} lon=${locationConfirmedValue?.lon ?? "null"} (callId=${callId})`
     );
   };
+
+  const OCCUPANT_REQUIRED_TRANSCRIPT_TRIGGERS = [
+    "avarii",
+    "õnnetus",
+    "kokkupõrge",
+    "accident",
+    "crash",
+    "puksiir",
+    "pukseerimine",
+    "tow",
+    "towing",
+    "auto ei käivitu",
+    "ei käivitu",
+    "auto ei liigu",
+    "sõiduk ei liigu",
+    "auto on kinni",
+    "kinni",
+    "stuck",
+    "stranded",
+    "cannot move",
+    "does not move",
+    "won't start",
+  ] as const;
 
   const diagnoseBreakPoint = () => {
     if (twilioInboundFramesAfterGreeting === 0) return "Twilio inbound media after greeting is 0: Twilio stream/greeting mark/gating is broken.";
@@ -1582,6 +1608,40 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         },
       });
 
+      tools.push({
+        type: "function",
+        name: "mark_occupant_count_required",
+        description:
+          "Call this immediately after classifying a case as accident, towing, stranded, auto ei käivitu, auto ei liigu, stuck, or vehicle cannot move. This marks occupant count as mandatory before callback collection.",
+        parameters: {
+          type: "object",
+          properties: {
+            reason: {
+              type: "string",
+              description: "Short reason why occupant count is mandatory for this case.",
+            },
+          },
+          required: ["reason"],
+        },
+      });
+
+      tools.push({
+        type: "function",
+        name: "confirm_occupant_count",
+        description:
+          "Use only after the assistant asked exactly 'Mitu inimest on autos koos juhiga?' and the caller answered.",
+        parameters: {
+          type: "object",
+          properties: {
+            count: {
+              type: "string",
+              description: "Occupant count provided by the caller, including the driver.",
+            },
+          },
+          required: ["count"],
+        },
+      });
+
       // Clamp temperature to OpenAI Realtime's valid range [0.6, 1.2] — values outside
       // this range can cause the model to emit malformed audio (heard as static/clicks).
       const rawTemp = agentConfig ? agentTemperature : 0.6;
@@ -1895,6 +1955,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             transcriptLines.push(`[User]: ${event.transcript}`);
             if (typeof event.transcript === "string" && event.transcript.trim().length > 0) {
               userUtteranceCount += 1;
+              const callerSpeechLower = event.transcript.toLowerCase();
+              if (!incidentNeedsOccupantCount) {
+                const matchedTrigger = OCCUPANT_REQUIRED_TRANSCRIPT_TRIGGERS.find((kw) => callerSpeechLower.includes(kw));
+                if (matchedTrigger) {
+                  incidentNeedsOccupantCount = true;
+                  occupantCountStatus = "pending";
+                  console.log(
+                    `[OccupantGate] required=true source=transcript reason=${matchedTrigger} callId=${callId}`
+                  );
+                }
+              }
             }
             // Real user speech resets the repeat counter.
             lastAssistantTranscript = "";
@@ -2023,6 +2094,63 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               transcriptLines.push(`[System]: lookup_vehicle(${JSON.stringify(args)}) → ${vehicle ? vehicle.reg_no + " " + vehicle.owner_name : "not found"}`);
             }
 
+            if (fnName === "mark_occupant_count_required") {
+              let args: any = {};
+              try { args = JSON.parse(event.arguments || "{}"); } catch {}
+              const reason = typeof args.reason === "string" ? args.reason.trim() : "";
+              incidentNeedsOccupantCount = true;
+              if (occupantCountStatus !== "confirmed") {
+                occupantCountStatus = "pending";
+              }
+              console.log(
+                `[OccupantGate] required=true source=tool reason=${reason || "unspecified"} callId=${callId}`
+              );
+              openaiWs!.send(JSON.stringify({
+                type: "conversation.item.create",
+                item: {
+                  type: "function_call_output",
+                  call_id: event.call_id,
+                  output: JSON.stringify({ success: true }),
+                },
+              }));
+              scheduleUserResponseCreate("tool-result", 50);
+            }
+
+            if (fnName === "confirm_occupant_count") {
+              let args: any = {};
+              try { args = JSON.parse(event.arguments || "{}"); } catch {}
+              const count = typeof args.count === "string" ? args.count.trim() : "";
+              if (!count) {
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({
+                      success: false,
+                      error: "invalid_occupant_count",
+                      message: "Occupant count is required before callback collection.",
+                    }),
+                  },
+                }));
+                scheduleUserResponseCreate("tool-result", 50);
+              } else {
+                incidentNeedsOccupantCount = true;
+                occupantCountStatus = "confirmed";
+                occupantCountValue = count;
+                console.log(`[OccupantGate] confirmed count=${count} callId=${callId}`);
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({ success: true }),
+                  },
+                }));
+                scheduleUserResponseCreate("tool-result", 50);
+              }
+            }
+
             if (fnName === "send_sms") {
               let args: any = {};
               try { args = JSON.parse(event.arguments || "{}"); } catch (e) {
@@ -2065,6 +2193,33 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 );
                 console.log(
                   `[MediaStream] function_call_output sent tool=send_sms template="${tpl.name}" success=true already_sent=true call_id=${event.call_id} (callId=${callId})`
+                );
+                scheduleUserResponseCreate("tool-result", 50);
+                break;
+              }
+
+              if (
+                requestedName === "Retrieval of callback number through SMS" &&
+                incidentNeedsOccupantCount &&
+                occupantCountStatus !== "confirmed"
+              ) {
+                console.warn(
+                  `[OccupantGate] callback blocked occupant_count_required status=${occupantCountStatus} callId=${callId}`
+                );
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "occupant_count_required",
+                        message:
+                          "Before callback collection, ask exactly: Mitu inimest on autos koos juhiga? Then call confirm_occupant_count after the caller answers.",
+                      }),
+                    },
+                  })
                 );
                 scheduleUserResponseCreate("tool-result", 50);
                 break;
