@@ -324,8 +324,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let agentAnalysisPrompt: string = "";
   let agentKnowledgeBase: any[] = [];
   type SmsMessage = { id?: string; name: string; description?: string; content: string; trigger: "during" | "after"; order?: number };
+  type SmsToolStateValue = "not_requested" | "pending" | "sent" | "failed" | "already_sent";
   let smsMessages: SmsMessage[] = [];
   const smsSentNames = new Set<string>();
+  const smsToolState = new Map<string, SmsToolStateValue>();
+  let smsPendingTemplate: string | null = null;
+  let lastSmsToolResultAt = 0;
+  let lastSmsToolResultTemplate: string | null = null;
+  let lastLoggedSmsAudioAfterResultAt = 0;
+  let locationStatus: "unknown" | "pending" | "confirmed" | "failed" = "unknown";
+  let locationConfirmedValue: { address?: string; lat?: number | null; lon?: number | null } | null = null;
   let inboundSmsChannel: RealtimeChannel | null = null;
   let locationConfirmChannel: RealtimeChannel | null = null;
   let resolvedAgentIdRef: string | null = null;
@@ -451,6 +459,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const d = getDeploymentIdentity();
     console.log(`[Diag-Deploy] callId=${callId} gitSha=${d.gitSha} railwayDeploymentId=${d.railwayDeploymentId} NODE_ENV=${d.nodeEnv} realtimeModel=${d.realtimeModel}`);
     console.log(`[Diag-Deploy] callId=${callId} twilioVoiceWebhook=${d.expectedTwilioVoiceWebhook} expectedPublicBaseUrl=${d.publicBaseUrl} expectedStreamUrl=${d.expectedTwilioStreamUrl}`);
+  };
+
+  const setSmsToolState = (templateName: string, next: SmsToolStateValue, reason: string) => {
+    const prev = smsToolState.get(templateName) || "not_requested";
+    smsToolState.set(templateName, next);
+    console.log(`[MediaStream] smsToolState transition template="${templateName}" from=${prev} to=${next} reason=${reason} (callId=${callId})`);
+  };
+
+  const setLocationStatus = (
+    next: "unknown" | "pending" | "confirmed" | "failed",
+    reason: string,
+    value?: { address?: string; lat?: number | null; lon?: number | null } | null
+  ) => {
+    const prev = locationStatus;
+    locationStatus = next;
+    if (value !== undefined) {
+      locationConfirmedValue = value;
+    }
+    console.log(
+      `[MediaStream] locationStatus transition from=${prev} to=${next} reason=${reason} address="${locationConfirmedValue?.address || ""}" lat=${locationConfirmedValue?.lat ?? "null"} lon=${locationConfirmedValue?.lon ?? "null"} (callId=${callId})`
+    );
   };
 
   const diagnoseBreakPoint = () => {
@@ -1224,6 +1253,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 if (justLocationConfirmed) {
                   const addr = (row.location_address || "").toString().slice(0, 300);
                   console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
+                  const hasCoordinates =
+                    Number.isFinite(Number(row.location_lat)) && Number.isFinite(Number(row.location_lon));
+                  const hasAddress = Boolean(addr);
+                  if (hasAddress || hasCoordinates) {
+                    setLocationStatus("confirmed", "location_confirmed_realtime", {
+                      address: addr || undefined,
+                      lat: row.location_lat ?? null,
+                      lon: row.location_lon ?? null,
+                    });
+                    console.log(
+                      `[MediaStream] location_confirmed received address="${addr}" lat=${row.location_lat} lon=${row.location_lon} (callId=${callId})`
+                    );
+                  } else {
+                    setLocationStatus("failed", "location_confirmed_realtime_missing_payload", null);
+                  }
                   transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                     const sysMsg = `[SYSTEM EVENT: location_confirmed] address="${addr}" lat=${row.location_lat} lon=${row.location_lon}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just confirmed their location via the SMS link. Read the address back to them naturally in the same language the call is being conducted in and ask for confirmation. Do not offer anything else — only confirm the address.`;
@@ -1521,6 +1565,23 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
       }
 
+      tools.push({
+        type: "function",
+        name: "confirm_manual_location",
+        description:
+          "Use only after manual/verbal location fallback, and only after you have read the address back to the caller and the caller has explicitly confirmed it.",
+        parameters: {
+          type: "object",
+          properties: {
+            address: {
+              type: "string",
+              description: "Caller-confirmed manual address from the live voice conversation.",
+            },
+          },
+          required: ["address"],
+        },
+      });
+
       // Clamp temperature to OpenAI Realtime's valid range [0.6, 1.2] — values outside
       // this range can cause the model to emit malformed audio (heard as static/clicks).
       const rawTemp = agentConfig ? agentTemperature : 0.6;
@@ -1668,6 +1729,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "response.audio.delta":
           case "response.output_audio.delta": {
             const responseId = event.response_id || activeResponseId || null;
+            if (smsPendingTemplate && responseId && responseId === activeResponseId && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+              console.warn(
+                `[MediaStream] assistant_cancelled reason=sms_pending templateName="${smsPendingTemplate}" callId=${callId} responseId=${responseId}`
+              );
+              try {
+                openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+              } catch (err) {
+                console.error(`[MediaStream] response.cancel failed during sms_pending guard (callId=${callId}):`, err);
+              }
+              break;
+            }
             if (ignoreAudioUntilNextResponse) {
               if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
                 console.warn(`[Diag-InboundTurn] audio.delta discarded reason=ignoreAudioUntilNextResponse responseId=${responseId || "none"} seq=${activeResponseInboundTranscriptSeq} type=${event.type} (callId=${callId})`);
@@ -1684,6 +1756,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (event.type === "response.output_audio.delta") assistantOutputAudioDeltaCount += 1;
             else assistantAudioDeltaCount += 1;
             if (hasUsableAudioDelta) responseHasAudio = true;
+            if (
+              hasUsableAudioDelta &&
+              lastSmsToolResultAt > 0 &&
+              lastLoggedSmsAudioAfterResultAt < lastSmsToolResultAt &&
+              lastSmsToolResultTemplate
+            ) {
+              lastLoggedSmsAudioAfterResultAt = Date.now();
+              console.log(
+                `[MediaStream] first assistant audio after tool result template="${lastSmsToolResultTemplate}" responseId=${responseId || "none"} at=${new Date(lastLoggedSmsAudioAfterResultAt).toISOString()} (callId=${callId})`
+              );
+            }
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting" && !responseAudioDeltaLogged && hasUsableAudioDelta) {
               responseAudioDeltaLogged = true;
               console.log(`[Diag-InboundTurn] response.audio.delta first type=${event.type} responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} hasDelta=${!!event.delta} (callId=${callId})`);
@@ -1959,6 +2042,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 `[MediaStream] send_sms selected template requested="${requestedName}" found=${Boolean(tpl)} trigger="during" (callId=${callId})`
               );
               if (tpl && smsSentNames.has(tpl.name)) {
+                setSmsToolState(tpl.name, "already_sent", "duplicate_blocked");
+                lastSmsToolResultAt = Date.now();
+                lastSmsToolResultTemplate = tpl.name;
                 console.warn(
                   `[MediaStream] send_sms duplicate blocked callId=${callId} template_name="${tpl.name}" sentTemplates=[${Array.from(smsSentNames).join(", ")}] twilio_send_skipped=true`
                 );
@@ -1977,24 +2063,79 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     },
                   })
                 );
+                console.log(
+                  `[MediaStream] function_call_output sent tool=send_sms template="${tpl.name}" success=true already_sent=true call_id=${event.call_id} (callId=${callId})`
+                );
                 scheduleUserResponseCreate("tool-result", 50);
                 break;
+              }
+
+              if (requestedName === "Retrieval of callback number through SMS" && locationStatus !== "confirmed") {
+                lastSmsToolResultAt = Date.now();
+                lastSmsToolResultTemplate = requestedName;
+                setSmsToolState(requestedName, "failed", `location_not_confirmed:${locationStatus}`);
+                console.warn(
+                  `[MediaStream] callback blocked because location_not_confirmed status=${locationStatus} template="${requestedName}" (callId=${callId})`
+                );
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "location_not_confirmed",
+                        message:
+                          "Location has not been confirmed. Do not continue to callback. Continue waiting for location confirmation or use manual location fallback.",
+                      }),
+                    },
+                  })
+                );
+                console.log(
+                  `[MediaStream] function_call_output sent tool=send_sms template="${requestedName}" success=false error=location_not_confirmed call_id=${event.call_id} (callId=${callId})`
+                );
+                scheduleUserResponseCreate("tool-result", 50);
+                break;
+              }
+
+              if (tpl) {
+                setSmsToolState(tpl.name, "pending", "twilio_send_started");
+                smsPendingTemplate = tpl.name;
+                if (activeResponseId && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+                  const responseId = activeResponseId;
+                  try {
+                    openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+                    console.warn(
+                      `[MediaStream] assistant_cancelled reason=sms_pending templateName="${tpl.name}" callId=${callId} responseId=${responseId}`
+                    );
+                  } catch (err) {
+                    console.error(`[MediaStream] response.cancel failed during send_sms pending (callId=${callId}):`, err);
+                  }
+                }
               }
 
               let result: { ok: boolean; sid?: string; error?: string; status?: string; errorCode?: number | string };
               let bodyForLog = "";
               if (!recipient) {
                 result = { ok: false, error: "No recipient phone number available for this call" };
+                if (requestedName) setSmsToolState(requestedName, "failed", "missing_recipient");
               } else if (!requestedName) {
                 result = { ok: false, error: "template_name is required" };
               } else if (!tpl) {
                 const allowed = smsMessages.filter((m) => m.trigger === "during").map((m) => m.name).join(", ");
                 result = { ok: false, error: `Unknown template_name "${requestedName}". Allowed: ${allowed || "(none)"}` };
+                setSmsToolState(requestedName, "failed", "unknown_template_name");
               } else {
                 bodyForLog = substituteVarsRef(tpl.content);
                 result = await sendSms(recipient, bodyForLog);
                 if (result.ok) {
                   smsSentNames.add(tpl.name);
+                  setSmsToolState(tpl.name, "sent", "twilio_send_success");
+                  if (smsPendingTemplate === tpl.name) smsPendingTemplate = null;
+                  if (tpl.name === "Asukoha SMS") {
+                    setLocationStatus("pending", "location_sms_sent", null);
+                  }
                   // Persist outbound SMS so we can later correlate inbound replies to this call.
                   persistSmsMessage({
                     call_id: callId || null,
@@ -2007,8 +2148,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     twilio_sid: result.sid || null,
                     status: result.status || "sent",
                   }).catch(() => {});
+                } else {
+                  setSmsToolState(tpl.name, "failed", `twilio_send_failed:${result.error || result.status || "unknown"}`);
+                  if (smsPendingTemplate === tpl.name) smsPendingTemplate = null;
                 }
               }
+              if (tpl && smsPendingTemplate === tpl.name) smsPendingTemplate = null;
+              if (tpl && !result.ok && smsToolState.get(tpl.name) !== "failed") {
+                setSmsToolState(tpl.name, "failed", "send_sms_validation_failed");
+              }
+              lastSmsToolResultAt = Date.now();
+              lastSmsToolResultTemplate = tpl?.name || requestedName || null;
               console.log(`[MediaStream] send_sms RESULT template="${requestedName}" → ${recipient} ok=${result.ok} sid=${result.sid || "-"} status=${result.status || "-"} errorCode=${result.errorCode || "-"} err=${result.error || "-"} (callId=${callId})`);
               transcriptLines.push(`[System]: send_sms(template="${requestedName}", to=${recipient}, body="${(bodyForLog || "").slice(0, 80)}...") → ${result.ok ? "sent " + result.sid : "failed: " + result.error}`);
               openaiWs!.send(JSON.stringify({
@@ -2021,6 +2171,64 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     : { success: false, error: result.error, instruction: `Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent.` }),
                 },
               }));
+              console.log(
+                `[MediaStream] function_call_output sent tool=send_sms template="${requestedName}" success=${result.ok} call_id=${event.call_id} (callId=${callId})`
+              );
+              scheduleUserResponseCreate("tool-result", 50);
+            }
+
+            if (fnName === "confirm_manual_location") {
+              let args: any = {};
+              try {
+                args = JSON.parse(event.arguments || "{}");
+              } catch (e) {
+                console.error(`[MediaStream] confirm_manual_location: failed to parse arguments "${event.arguments}":`, e);
+              }
+              const address = typeof args.address === "string" ? args.address.trim() : "";
+              console.log(
+                `[MediaStream] confirm_manual_location invoked address_len=${address.length} call_id=${event.call_id} (callId=${callId})`
+              );
+              if (address.length < 5) {
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "invalid_manual_location",
+                        message: "Manual location address is empty or too short. Ask the caller for a full address and confirm it.",
+                      }),
+                    },
+                  })
+                );
+                console.log(
+                  `[MediaStream] function_call_output sent tool=confirm_manual_location success=false error=invalid_manual_location call_id=${event.call_id} (callId=${callId})`
+                );
+                scheduleUserResponseCreate("tool-result", 50);
+                break;
+              }
+
+              setLocationStatus("confirmed", "manual_voice_confirmed", { address });
+              locationConfirmedValue = { ...(locationConfirmedValue || {}), address };
+
+              openaiWs!.send(
+                JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({
+                      success: true,
+                      message: "Manual location confirmed.",
+                    }),
+                  },
+                })
+              );
+              console.log(
+                `[MediaStream] function_call_output sent tool=confirm_manual_location success=true call_id=${event.call_id} (callId=${callId})`
+              );
               scheduleUserResponseCreate("tool-result", 50);
             }
             break;
