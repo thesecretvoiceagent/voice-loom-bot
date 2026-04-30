@@ -375,6 +375,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let lastLoggedSmsAudioAfterResultAt = 0;
   let locationStatus: "unknown" | "pending" | "confirmed" | "failed" = "unknown";
   let locationConfirmedValue: { address?: string; lat?: number | null; lon?: number | null } | null = null;
+  let useCombinedRegLocationSms = false;
+  let combinedLocationReadbackQueued = false;
+  let vehicleValidationStatus: "unknown" | "valid" | "invalid" = "unknown";
+  const COMBINED_SMS_TEMPLATE_NAME = "Registreerimisnumbri ja asukoha SMS";
   let incidentNeedsOccupantCount = false;
   let occupantCountStatus: "unknown" | "pending" | "confirmed" = "unknown";
   let occupantCountValue: string | null = null;
@@ -524,6 +528,24 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(
       `[MediaStream] locationStatus transition from=${prev} to=${next} reason=${reason} address="${locationConfirmedValue?.address || ""}" lat=${locationConfirmedValue?.lat ?? "null"} lon=${locationConfirmedValue?.lon ?? "null"} (callId=${callId})`
     );
+  };
+
+  const emitLocationConfirmedSystemEvent = () => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
+    const addr = (locationConfirmedValue?.address || "").toString().slice(0, 300);
+    const lat = locationConfirmedValue?.lat ?? null;
+    const lon = locationConfirmedValue?.lon ?? null;
+    const sysMsg = `[SYSTEM EVENT: location_confirmed] location_confirmed=true address="${addr}" lat=${lat} lon=${lon}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just confirmed their location via the SMS link. Read the address back to them naturally in the same language the call is being conducted in. Do not ask for confirmation again. Continue to the next required step.`;
+    openaiWs.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [{ type: "input_text", text: sysMsg }],
+      },
+    }));
+    scheduleUserResponseCreate("system-event", 50);
+    return true;
   };
 
   const OCCUPANT_REQUIRED_TRANSCRIPT_TRIGGERS = [
@@ -1025,6 +1047,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         if (typeof rawCap === "number" && Number.isFinite(rawCap) && rawCap >= 50 && rawCap <= 4096) {
           configuredMaxResponseOutputTokens = Math.round(rawCap);
         }
+        if ((settings as any).use_combined_reg_location_sms === true) {
+          useCombinedRegLocationSms = true;
+          console.log(`[IIZI-CombinedSMS] enabled=true callId=${callId}`);
+        }
         // Read uninterruptible greeting setting (default true)
         if (settings.uninterruptible_greeting === false) {
           greetingInProgress = false; // Allow interruption from the start
@@ -1324,6 +1350,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 if (justLocationConfirmed) {
                   const addr = (row.location_address || "").toString().slice(0, 300);
                   console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
+                  if (useCombinedRegLocationSms) {
+                    console.log(`[IIZI-CombinedSMS] location confirmed callId=${callId}`);
+                  }
                   const hasCoordinates =
                     Number.isFinite(Number(row.location_lat)) && Number.isFinite(Number(row.location_lon));
                   const hasAddress = Boolean(addr);
@@ -1341,16 +1370,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                   transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                    const sysMsg = `[SYSTEM EVENT: location_confirmed] location_confirmed=true address="${addr}" lat=${row.location_lat} lon=${row.location_lon}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just confirmed their location via the SMS link. Read the address back to them naturally in the same language the call is being conducted in. Do not ask for confirmation again. Continue to the next required step.`;
-                    openaiWs.send(JSON.stringify({
-                      type: "conversation.item.create",
-                      item: {
-                        type: "message",
-                        role: "system",
-                        content: [{ type: "input_text", text: sysMsg }],
-                      },
-                    }));
-                    scheduleUserResponseCreate("system-event", 50);
+                    if (useCombinedRegLocationSms && vehicleValidationStatus !== "valid") {
+                      combinedLocationReadbackQueued = true;
+                    } else {
+                      emitLocationConfirmedSystemEvent();
+                    }
                   }
                 }
 
@@ -1361,6 +1385,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   const reg = (row.form_registration_number || "").toString().slice(0, 20);
                   const phone = (row.form_callback_phone_number || "").toString().slice(0, 20);
                   console.log(`[MediaStream] Form submitted (callId=${callId}): reg="${reg}" phone="${phone}"`);
+                  if (useCombinedRegLocationSms && reg) {
+                    console.log(`[IIZI-CombinedSMS] form registration received callId=${callId}`);
+                  }
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                     const fieldParts: string[] = [];
@@ -1395,6 +1422,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         console.log(
                           `[IIZI-StrictLookup] match=true submitted_reg="${lookup.submitted_reg}" normalized_reg="${lookup.normalized_reg}" result_count=${lookup.result_count} cover_status="${lookup.cover_status}" coverage_invalid=${lookup.coverage_invalid} (callId=${callId})`
                         );
+                        if (useCombinedRegLocationSms) {
+                          if (lookup.coverage_invalid) {
+                            vehicleValidationStatus = "invalid";
+                            console.log(`[IIZI-CombinedSMS] vehicle invalid, blocking flow callId=${callId}`);
+                          } else {
+                            vehicleValidationStatus = "valid";
+                            console.log(`[IIZI-CombinedSMS] vehicle valid, continuing callId=${callId}`);
+                          }
+                        }
                         openaiWs.send(
                           JSON.stringify({
                             type: "conversation.item.create",
@@ -1407,6 +1443,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         );
                         console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=true (callId=${callId})`);
                         scheduleUserResponseCreate("system-event", 50);
+                        if (
+                          useCombinedRegLocationSms &&
+                          !lookup.coverage_invalid &&
+                          locationStatus === "confirmed" &&
+                          combinedLocationReadbackQueued
+                        ) {
+                          const emitted = emitLocationConfirmedSystemEvent();
+                          if (emitted) combinedLocationReadbackQueued = false;
+                        }
                       } else {
                         const vehicleEvent =
                           `[SYSTEM EVENT: vehicle_lookup_result] match=false submitted_reg="${lookup.submitted_reg}". ` +
@@ -1417,6 +1462,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         console.log(
                           `[IIZI-StrictLookup] match=false submitted_reg="${lookup.submitted_reg}" normalized_reg="${lookup.normalized_reg}" result_count=${lookup.result_count} (callId=${callId})`
                         );
+                        if (useCombinedRegLocationSms) {
+                          vehicleValidationStatus = "invalid";
+                          console.log(`[IIZI-CombinedSMS] vehicle invalid, blocking flow callId=${callId}`);
+                        }
                         openaiWs.send(
                           JSON.stringify({
                             type: "conversation.item.create",
@@ -2201,7 +2250,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               try { args = JSON.parse(event.arguments || "{}"); } catch (e) {
                 console.error(`[MediaStream] send_sms: failed to parse arguments "${event.arguments}":`, e);
               }
-              const requestedName = typeof args.template_name === "string" ? args.template_name.trim() : "";
+              let requestedName = typeof args.template_name === "string" ? args.template_name.trim() : "";
+              if (
+                useCombinedRegLocationSms &&
+                (requestedName === "Registreerimisnumbri SMS" || requestedName === "Asukoha SMS")
+              ) {
+                console.log(`[IIZI-CombinedSMS] sending combined template callId=${callId}`);
+                requestedName = COMBINED_SMS_TEMPLATE_NAME;
+              }
               const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
 
               console.log(`[MediaStream] send_sms INVOKED (callId=${callId}) requestedName="${requestedName}" callDirection=${callDirection} fromNumber="${fromNumber}" calledNumber="${calledNumber}" recipient="${recipient}" availableTemplates=[${smsMessages.map((m) => `${m.name}(${m.trigger})`).join(", ")}]`);
@@ -2211,6 +2267,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               const tpl = smsMessages.find(
                 (m) => m.trigger === "during" && m.name === requestedName,
               );
+              if (useCombinedRegLocationSms && requestedName === COMBINED_SMS_TEMPLATE_NAME && !tpl) {
+                console.error(`[IIZI-CombinedSMS] missing template callId=${callId}`);
+                setSmsToolState(requestedName, "failed", "combined_template_missing");
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "combined_template_missing",
+                        message: `Template "${COMBINED_SMS_TEMPLATE_NAME}" is missing. Ask a human operator to configure it before continuing.`,
+                      }),
+                    },
+                  })
+                );
+                scheduleUserResponseCreate("tool-result", 50);
+                break;
+              }
               console.log(
                 `[MediaStream] send_sms selected template requested="${requestedName}" found=${Boolean(tpl)} trigger="during" (callId=${callId})`
               );
@@ -2270,6 +2346,31 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 break;
               }
 
+              if (
+                useCombinedRegLocationSms &&
+                requestedName === "Retrieval of callback number through SMS" &&
+                vehicleValidationStatus !== "valid"
+              ) {
+                console.warn(`[IIZI-CombinedSMS] vehicle invalid, blocking flow callId=${callId}`);
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "vehicle_not_validated",
+                        message:
+                          "Vehicle is not yet validated as found and active. Wait for registration submission and strict vehicle validation before callback flow.",
+                      }),
+                    },
+                  })
+                );
+                scheduleUserResponseCreate("tool-result", 50);
+                break;
+              }
+
               if (requestedName === "Retrieval of callback number through SMS" && locationStatus !== "confirmed") {
                 lastSmsToolResultAt = Date.now();
                 lastSmsToolResultTemplate = requestedName;
@@ -2302,6 +2403,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               if (tpl) {
                 setSmsToolState(tpl.name, "pending", "twilio_send_started");
                 smsPendingTemplate = tpl.name;
+                if (useCombinedRegLocationSms && tpl.name === COMBINED_SMS_TEMPLATE_NAME) {
+                  setLocationStatus("pending", "combined_sms_sent", null);
+                  vehicleValidationStatus = "unknown";
+                }
                 if (activeResponseId && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                   const responseId = activeResponseId;
                   try {
@@ -2333,6 +2438,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   smsSentNames.add(tpl.name);
                   setSmsToolState(tpl.name, "sent", "twilio_send_success");
                   if (smsPendingTemplate === tpl.name) smsPendingTemplate = null;
+                  if (useCombinedRegLocationSms && tpl.name === COMBINED_SMS_TEMPLATE_NAME) {
+                    console.log(`[IIZI-CombinedSMS] sent ok callId=${callId}`);
+                  }
                   if (tpl.name === "Asukoha SMS") {
                     setLocationStatus("pending", "location_sms_sent", null);
                   }
@@ -2367,7 +2475,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   type: "function_call_output",
                   call_id: event.call_id,
                   output: JSON.stringify(result.ok
-                    ? { success: true, message: `SMS template "${requestedName}" sent. Briefly confirm to the caller in their language.` }
+                    ? {
+                      success: true,
+                      message:
+                        useCombinedRegLocationSms && requestedName === COMBINED_SMS_TEMPLATE_NAME
+                          ? "Saatsin Teile tekstisõnumi. Palun avage link, sisestage auto registreerimisnumber, kinnitage asukoht ja vajutage Kinnita."
+                          : `SMS template "${requestedName}" sent. Briefly confirm to the caller in their language.`,
+                    }
                     : { success: false, error: result.error, instruction: `Tell the caller in their language that the SMS could not be sent right now. Do NOT claim it was sent.` }),
                 },
               }));
