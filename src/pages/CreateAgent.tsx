@@ -134,6 +134,51 @@ const timezones = [
   { value: "UTC", label: "UTC" },
 ];
 
+type LiveTurnSettings = {
+  vad_threshold: number;
+  silence_duration_ms: number;
+  prefix_padding_ms: number;
+  interrupt_response: boolean;
+  post_playback_cooldown_ms: number;
+  post_greeting_cooldown_ms: number;
+  watchdog_commit_ms: number;
+  inbound_transcript_fallback_ms: number;
+  no_audio_grace_ms: number;
+  echo_recovery_cooldown_ms: number;
+  loudspeaker_mode: boolean;
+};
+
+const DEFAULT_LIVE_TURN_SETTINGS: LiveTurnSettings = {
+  vad_threshold: 0.6,
+  silence_duration_ms: 700,
+  prefix_padding_ms: 400,
+  interrupt_response: true,
+  post_playback_cooldown_ms: 1200,
+  post_greeting_cooldown_ms: 150,
+  watchdog_commit_ms: 2600,
+  inbound_transcript_fallback_ms: 900,
+  no_audio_grace_ms: 450,
+  echo_recovery_cooldown_ms: 2500,
+  loudspeaker_mode: false,
+};
+
+const toLiveTurnSettings = (raw: unknown): LiveTurnSettings => {
+  const s = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    vad_threshold: typeof s.vad_threshold === "number" ? s.vad_threshold : DEFAULT_LIVE_TURN_SETTINGS.vad_threshold,
+    silence_duration_ms: typeof s.silence_duration_ms === "number" ? s.silence_duration_ms : DEFAULT_LIVE_TURN_SETTINGS.silence_duration_ms,
+    prefix_padding_ms: typeof s.prefix_padding_ms === "number" ? s.prefix_padding_ms : DEFAULT_LIVE_TURN_SETTINGS.prefix_padding_ms,
+    interrupt_response: typeof s.interrupt_response === "boolean" ? s.interrupt_response : DEFAULT_LIVE_TURN_SETTINGS.interrupt_response,
+    post_playback_cooldown_ms: typeof s.post_playback_cooldown_ms === "number" ? s.post_playback_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.post_playback_cooldown_ms,
+    post_greeting_cooldown_ms: typeof s.post_greeting_cooldown_ms === "number" ? s.post_greeting_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.post_greeting_cooldown_ms,
+    watchdog_commit_ms: typeof s.watchdog_commit_ms === "number" ? s.watchdog_commit_ms : DEFAULT_LIVE_TURN_SETTINGS.watchdog_commit_ms,
+    inbound_transcript_fallback_ms: typeof s.inbound_transcript_fallback_ms === "number" ? s.inbound_transcript_fallback_ms : DEFAULT_LIVE_TURN_SETTINGS.inbound_transcript_fallback_ms,
+    no_audio_grace_ms: typeof s.no_audio_grace_ms === "number" ? s.no_audio_grace_ms : DEFAULT_LIVE_TURN_SETTINGS.no_audio_grace_ms,
+    echo_recovery_cooldown_ms: typeof s.echo_recovery_cooldown_ms === "number" ? s.echo_recovery_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.echo_recovery_cooldown_ms,
+    loudspeaker_mode: typeof s.loudspeaker_mode === "boolean" ? s.loudspeaker_mode : DEFAULT_LIVE_TURN_SETTINGS.loudspeaker_mode,
+  };
+};
+
 export default function CreateAgent() {
   const { type } = useParams<{ type: "inbound" | "outbound" }>();
   const [searchParams] = useSearchParams();
@@ -165,6 +210,7 @@ export default function CreateAgent() {
   const [uninterruptibleGreeting, setUninterruptibleGreeting] = useState(true);
   const [antiBargein, setAntiBargein] = useState(false);
   const [rawAgentSettings, setRawAgentSettings] = useState<Record<string, unknown>>({});
+  const [liveTurnSettings, setLiveTurnSettings] = useState<LiveTurnSettings>(DEFAULT_LIVE_TURN_SETTINGS);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("17:00");
   const [timezone, setTimezone] = useState("Europe/Tallinn");
@@ -257,6 +303,7 @@ export default function CreateAgent() {
         setUninterruptibleGreeting((agent.settings as any).uninterruptible_greeting ?? true);
         setAntiBargein((agent.settings as any).anti_barge_in ?? false);
         const rawSettings = agent.settings as any;
+        setLiveTurnSettings(toLiveTurnSettings(rawSettings.live_turn_settings));
         if (Array.isArray(rawSettings.sms_messages)) {
           // Ensure every loaded SMS has a description field (migration for older entries)
           setSmsMessages(
@@ -303,6 +350,7 @@ export default function CreateAgent() {
       }
       if (!agent.settings) {
         setRawAgentSettings({});
+        setLiveTurnSettings(DEFAULT_LIVE_TURN_SETTINGS);
       }
       if (agent.schedule) {
         setStartTime(agent.schedule.start_time || "09:00");
@@ -393,6 +441,7 @@ export default function CreateAgent() {
       response_token_cap: responseTokenCap[0],
       uninterruptible_greeting: uninterruptibleGreeting,
       anti_barge_in: antiBargein,
+      live_turn_settings: liveTurnSettings,
       sms_messages: smsMessages.map((m, idx) => ({
         id: m.id,
         name: (m.name || `SMS ${idx + 1}`).trim(),
@@ -451,6 +500,7 @@ export default function CreateAgent() {
         setSelectedVoice(saved.voice || "alloy");
         setSelectedTools(saved.tools || []);
         setRawAgentSettings((saved.settings as Record<string, unknown>) || {});
+        setLiveTurnSettings(toLiveTurnSettings((saved.settings as any)?.live_turn_settings));
         if (saved.schedule) {
           setStartTime(saved.schedule.start_time || "09:00");
           setEndTime(saved.schedule.end_time || "17:00");
@@ -1060,6 +1110,71 @@ export default function CreateAgent() {
                         <p className="text-xs text-center text-muted-foreground mt-1">Minutes</p>
                       </div>
                     </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Live Turn-taking */}
+            <div className="glass-card rounded-xl p-6">
+              <div className="flex items-start gap-4">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-500/10">
+                  <Mic className="h-5 w-5 text-indigo-500" />
+                </div>
+                <div className="flex-1 space-y-4">
+                  <div>
+                    <h3 className="font-semibold text-foreground">Live turn-taking</h3>
+                    <p className="text-sm text-muted-foreground">Tune caller turn boundaries and response timing per agent.</p>
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>VAD threshold</Label>
+                      <Input type="number" step="0.01" value={liveTurnSettings.vad_threshold} onChange={(e) => setLiveTurnSettings((p) => ({ ...p, vad_threshold: Number(e.target.value) }))} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Wait after caller stops speaking, ms</Label>
+                      <Input type="number" value={liveTurnSettings.silence_duration_ms} onChange={(e) => setLiveTurnSettings((p) => ({ ...p, silence_duration_ms: Number(e.target.value) }))} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Prefix padding, ms</Label>
+                      <Input type="number" value={liveTurnSettings.prefix_padding_ms} onChange={(e) => setLiveTurnSettings((p) => ({ ...p, prefix_padding_ms: Number(e.target.value) }))} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Post-playback cooldown, ms</Label>
+                      <Input type="number" value={liveTurnSettings.post_playback_cooldown_ms} onChange={(e) => setLiveTurnSettings((p) => ({ ...p, post_playback_cooldown_ms: Number(e.target.value) }))} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Post-greeting cooldown, ms</Label>
+                      <Input type="number" value={liveTurnSettings.post_greeting_cooldown_ms} onChange={(e) => setLiveTurnSettings((p) => ({ ...p, post_greeting_cooldown_ms: Number(e.target.value) }))} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Watchdog commit, ms</Label>
+                      <Input type="number" value={liveTurnSettings.watchdog_commit_ms} onChange={(e) => setLiveTurnSettings((p) => ({ ...p, watchdog_commit_ms: Number(e.target.value) }))} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Transcript fallback, ms</Label>
+                      <Input type="number" value={liveTurnSettings.inbound_transcript_fallback_ms} onChange={(e) => setLiveTurnSettings((p) => ({ ...p, inbound_transcript_fallback_ms: Number(e.target.value) }))} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>No-audio grace, ms</Label>
+                      <Input type="number" value={liveTurnSettings.no_audio_grace_ms} onChange={(e) => setLiveTurnSettings((p) => ({ ...p, no_audio_grace_ms: Number(e.target.value) }))} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Echo recovery cooldown, ms</Label>
+                      <Input type="number" value={liveTurnSettings.echo_recovery_cooldown_ms} onChange={(e) => setLiveTurnSettings((p) => ({ ...p, echo_recovery_cooldown_ms: Number(e.target.value) }))} />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/50">
+                    <div>
+                      <p className="font-medium text-foreground">Allow caller to interrupt assistant</p>
+                    </div>
+                    <Switch checked={liveTurnSettings.interrupt_response} onCheckedChange={(v) => setLiveTurnSettings((p) => ({ ...p, interrupt_response: v }))} />
+                  </div>
+                  <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/50">
+                    <div>
+                      <p className="font-medium text-foreground">Loudspeaker/demo mode</p>
+                    </div>
+                    <Switch checked={liveTurnSettings.loudspeaker_mode} onCheckedChange={(v) => setLiveTurnSettings((p) => ({ ...p, loudspeaker_mode: v }))} />
                   </div>
                 </div>
               </div>

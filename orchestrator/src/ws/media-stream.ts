@@ -134,6 +134,53 @@ type StrictRegLookupResult =
       result_count: number;
     };
 
+type LiveTurnSettings = {
+  vad_threshold: number;
+  silence_duration_ms: number;
+  prefix_padding_ms: number;
+  interrupt_response: boolean;
+  post_playback_cooldown_ms: number;
+  post_greeting_cooldown_ms: number;
+  watchdog_commit_ms: number;
+  inbound_transcript_fallback_ms: number;
+  no_audio_grace_ms: number;
+  echo_recovery_cooldown_ms: number;
+  loudspeaker_mode: boolean;
+};
+
+const DEFAULT_LIVE_TURN_SETTINGS: LiveTurnSettings = {
+  vad_threshold: 0.6,
+  silence_duration_ms: 700,
+  prefix_padding_ms: 400,
+  interrupt_response: true,
+  post_playback_cooldown_ms: 1200,
+  post_greeting_cooldown_ms: 150,
+  watchdog_commit_ms: 2600,
+  inbound_transcript_fallback_ms: 900,
+  no_audio_grace_ms: 450,
+  echo_recovery_cooldown_ms: 2500,
+  loudspeaker_mode: false,
+};
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const sanitizeLiveTurnSettings = (raw: unknown): LiveTurnSettings => {
+  const s = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    vad_threshold: clamp(typeof s.vad_threshold === "number" ? s.vad_threshold : DEFAULT_LIVE_TURN_SETTINGS.vad_threshold, 0.1, 0.95),
+    silence_duration_ms: clamp(typeof s.silence_duration_ms === "number" ? s.silence_duration_ms : DEFAULT_LIVE_TURN_SETTINGS.silence_duration_ms, 300, 2500),
+    prefix_padding_ms: clamp(typeof s.prefix_padding_ms === "number" ? s.prefix_padding_ms : DEFAULT_LIVE_TURN_SETTINGS.prefix_padding_ms, 100, 1000),
+    interrupt_response: typeof s.interrupt_response === "boolean" ? s.interrupt_response : DEFAULT_LIVE_TURN_SETTINGS.interrupt_response,
+    post_playback_cooldown_ms: clamp(typeof s.post_playback_cooldown_ms === "number" ? s.post_playback_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.post_playback_cooldown_ms, 0, 3000),
+    post_greeting_cooldown_ms: clamp(typeof s.post_greeting_cooldown_ms === "number" ? s.post_greeting_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.post_greeting_cooldown_ms, 0, 1500),
+    watchdog_commit_ms: clamp(typeof s.watchdog_commit_ms === "number" ? s.watchdog_commit_ms : DEFAULT_LIVE_TURN_SETTINGS.watchdog_commit_ms, 1000, 6000),
+    inbound_transcript_fallback_ms: clamp(typeof s.inbound_transcript_fallback_ms === "number" ? s.inbound_transcript_fallback_ms : DEFAULT_LIVE_TURN_SETTINGS.inbound_transcript_fallback_ms, 300, 3000),
+    no_audio_grace_ms: clamp(typeof s.no_audio_grace_ms === "number" ? s.no_audio_grace_ms : DEFAULT_LIVE_TURN_SETTINGS.no_audio_grace_ms, 200, 2000),
+    echo_recovery_cooldown_ms: clamp(typeof s.echo_recovery_cooldown_ms === "number" ? s.echo_recovery_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.echo_recovery_cooldown_ms, 500, 5000),
+    loudspeaker_mode: typeof s.loudspeaker_mode === "boolean" ? s.loudspeaker_mode : DEFAULT_LIVE_TURN_SETTINGS.loudspeaker_mode,
+  };
+};
+
 function normalizeRegistrationStrict(raw: string): string {
   return raw.toUpperCase().replace(/[\s-]/g, "");
 }
@@ -501,6 +548,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let activeResponseInboundTranscriptSeq = 0;
   let activeResponseTwilioChunks = 0;
   let activeResponseTwilioBytes = 0;
+  let liveTurnSettings: LiveTurnSettings = { ...DEFAULT_LIVE_TURN_SETTINGS };
 
   const diagState = () =>
     `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
@@ -717,7 +765,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     scheduleUserResponseCreate(reason, delayMs);
   };
 
-  const armCallerSpeechWatchdog = (reason: string, timeoutMs = 2600) => {
+  const armCallerSpeechWatchdog = (reason: string, timeoutMs = liveTurnSettings.watchdog_commit_ms) => {
     clearCallerSpeechWatchdog();
     callerSpeechWatchdogTimer = setTimeout(() => {
       callerSpeechWatchdogTimer = null;
@@ -905,7 +953,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(`[Diag-InboundTurn] no-audio timer armed reason=${reason} responseId=${responseId} seq=${transcriptSeq} timeoutMs=${timeoutMs} (callId=${callId})`);
   };
 
-  const armResponseDoneNoAudioGrace = (responseId: string | null, transcriptSeq: number, reason: string, timeoutMs = 450) => {
+  const armResponseDoneNoAudioGrace = (responseId: string | null, transcriptSeq: number, reason: string, timeoutMs = liveTurnSettings.no_audio_grace_ms) => {
     if (callDirection !== "inbound" || greetingInProgress || !responseId) return;
     clearResponseDoneFallbackTimer();
     responseDoneFallbackTimer = setTimeout(() => {
@@ -946,11 +994,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const sessionPatch: any = {
       turn_detection: {
         type: "server_vad",
-        threshold: 0.6,             // Slightly less strict so quieter callers still trigger
-        prefix_padding_ms: 400,
-        silence_duration_ms: 700,   // Faster end-of-turn detection
+        threshold: liveTurnSettings.vad_threshold,
+        prefix_padding_ms: liveTurnSettings.prefix_padding_ms,
+        silence_duration_ms: liveTurnSettings.silence_duration_ms,
         create_response: true,
-        interrupt_response: true,   // Allow caller to barge in on assistant audio
+        interrupt_response: liveTurnSettings.interrupt_response,
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
@@ -997,7 +1045,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // caller's immediate reply ("tere" / "mul oli avarii"). Echo risk is minimal
     // because the greeting just finished playing and Twilio's mark confirmed it.
     // After normal AI turns we keep the longer cooldown to avoid echo loops.
-    const defaultCooldownMs = greetingInProgress ? 150 : 1200;
+    const defaultCooldownMs = greetingInProgress
+      ? liveTurnSettings.post_greeting_cooldown_ms
+      : liveTurnSettings.post_playback_cooldown_ms;
     const recoveryCooldownMs = pendingRecoveryCooldownMs || defaultCooldownMs;
     pendingRecoveryCooldownMs = 0;
 
@@ -1078,6 +1128,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           useCombinedRegLocationSms = true;
           console.log(`[IIZI-CombinedSMS] enabled=true callId=${callId}`);
         }
+        liveTurnSettings = sanitizeLiveTurnSettings((settings as any).live_turn_settings);
         // Read uninterruptible greeting setting (default true)
         if (settings.uninterruptible_greeting === false) {
           greetingInProgress = false; // Allow interruption from the start
@@ -1115,6 +1166,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
+    console.log(`[LiveTurnSettings] callId=${callId} settings=${JSON.stringify(liveTurnSettings)}`);
 
     // Inbound CRM prefetch: identify caller by phone number so the agent knows who's calling.
     // Exposed via callVariables so the system prompt can reference {{caller_name}}, {{caller_reg_no}}, etc.
@@ -2047,7 +2099,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 clearResponseDoneFallbackTimer();
               } else if (activeResponseId) {
                 console.warn(`[Diag-InboundTurn] transcript-only assistant response detected; keeping no-audio recovery armed responseId=${activeResponseId} seq=${activeResponseInboundTranscriptSeq} openaiAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} (callId=${callId})`);
-                armResponseDoneNoAudioGrace(activeResponseId, activeResponseInboundTranscriptSeq, "response.audio_transcript.done-no-twilio-audio", 350);
+                armResponseDoneNoAudioGrace(
+                  activeResponseId,
+                  activeResponseInboundTranscriptSeq,
+                  "response.audio_transcript.done-no-twilio-audio",
+                  liveTurnSettings.no_audio_grace_ms
+                );
               }
             }
 
@@ -2064,7 +2121,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
 
               if (repeatedAssistantTranscriptCount >= 2) {
-                pendingRecoveryCooldownMs = Math.max(pendingRecoveryCooldownMs, 2500);
+                pendingRecoveryCooldownMs = Math.max(
+                  pendingRecoveryCooldownMs,
+                  liveTurnSettings.echo_recovery_cooldown_ms
+                );
                 console.warn(`[MediaStream] Detected repeated assistant line x${repeatedAssistantTranscriptCount}, extending echo recovery cooldown (callId=${callId})`);
               }
             }
@@ -2132,7 +2192,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 }
                 console.warn(`[Diag-InboundTurn] fallback scheduled fired seq=${fallbackSeq} reason=transcript-no-response activeResponse=${activeResponseId || "none"} text="${transcriptText.slice(0, 160)}" (callId=${callId})`);
                 triggerInboundTranscriptRecovery("inbound-transcript-fallback", null);
-              }, 900);
+              }, liveTurnSettings.inbound_transcript_fallback_ms);
               console.log(`[Diag-InboundTurn] fallback scheduled seq=${fallbackSeq} timeoutMs=900 text="${transcriptText.slice(0, 160)}" (callId=${callId})`);
             } else {
               scheduleUserResponseCreate("user-transcript", 150, event.transcript);
@@ -2608,7 +2668,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (!responseHasAudio) {
               if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
                 console.warn(`[Diag-InboundTurn] response.audio.done no-audio responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} activeResponseReason=${activeResponseReason} (callId=${callId})`);
-                armResponseDoneNoAudioGrace(responseId, activeResponseInboundTranscriptSeq, "response.audio.done-no-audio", 350);
+                armResponseDoneNoAudioGrace(
+                  responseId,
+                  activeResponseInboundTranscriptSeq,
+                  "response.audio.done-no-audio",
+                  liveTurnSettings.no_audio_grace_ms
+                );
                 break;
               }
               maybeCompleteAiTurn("response.audio.done(no-audio)");
@@ -2687,7 +2752,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
               console.log(`[Diag-InboundTurn] response.done responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} hasAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} twilioBytes=${activeResponseTwilioBytes} finish=${finishReason} output_tokens=${outputTokens} (callId=${callId})`);
               if (activeResponseTwilioChunks === 0) {
-                armResponseDoneNoAudioGrace(responseId, activeResponseInboundTranscriptSeq, "response.done-no-audio", 450);
+                armResponseDoneNoAudioGrace(
+                  responseId,
+                  activeResponseInboundTranscriptSeq,
+                  "response.done-no-audio",
+                  liveTurnSettings.no_audio_grace_ms
+                );
                 break;
               }
             }
