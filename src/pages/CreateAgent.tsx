@@ -650,6 +650,47 @@ export default function CreateAgent() {
       <div className="space-y-6">
         {activeTab === "instructions" && (
           <>
+            {/* Initial Greeting */}
+            <div className="glass-card rounded-xl p-6">
+              <div className="flex items-start gap-4">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+                  <MessageSquare className="h-5 w-5 text-primary" />
+                </div>
+                <div className="flex-1 space-y-4">
+                  <div>
+                    <h3 className="font-semibold text-foreground">Initial greeting</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Configure what the AI says first when the call connects.
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                    <div>
+                      <p className="font-medium text-foreground">Use initial greeting</p>
+                    </div>
+                    <Switch checked={useInitialGreeting} onCheckedChange={setUseInitialGreeting} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm text-muted-foreground">Quick Insert:</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {quickInserts.map((item) => (
+                        <Button key={`instr-greet-${item.id}`} variant="outline" size="sm" onClick={() => insertVariable(item.id, setGreeting)} className="text-xs">
+                          ○ {item.label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                  <Textarea value={greeting} onChange={(e) => setGreeting(e.target.value)} placeholder="Hello {{first_name}}, this is..." className="min-h-[100px]" />
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                    <div>
+                      <p className="font-medium text-foreground">Uninterruptible greeting</p>
+                      <p className="text-sm text-muted-foreground">Drop caller audio while greeting plays.</p>
+                    </div>
+                    <Switch checked={uninterruptibleGreeting} onCheckedChange={setUninterruptibleGreeting} disabled={!useInitialGreeting} />
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* AI Tools */}
             <div className="glass-card rounded-xl p-6">
               <div className="flex items-start gap-4">
@@ -1067,35 +1108,6 @@ export default function CreateAgent() {
                   <div>
                     <h3 className="font-semibold text-foreground">Live call behavior</h3>
                     <p className="text-sm text-muted-foreground">Greeting, interruption, response and turn-taking controls for live calls.</p>
-                  </div>
-
-                  <div className="grid md:grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <Label>Use initial greeting</Label>
-                      <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
-                        <p className="text-sm text-muted-foreground">Speak the configured greeting when the call starts.</p>
-                        <Switch checked={useInitialGreeting} onCheckedChange={setUseInitialGreeting} />
-                      </div>
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label>Uninterruptible greeting</Label>
-                      <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
-                        <p className="text-sm text-muted-foreground">Drop caller audio while greeting plays.</p>
-                        <Switch checked={uninterruptibleGreeting} onCheckedChange={setUninterruptibleGreeting} disabled={!useInitialGreeting} />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Greeting message</Label>
-                    <div className="flex flex-wrap gap-2">
-                      {quickInserts.map((item) => (
-                        <Button key={`greet-${item.id}`} variant="outline" size="sm" onClick={() => insertVariable(item.id, setGreeting)} className="text-xs">
-                          ○ {item.label}
-                        </Button>
-                      ))}
-                    </div>
-                    <Textarea value={greeting} onChange={(e) => setGreeting(e.target.value)} placeholder="Hello {{first_name}}, this is..." className="min-h-[90px]" />
                   </div>
 
                   <div className="grid md:grid-cols-2 gap-4">
