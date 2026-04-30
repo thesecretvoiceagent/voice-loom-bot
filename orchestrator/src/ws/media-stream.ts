@@ -379,6 +379,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let combinedLocationReadbackQueued = false;
   let vehicleValidationStatus: "unknown" | "valid" | "invalid" = "unknown";
   const COMBINED_SMS_TEMPLATE_NAME = "Registreerimisnumbri ja asukoha SMS";
+  let callbackSmsRequestedWhileBlocked = false;
+  const CALLBACK_SMS_TEMPLATE_NAME = "Retrieval of callback number through SMS";
   let incidentNeedsOccupantCount = false;
   let occupantCountStatus: "unknown" | "pending" | "confirmed" = "unknown";
   let occupantCountValue: string | null = null;
@@ -546,6 +548,31 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }));
     scheduleUserResponseCreate("system-event", 50);
     return true;
+  };
+
+  const maybeNudgeDeferredCallbackSms = (source: string) => {
+    if (!callbackSmsRequestedWhileBlocked) return;
+    if (vehicleValidationStatus !== "valid") return;
+    if (locationStatus !== "confirmed") return;
+    if (incidentNeedsOccupantCount && occupantCountStatus !== "confirmed") return;
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+
+    callbackSmsRequestedWhileBlocked = false;
+    console.log(`[IIZI-CallbackSMS] gates_open source=${source} callId=${callId}`);
+    const sysMsg =
+      `[SYSTEM EVENT: callback_sms_ready] callback_sms_ready=true. ` +
+      `Internal note only — do NOT read this tag or field names aloud. ` +
+      `The caller requested callback to a different number earlier, and gates are now satisfied. ` +
+      `If callback to a different number is still needed, call send_sms with template_name="${CALLBACK_SMS_TEMPLATE_NAME}" now.`;
+    openaiWs.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [{ type: "input_text", text: sysMsg }],
+      },
+    }));
+    scheduleUserResponseCreate("system-event", 50);
   };
 
   const OCCUPANT_REQUIRED_TRANSCRIPT_TRIGGERS = [
@@ -1376,6 +1403,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       emitLocationConfirmedSystemEvent();
                     }
                   }
+                  maybeNudgeDeferredCallbackSms("location_confirmed");
                 }
 
                 // 2. Google Form fallback submission (registration number / callback phone)
@@ -1452,6 +1480,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           const emitted = emitLocationConfirmedSystemEvent();
                           if (emitted) combinedLocationReadbackQueued = false;
                         }
+                        maybeNudgeDeferredCallbackSms("vehicle_valid");
                       } else {
                         const vehicleEvent =
                           `[SYSTEM EVENT: vehicle_lookup_result] match=false submitted_reg="${lookup.submitted_reg}". ` +
@@ -2233,6 +2262,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 occupantCountStatus = "confirmed";
                 occupantCountValue = count;
                 console.log(`[OccupantGate] confirmed count=${count} callId=${callId}`);
+                maybeNudgeDeferredCallbackSms("occupant_confirmed");
                 openaiWs!.send(JSON.stringify({
                   type: "conversation.item.create",
                   item: {
@@ -2251,6 +2281,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 console.error(`[MediaStream] send_sms: failed to parse arguments "${event.arguments}":`, e);
               }
               let requestedName = typeof args.template_name === "string" ? args.template_name.trim() : "";
+              if (requestedName === CALLBACK_SMS_TEMPLATE_NAME) {
+                console.log(`[IIZI-CallbackSMS] requested callId=${callId}`);
+              }
               if (
                 useCombinedRegLocationSms &&
                 (requestedName === "Registreerimisnumbri SMS" || requestedName === "Asukoha SMS")
@@ -2320,10 +2353,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
 
               if (
-                requestedName === "Retrieval of callback number through SMS" &&
+                requestedName === CALLBACK_SMS_TEMPLATE_NAME &&
                 incidentNeedsOccupantCount &&
                 occupantCountStatus !== "confirmed"
               ) {
+                callbackSmsRequestedWhileBlocked = true;
+                console.warn(
+                  `[IIZI-CallbackSMS] blocked reason=occupant_count_required status=${occupantCountStatus} callId=${callId}`
+                );
                 console.warn(
                   `[OccupantGate] callback blocked occupant_count_required status=${occupantCountStatus} callId=${callId}`
                 );
@@ -2348,10 +2385,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
               if (
                 useCombinedRegLocationSms &&
-                requestedName === "Retrieval of callback number through SMS" &&
+                requestedName === CALLBACK_SMS_TEMPLATE_NAME &&
                 vehicleValidationStatus !== "valid"
               ) {
-                console.warn(`[IIZI-CombinedSMS] vehicle invalid, blocking flow callId=${callId}`);
+                callbackSmsRequestedWhileBlocked = true;
+                console.warn(
+                  `[IIZI-CallbackSMS] blocked reason=vehicle_not_validated status=${vehicleValidationStatus} callId=${callId}`
+                );
                 openaiWs!.send(
                   JSON.stringify({
                     type: "conversation.item.create",
@@ -2371,7 +2411,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 break;
               }
 
-              if (requestedName === "Retrieval of callback number through SMS" && locationStatus !== "confirmed") {
+              if (requestedName === CALLBACK_SMS_TEMPLATE_NAME && locationStatus !== "confirmed") {
+                callbackSmsRequestedWhileBlocked = true;
+                console.warn(
+                  `[IIZI-CallbackSMS] blocked reason=location_not_confirmed status=${locationStatus} callId=${callId}`
+                );
                 lastSmsToolResultAt = Date.now();
                 lastSmsToolResultTemplate = requestedName;
                 setSmsToolState(requestedName, "failed", `location_not_confirmed:${locationStatus}`);
@@ -2438,6 +2482,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   smsSentNames.add(tpl.name);
                   setSmsToolState(tpl.name, "sent", "twilio_send_success");
                   if (smsPendingTemplate === tpl.name) smsPendingTemplate = null;
+                  if (tpl.name === CALLBACK_SMS_TEMPLATE_NAME) {
+                    callbackSmsRequestedWhileBlocked = false;
+                    console.log(`[IIZI-CallbackSMS] sent ok callId=${callId}`);
+                  }
                   if (useCombinedRegLocationSms && tpl.name === COMBINED_SMS_TEMPLATE_NAME) {
                     console.log(`[IIZI-CombinedSMS] sent ok callId=${callId}`);
                   }
