@@ -170,16 +170,19 @@ async function strictLookupVehicleBySubmittedReg(submittedReg: string): Promise<
   ].join(",");
 
   try {
-    const url = `${config.supabase.url.replace(/\/+$/, "")}/rest/v1/crm_vehicles?select=${encodeURIComponent(fields)}`;
-    const res = await fetch(url, {
+    const baseUrl = config.supabase.url.replace(/\/+$/, "");
+    const exactUrl =
+      `${baseUrl}/rest/v1/crm_vehicles?` +
+      `select=${encodeURIComponent(fields)}&reg_no=eq.${encodeURIComponent(normalizedReg)}`;
+    const exactRes = await fetch(exactUrl, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${config.supabase.anonKey}`,
         apikey: config.supabase.anonKey,
       },
     });
-    if (!res.ok) {
-      console.error(`[IIZI-StrictLookup] HTTP ${res.status} while fetching crm_vehicles`);
+    if (!exactRes.ok) {
+      console.error(`[IIZI-StrictLookup] HTTP ${exactRes.status} while fetching crm_vehicles exact query`);
       return {
         match: false,
         submitted_reg: submitted,
@@ -188,13 +191,48 @@ async function strictLookupVehicleBySubmittedReg(submittedReg: string): Promise<
       };
     }
 
-    const rows = (await res.json().catch(() => [])) as Record<string, unknown>[];
-    const exactRows = rows.filter((row) => normalizeRegistrationStrict(String(row.reg_no || "")) === normalizedReg);
+    const exactRows = (await exactRes.json().catch(() => [])) as Record<string, unknown>[];
     console.log(
-      `[IIZI-StrictLookup] submitted_reg="${submitted}" normalized_reg="${normalizedReg}" exact_result_count=${exactRows.length}`
+      `[IIZI-StrictLookup] stage=exact_query submitted_reg="${submitted}" normalized_reg="${normalizedReg}" http_status=${exactRes.status} returned_row_count=${exactRows.length}`
     );
 
-    if (exactRows.length === 0) {
+    // Fallback for historical data where reg_no may include spaces/hyphens/casing variants.
+    // Avoid this full-table fetch unless exact server-side lookup returned no rows.
+    let candidateRows = exactRows;
+    if (candidateRows.length === 0) {
+      const fallbackUrl = `${baseUrl}/rest/v1/crm_vehicles?select=${encodeURIComponent(fields)}`;
+      const fallbackRes = await fetch(fallbackUrl, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${config.supabase.anonKey}`,
+          apikey: config.supabase.anonKey,
+        },
+      });
+      if (!fallbackRes.ok) {
+        console.error(`[IIZI-StrictLookup] HTTP ${fallbackRes.status} while fetching crm_vehicles fallback query`);
+        console.log(
+          `[IIZI-StrictLookup] submitted_reg="${submitted}" normalized_reg="${normalizedReg}" match=false`
+        );
+        return {
+          match: false,
+          submitted_reg: submitted,
+          normalized_reg: normalizedReg,
+          result_count: 0,
+        };
+      }
+      const fallbackRows = (await fallbackRes.json().catch(() => [])) as Record<string, unknown>[];
+      candidateRows = fallbackRows.filter(
+        (row) => normalizeRegistrationStrict(String(row.reg_no || "")) === normalizedReg
+      );
+      console.log(
+        `[IIZI-StrictLookup] stage=fallback_query submitted_reg="${submitted}" normalized_reg="${normalizedReg}" http_status=${fallbackRes.status} returned_row_count=${candidateRows.length}`
+      );
+    }
+
+    if (candidateRows.length === 0) {
+      console.log(
+        `[IIZI-StrictLookup] submitted_reg="${submitted}" normalized_reg="${normalizedReg}" match=false`
+      );
       return {
         match: false,
         submitted_reg: submitted,
@@ -203,14 +241,17 @@ async function strictLookupVehicleBySubmittedReg(submittedReg: string): Promise<
       };
     }
 
-    const vehicle = exactRows[0];
+    const vehicle = candidateRows[0];
     const coverStatus = String(vehicle.cover_status || "");
     const coverageInvalid = isCoverageInvalid(coverStatus);
+    console.log(
+      `[IIZI-StrictLookup] submitted_reg="${submitted}" normalized_reg="${normalizedReg}" match=true`
+    );
     return {
       match: true,
       submitted_reg: submitted,
       normalized_reg: normalizedReg,
-      result_count: exactRows.length,
+      result_count: candidateRows.length,
       vehicle,
       cover_status: coverStatus,
       coverage_invalid: coverageInvalid,
