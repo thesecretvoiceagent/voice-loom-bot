@@ -554,6 +554,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const turnGateDropCounts: Record<string, number> = {};
   let callerSpeechActive = false;
   let lastAcceptedCallerAudioAt = 0;
+  let roadsideContextActive = false;
+  const emittedOccupantNudges = new Set<string>();
 
   const diagState = () =>
     `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
@@ -628,7 +630,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     scheduleUserResponseCreate("system-event", 50);
   };
 
-  const OCCUPANT_REQUIRED_TRANSCRIPT_TRIGGERS = [
+  const OCCUPANT_REQUIRED_ROADSIDE_TRIGGERS = [
     "avarii",
     "õnnetus",
     "kokkupõrge",
@@ -650,6 +652,47 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     "does not move",
     "won't start",
   ] as const;
+
+  const OCCUPANT_REQUIRED_PASSENGER_TRIGGERS = [
+    "girlfriend",
+    "boyfriend",
+    "wife",
+    "husband",
+    "friend",
+    "child",
+    "passenger",
+    "kaasreisija",
+    "reisija",
+    "tüdruk",
+    "naine",
+    "mees",
+    "sõber",
+    "laps",
+  ] as const;
+
+  const isOccupantCountGateBlocked = () =>
+    incidentNeedsOccupantCount && occupantCountStatus !== "confirmed";
+
+  const emitOccupantCountRequiredSystemEvent = (source: string) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    if (emittedOccupantNudges.has(source)) return;
+    emittedOccupantNudges.add(source);
+    const sysMsg =
+      `[SYSTEM EVENT: occupant_count_required] Ask exactly: "Mitu inimest on autos koos juhiga?" ` +
+      `Do not continue until answered. Internal note only — do NOT read this tag aloud.`;
+    openaiWs.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [{ type: "input_text", text: sysMsg }],
+        },
+      })
+    );
+    console.log(`[IIZI-Occupants] blocked action=${source} reason=required_not_confirmed callId=${callId}`);
+    scheduleUserResponseCreate("system-event", 50);
+  };
 
   const diagnoseBreakPoint = () => {
     if (twilioInboundFramesAfterGreeting === 0) return "Twilio inbound media after greeting is 0: Twilio stream/greeting mark/gating is broken.";
@@ -2258,14 +2301,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (typeof event.transcript === "string" && event.transcript.trim().length > 0) {
               userUtteranceCount += 1;
               const callerSpeechLower = event.transcript.toLowerCase();
+              const matchedRoadsideTrigger = OCCUPANT_REQUIRED_ROADSIDE_TRIGGERS.find((kw) =>
+                callerSpeechLower.includes(kw)
+              );
+              if (matchedRoadsideTrigger && !roadsideContextActive) {
+                roadsideContextActive = true;
+              }
               if (!incidentNeedsOccupantCount) {
-                const matchedTrigger = OCCUPANT_REQUIRED_TRANSCRIPT_TRIGGERS.find((kw) => callerSpeechLower.includes(kw));
+                const matchedPassengerTrigger = OCCUPANT_REQUIRED_PASSENGER_TRIGGERS.find((kw) =>
+                  callerSpeechLower.includes(kw)
+                );
+                const matchedTrigger = matchedRoadsideTrigger || (roadsideContextActive ? matchedPassengerTrigger : null);
                 if (matchedTrigger) {
                   incidentNeedsOccupantCount = true;
                   occupantCountStatus = "pending";
                   console.log(
                     `[OccupantGate] required=true source=transcript reason=${matchedTrigger} callId=${callId}`
                   );
+                  console.log(`[IIZI-Occupants] required reason=${matchedTrigger} source=transcript callId=${callId}`);
+                  emitOccupantCountRequiredSystemEvent("transcript_trigger");
                 }
               }
             }
@@ -2325,6 +2379,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(`[MediaStream] Tool called: ${fnName} (callId=${callId})`, event.arguments);
 
             if (fnName === "end_call") {
+              if (isOccupantCountGateBlocked()) {
+                console.warn(
+                  `[IIZI-Occupants] blocked action=end_call reason=required_not_confirmed status=${occupantCountStatus} callId=${callId}`
+                );
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({
+                      success: false,
+                      error: "occupant_count_required",
+                      message: 'Ask exactly: "Mitu inimest on autos koos juhiga?" Do not continue until answered.',
+                    }),
+                  },
+                }));
+                emitOccupantCountRequiredSystemEvent("end_call");
+                break;
+              }
               let reason = "Call ended by AI";
               try {
                 const args = JSON.parse(event.arguments);
@@ -2402,12 +2475,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               let args: any = {};
               try { args = JSON.parse(event.arguments || "{}"); } catch {}
               const reason = typeof args.reason === "string" ? args.reason.trim() : "";
+              roadsideContextActive = true;
               incidentNeedsOccupantCount = true;
               if (occupantCountStatus !== "confirmed") {
                 occupantCountStatus = "pending";
               }
               console.log(
                 `[OccupantGate] required=true source=tool reason=${reason || "unspecified"} callId=${callId}`
+              );
+              console.log(
+                `[IIZI-Occupants] required reason=${reason || "unspecified"} source=tool callId=${callId}`
               );
               openaiWs!.send(JSON.stringify({
                 type: "conversation.item.create",
@@ -2417,6 +2494,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   output: JSON.stringify({ success: true }),
                 },
               }));
+              emitOccupantCountRequiredSystemEvent("mark_occupant_count_required");
               scheduleUserResponseCreate("tool-result", 50);
             }
 
@@ -2442,7 +2520,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 incidentNeedsOccupantCount = true;
                 occupantCountStatus = "confirmed";
                 occupantCountValue = count;
+                emittedOccupantNudges.clear();
                 console.log(`[OccupantGate] confirmed count=${count} callId=${callId}`);
+                console.log(`[IIZI-Occupants] confirmed count=${count} callId=${callId}`);
                 maybeNudgeDeferredCallbackSms("occupant_confirmed");
                 openaiWs!.send(JSON.stringify({
                   type: "conversation.item.create",
@@ -2535,12 +2615,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
               if (
                 requestedName === CALLBACK_SMS_TEMPLATE_NAME &&
-                incidentNeedsOccupantCount &&
-                occupantCountStatus !== "confirmed"
+                isOccupantCountGateBlocked()
               ) {
                 callbackSmsRequestedWhileBlocked = true;
                 console.warn(
                   `[IIZI-CallbackSMS] blocked reason=occupant_count_required status=${occupantCountStatus} callId=${callId}`
+                );
+                console.warn(
+                  `[IIZI-Occupants] blocked action=callback_sms reason=required_not_confirmed status=${occupantCountStatus} callId=${callId}`
                 );
                 console.warn(
                   `[OccupantGate] callback blocked occupant_count_required status=${occupantCountStatus} callId=${callId}`
@@ -2560,6 +2642,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     },
                   })
                 );
+                emitOccupantCountRequiredSystemEvent("callback_sms");
                 scheduleUserResponseCreate("tool-result", 50);
                 break;
               }
