@@ -164,6 +164,7 @@ export default function CreateAgent() {
   const [responseTokenCap, setResponseTokenCap] = useState([220]);
   const [uninterruptibleGreeting, setUninterruptibleGreeting] = useState(true);
   const [antiBargein, setAntiBargein] = useState(false);
+  const [rawAgentSettings, setRawAgentSettings] = useState<Record<string, unknown>>({});
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("17:00");
   const [timezone, setTimezone] = useState("Europe/Tallinn");
@@ -241,6 +242,7 @@ export default function CreateAgent() {
       setSelectedVoice(agent.voice || "alloy");
       setSelectedTools(agent.tools || []);
       if (agent.settings) {
+        setRawAgentSettings((agent.settings as Record<string, unknown>) || {});
         setMaxRingTime([agent.settings.max_ring_time || 60]);
         setMaxCallDuration([agent.settings.max_call_duration || 5]);
         setMaxRetries(agent.settings.max_retries ?? 3);
@@ -298,6 +300,9 @@ export default function CreateAgent() {
           }
           setSmsMessages(migrated);
         }
+      }
+      if (!agent.settings) {
+        setRawAgentSettings({});
       }
       if (agent.schedule) {
         setStartTime(agent.schedule.start_time || "09:00");
@@ -376,6 +381,7 @@ export default function CreateAgent() {
     setSaving(true);
 
     const settingsPayload = {
+      ...rawAgentSettings,
       max_ring_time: maxRingTime[0],
       max_call_duration: maxCallDuration[0],
       max_retries: maxRetries,
@@ -444,6 +450,7 @@ export default function CreateAgent() {
         setAnalysisPrompt(saved.analysis_prompt || "");
         setSelectedVoice(saved.voice || "alloy");
         setSelectedTools(saved.tools || []);
+        setRawAgentSettings((saved.settings as Record<string, unknown>) || {});
         if (saved.schedule) {
           setStartTime(saved.schedule.start_time || "09:00");
           setEndTime(saved.schedule.end_time || "17:00");
