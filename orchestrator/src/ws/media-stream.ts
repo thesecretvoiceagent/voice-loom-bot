@@ -436,6 +436,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let resolvedAgentIdRef: string | null = null;
   let substituteVarsRef: (text: string) => string = (t) => t;
   let maxCallDurationMinutes: number = 0;
+  let useInitialGreeting = true;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let greetingInProgress = true; // Protect initial greeting from interruption
   let activeResponseId: string | null = null; // Track current response to discard stale audio
@@ -761,6 +762,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const strictTurnGateEnabled = () =>
     callDirection === "inbound" && (antiBargeinEnabled || liveTurnSettings.interrupt_response === false);
+
+  const effectivePostPlaybackCooldownMs = (baseMs: number) =>
+    liveTurnSettings.loudspeaker_mode ? baseMs + 300 : baseMs;
 
   const assistantPlaybackProtected = () =>
     Boolean(activeResponseId) || aiIsSpeaking || Boolean(responsePlaybackMarkName);
@@ -1124,7 +1128,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const defaultCooldownMs = greetingInProgress
       ? liveTurnSettings.post_greeting_cooldown_ms
       : liveTurnSettings.post_playback_cooldown_ms;
-    const recoveryCooldownMs = pendingRecoveryCooldownMs || defaultCooldownMs;
+    const recoveryCooldownMs = effectivePostPlaybackCooldownMs(pendingRecoveryCooldownMs || defaultCooldownMs);
     pendingRecoveryCooldownMs = 0;
 
     resetResponseState();
@@ -1205,6 +1209,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           useCombinedRegLocationSms = true;
           console.log(`[IIZI-CombinedSMS] enabled=true callId=${callId}`);
         }
+        if (settings.use_initial_greeting === false) {
+          useInitialGreeting = false;
+        }
         liveTurnSettings = sanitizeLiveTurnSettings((settings as any).live_turn_settings);
         // Read uninterruptible greeting setting (default true)
         if (settings.uninterruptible_greeting === false) {
@@ -1247,6 +1254,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
     console.log(`[LiveTurnSettings] callId=${callId} settings=${JSON.stringify(liveTurnSettings)}`);
+    console.log(
+      `[LiveCallBehavior] loaded anti_barge_in=${antiBargeinEnabled} uninterruptible_greeting=${greetingInProgress} use_initial_greeting=${useInitialGreeting} loudspeaker_mode=${liveTurnSettings.loudspeaker_mode} callId=${callId}`
+    );
     console.log(`[GreetingGate] init greetingInProgress=${greetingInProgress} callId=${callId}`);
     console.log(
       `[TurnGate] loaded mode callId=${callId} strict=${strictTurnGateEnabled()} anti_barge_in=${antiBargeinEnabled} interrupt_response=${liveTurnSettings.interrupt_response} silence_duration_ms=${liveTurnSettings.silence_duration_ms} watchdog_commit_ms=${liveTurnSettings.watchdog_commit_ms}`
@@ -1700,6 +1710,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (initialResponseFallbackTimer) {
         clearTimeout(initialResponseFallbackTimer);
         initialResponseFallbackTimer = null;
+      }
+
+      const hasGreetingText = Boolean((greeting || "").trim());
+      if (!useInitialGreeting || !hasGreetingText) {
+        pendingInitialResponse = false;
+        greetingInProgress = false;
+        greetingCompletedAt = Date.now();
+        console.log(
+          `[GreetingGate] use_initial_greeting=${useInitialGreeting} has_greeting_text=${hasGreetingText} skip initial greeting callId=${callId}`
+        );
+        if (!useInitialGreeting) {
+          console.log(`[GreetingGate] use_initial_greeting=false skip initial greeting callId=${callId}`);
+        }
+        enableTurnDetection();
+        return;
       }
 
       console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || "(none)"}"`);

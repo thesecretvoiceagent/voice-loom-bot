@@ -207,6 +207,7 @@ export default function CreateAgent() {
   const [enableRecording, setEnableRecording] = useState(true);
   const [temperature, setTemperature] = useState([0.6]);
   const [responseTokenCap, setResponseTokenCap] = useState([220]);
+  const [useInitialGreeting, setUseInitialGreeting] = useState(true);
   const [uninterruptibleGreeting, setUninterruptibleGreeting] = useState(true);
   const [antiBargein, setAntiBargein] = useState(false);
   const [rawAgentSettings, setRawAgentSettings] = useState<Record<string, unknown>>({});
@@ -300,6 +301,7 @@ export default function CreateAgent() {
         setEnableRecording(agent.settings.enable_recording ?? true);
         setTemperature([(agent.settings as any).temperature ?? 0.6]);
         setResponseTokenCap([(agent.settings as any).response_token_cap ?? 220]);
+        setUseInitialGreeting((agent.settings as any).use_initial_greeting ?? true);
         setUninterruptibleGreeting((agent.settings as any).uninterruptible_greeting ?? true);
         setAntiBargein((agent.settings as any).anti_barge_in ?? false);
         const rawSettings = agent.settings as any;
@@ -351,6 +353,7 @@ export default function CreateAgent() {
       if (!agent.settings) {
         setRawAgentSettings({});
         setLiveTurnSettings(DEFAULT_LIVE_TURN_SETTINGS);
+        setUseInitialGreeting(true);
       }
       if (agent.schedule) {
         setStartTime(agent.schedule.start_time || "09:00");
@@ -439,6 +442,7 @@ export default function CreateAgent() {
       enable_recording: enableRecording,
       temperature: temperature[0],
       response_token_cap: responseTokenCap[0],
+      use_initial_greeting: useInitialGreeting,
       uninterruptible_greeting: uninterruptibleGreeting,
       anti_barge_in: antiBargein,
       live_turn_settings: liveTurnSettings,
@@ -501,6 +505,10 @@ export default function CreateAgent() {
         setSelectedTools(saved.tools || []);
         setRawAgentSettings((saved.settings as Record<string, unknown>) || {});
         setLiveTurnSettings(toLiveTurnSettings((saved.settings as any)?.live_turn_settings));
+        setUseInitialGreeting((saved.settings as any)?.use_initial_greeting ?? true);
+        setUninterruptibleGreeting((saved.settings as any)?.uninterruptible_greeting ?? true);
+        setAntiBargein((saved.settings as any)?.anti_barge_in ?? false);
+        setResponseTokenCap([(saved.settings as any)?.response_token_cap ?? 220]);
         if (saved.schedule) {
           setStartTime(saved.schedule.start_time || "09:00");
           setEndTime(saved.schedule.end_time || "17:00");
@@ -642,41 +650,6 @@ export default function CreateAgent() {
       <div className="space-y-6">
         {activeTab === "instructions" && (
           <>
-            {/* Greeting Message */}
-            <div className="glass-card rounded-xl p-6">
-              <div className="flex items-start gap-4">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
-                  <MessageSquare className="h-5 w-5 text-primary" />
-                </div>
-                <div className="flex-1 space-y-4">
-                  <div>
-                    <h3 className="font-semibold text-foreground">Greeting Message</h3>
-                    <p className="text-sm text-muted-foreground">
-                      The first thing your AI agent says when the call connects
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-sm text-muted-foreground">Quick Insert:</Label>
-                    <div className="flex flex-wrap gap-2">
-                      {quickInserts.map((item) => (
-                        <Button key={item.id} variant="outline" size="sm" onClick={() => insertVariable(item.id, setGreeting)} className="text-xs">
-                          ○ {item.label}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                  <Textarea value={greeting} onChange={(e) => setGreeting(e.target.value)} placeholder="Hello {{first_name}}, this is..." className="min-h-[100px]" />
-                  <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/50">
-                    <div>
-                      <p className="font-medium text-foreground">Uninterruptible Greeting</p>
-                      <p className="text-sm text-muted-foreground">Initial message plays fully without being cut off by caller</p>
-                    </div>
-                    <Switch checked={uninterruptibleGreeting} onCheckedChange={setUninterruptibleGreeting} />
-                  </div>
-                </div>
-              </div>
-            </div>
-
             {/* AI Tools */}
             <div className="glass-card rounded-xl p-6">
               <div className="flex items-start gap-4">
@@ -725,37 +698,6 @@ export default function CreateAgent() {
                     </div>
                   </div>
                   <Textarea value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} placeholder="You are a helpful AI voice assistant..." className="min-h-[150px]" />
-                  <div className="p-4 rounded-lg bg-secondary/50 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="font-medium text-foreground">Response Token Cap</p>
-                        <p className="text-sm text-muted-foreground">
-                          Max tokens per AI response. Lower = shorter, snappier replies (less rambling). Higher = longer answers (risk of running long).
-                          The initial greeting always uses a larger budget regardless of this setting.
-                        </p>
-                      </div>
-                      <span className="text-lg font-semibold tabular-nums">{responseTokenCap[0]}</span>
-                    </div>
-                    <Slider
-                      value={responseTokenCap}
-                      onValueChange={setResponseTokenCap}
-                      min={80}
-                      max={1000}
-                      step={20}
-                    />
-                    <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>80 (very short)</span>
-                      <span>220 (default)</span>
-                      <span>1000 (long)</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/50">
-                    <div>
-                      <p className="font-medium text-foreground">Anti Barge-in</p>
-                      <p className="text-sm text-muted-foreground">Mute caller's microphone while the AI is speaking to prevent interruptions</p>
-                    </div>
-                    <Switch checked={antiBargein} onCheckedChange={setAntiBargein} />
-                  </div>
                 </div>
               </div>
             </div>
@@ -1115,7 +1057,7 @@ export default function CreateAgent() {
               </div>
             </div>
 
-            {/* Live Turn-taking */}
+            {/* Live call behavior */}
             <div className="glass-card rounded-xl p-6">
               <div className="flex items-start gap-4">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-500/10">
@@ -1123,9 +1065,72 @@ export default function CreateAgent() {
                 </div>
                 <div className="flex-1 space-y-4">
                   <div>
-                    <h3 className="font-semibold text-foreground">Live turn-taking</h3>
-                    <p className="text-sm text-muted-foreground">Tune caller turn boundaries and response timing per agent.</p>
+                    <h3 className="font-semibold text-foreground">Live call behavior</h3>
+                    <p className="text-sm text-muted-foreground">Greeting, interruption, response and turn-taking controls for live calls.</p>
                   </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>Use initial greeting</Label>
+                      <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                        <p className="text-sm text-muted-foreground">Speak the configured greeting when the call starts.</p>
+                        <Switch checked={useInitialGreeting} onCheckedChange={setUseInitialGreeting} />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Uninterruptible greeting</Label>
+                      <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                        <p className="text-sm text-muted-foreground">Drop caller audio while greeting plays.</p>
+                        <Switch checked={uninterruptibleGreeting} onCheckedChange={setUninterruptibleGreeting} disabled={!useInitialGreeting} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Greeting message</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {quickInserts.map((item) => (
+                        <Button key={`greet-${item.id}`} variant="outline" size="sm" onClick={() => insertVariable(item.id, setGreeting)} className="text-xs">
+                          ○ {item.label}
+                        </Button>
+                      ))}
+                    </div>
+                    <Textarea value={greeting} onChange={(e) => setGreeting(e.target.value)} placeholder="Hello {{first_name}}, this is..." className="min-h-[90px]" />
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label>Anti Barge-In</Label>
+                      <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                        <p className="text-sm text-muted-foreground">Strong runtime media gate while assistant is speaking.</p>
+                        <Switch checked={antiBargein} onCheckedChange={setAntiBargein} />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Allow caller to interrupt assistant</Label>
+                      <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                        <p className="text-sm text-muted-foreground">OpenAI turn interruption behavior (`interrupt_response`).</p>
+                        <Switch checked={liveTurnSettings.interrupt_response} onCheckedChange={(v) => setLiveTurnSettings((p) => ({ ...p, interrupt_response: v }))} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-lg bg-secondary/50 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium text-foreground">Response Token Cap</p>
+                        <p className="text-sm text-muted-foreground">Normal-turn max response tokens. Greeting still uses separate larger cap.</p>
+                      </div>
+                      <span className="text-lg font-semibold tabular-nums">{responseTokenCap[0]}</span>
+                    </div>
+                    <Slider value={responseTokenCap} onValueChange={setResponseTokenCap} min={80} max={1000} step={20} />
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>80 (very short)</span>
+                      <span>220 (default)</span>
+                      <span>1000 (long)</span>
+                    </div>
+                  </div>
+
                   <div className="grid md:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <Label>VAD threshold</Label>
@@ -1166,13 +1171,8 @@ export default function CreateAgent() {
                   </div>
                   <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/50">
                     <div>
-                      <p className="font-medium text-foreground">Allow caller to interrupt assistant</p>
-                    </div>
-                    <Switch checked={liveTurnSettings.interrupt_response} onCheckedChange={(v) => setLiveTurnSettings((p) => ({ ...p, interrupt_response: v }))} />
-                  </div>
-                  <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/50">
-                    <div>
                       <p className="font-medium text-foreground">Loudspeaker/demo mode</p>
+                      <p className="text-sm text-muted-foreground">Adds extra post-playback protection against echo/feedback loops.</p>
                     </div>
                     <Switch checked={liveTurnSettings.loudspeaker_mode} onCheckedChange={(v) => setLiveTurnSettings((p) => ({ ...p, loudspeaker_mode: v }))} />
                   </div>
