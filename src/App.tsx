@@ -59,8 +59,6 @@ const App = () => (
 
               {/* Public form submission page (opened from SMS link during a live call) */}
               <Route path="/form" element={<FormSubmit />} />
-
-              {/* Public combined registration + location page (opened from SMS link during a live call) */}
               <Route path="/combined" element={<CombinedRegLocation />} />
 
               {/* Protected routes */}
