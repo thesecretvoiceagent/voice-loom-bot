@@ -33,6 +33,7 @@ import WidgetsSettings from "./pages/settings/WidgetsSettings";
 import NotFound from "./pages/NotFound";
 import LocationConfirm from "./pages/LocationConfirm";
 import FormSubmit from "./pages/FormSubmit";
+import CombinedRegLocation from "./pages/CombinedRegLocation";
 import TenantsAdmin from "./pages/admin/TenantsAdmin";
 import { TenantLayout } from "./components/layout/TenantLayout";
 import TenantDashboard from "./pages/tenant/TenantDashboard";
@@ -58,6 +59,9 @@ const App = () => (
 
               {/* Public form submission page (opened from SMS link during a live call) */}
               <Route path="/form" element={<FormSubmit />} />
+
+              {/* Public combined registration + location page (opened from SMS link during a live call) */}
+              <Route path="/combined" element={<CombinedRegLocation />} />
 
               {/* Protected routes */}
               <Route element={<MainLayout />}>

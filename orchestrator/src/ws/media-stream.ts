@@ -1146,13 +1146,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const formToken = crypto.createHmac("sha256", tokenSecret).update(callId).digest("hex");
         const isLovableLike = !locationPageBase.endsWith(".html") && !/\/index$/.test(locationPageBase);
         const formPath = isLovableLike ? "/form" : "/form.html";
+        const combinedPath = isLovableLike ? "/combined" : "/combined.html";
         const formBase = `${locationPageBase}${formPath}?caseId=${encodeURIComponent(callId)}`;
+        const combinedBase = `${locationPageBase}${combinedPath}?caseId=${encodeURIComponent(callId)}`;
         callVariables.form_link = `${formBase}&token=${formToken}&mode=registration`;
+        callVariables.combined_reg_location_link = `${combinedBase}&token=${formToken}`;
         // Backward-compatible alias only; NOT a separate 4th link.
         callVariables.form1_link = callVariables.form_link;
         callVariables.form2_link = `${formBase}&token=${formToken}&mode=callback`;
         console.log(`[MediaStream] link generated type=registration caseId=${callId} token=${maskToken(formToken)} url=${formBase}&token=<masked>&mode=registration`);
         console.log(`[MediaStream] link generated type=callback caseId=${callId} token=${maskToken(formToken)} url=${formBase}&token=<masked>&mode=callback`);
+        console.log(`[MediaStream] link generated type=combined_reg_location caseId=${callId} token=${maskToken(formToken)} url=${combinedBase}&token=<masked>`);
       } catch (err) {
         console.error(`[MediaStream] Failed to build form_link:`, err);
       }
