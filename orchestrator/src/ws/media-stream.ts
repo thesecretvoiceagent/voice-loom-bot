@@ -1505,18 +1505,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       status: "in-progress",
       direction: callDirection,
       started_at: callStartTime.toISOString(),
-    });
-
-    if (callId) {
-      recordIiziShadowTrace({
-        callId,
-        agentId: resolvedAgentId,
-        iiziCombinedMode: useCombinedRegLocationSms,
-        eventType: "call_started",
-        payload: { direction: callDirection },
-        stateRef: iiziShadowStateRef,
+    })
+      .then(() => {
+        if (!callId) return;
+        recordIiziShadowTrace({
+          callId,
+          agentId: resolvedAgentId,
+          iiziCombinedMode: useCombinedRegLocationSms,
+          eventType: "call_started",
+          payload: { direction: callDirection },
+          stateRef: iiziShadowStateRef,
+        });
+      })
+      .catch((err) => {
+        console.error(`[MediaStream] upsertCall failed (callId=${callId || "?"})`, err);
       });
-    }
 
     // Subscribe to inbound SMS replies for THIS call.
     // When the customer texts back during the call, inject the reply as a system message
