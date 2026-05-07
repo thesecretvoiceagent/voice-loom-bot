@@ -26,6 +26,10 @@ export type NextActionType =
  */
 export type RequiredEventType =
   | "call_started"
+  /** Inbound SMS reply observed on this call (shadow / IIZI trace). */
+  | "sms_received"
+  /** Model invoked end_call tool (shadow; may still be blocked by runtime guards). */
+  | "end_call_requested"
   | "user_utterance"
   | "tool_called"
   | "tool_succeeded"

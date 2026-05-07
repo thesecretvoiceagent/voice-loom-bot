@@ -8,6 +8,8 @@ import {
   upsertCall,
   updateCall,
 } from "../supabase.js";
+import type { IiziShadowState } from "../flow/iiziShadowFlow.js";
+import { recordIiziShadowTrace } from "../flow/trace.js";
 
 // Singleton supabase client for realtime subscriptions (uses anon key — RLS allows authenticated SELECT,
 // but for realtime on sms_messages we'll publish to anon role via the table's REPLICA IDENTITY FULL setup).
@@ -423,6 +425,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let locationStatus: "unknown" | "pending" | "confirmed" | "failed" = "unknown";
   let locationConfirmedValue: { address?: string; lat?: number | null; lon?: number | null } | null = null;
   let useCombinedRegLocationSms = false;
+  /** IIZI shadow state machine (read-only trace; no effect on live path). */
+  const iiziShadowStateRef: { current: IiziShadowState | null } = { current: null };
   let combinedLocationReadbackQueued = false;
   let vehicleValidationStatus: "unknown" | "valid" | "invalid" = "unknown";
   const COMBINED_SMS_TEMPLATE_NAME = "Registreerimisnumbri ja asukoha SMS";
@@ -1503,6 +1507,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       started_at: callStartTime.toISOString(),
     });
 
+    if (callId) {
+      recordIiziShadowTrace({
+        callId,
+        agentId: resolvedAgentId,
+        iiziCombinedMode: useCombinedRegLocationSms,
+        eventType: "call_started",
+        payload: { direction: callDirection },
+        stateRef: iiziShadowStateRef,
+      });
+    }
+
     // Subscribe to inbound SMS replies for THIS call.
     // When the customer texts back during the call, inject the reply as a system message
     // into the OpenAI Realtime session so the AI can read it back / acknowledge it.
@@ -1527,6 +1542,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const fromNum = row.from_number || "the customer";
                 console.log(`[MediaStream] Inbound SMS received (callId=${callId}, from=${fromNum}): "${replyBody.slice(0, 80)}"`);
                 transcriptLines.push(`[SMS from ${fromNum}]: ${replyBody}`);
+
+                recordIiziShadowTrace({
+                  callId,
+                  agentId: resolvedAgentIdRef,
+                  iiziCombinedMode: useCombinedRegLocationSms,
+                  eventType: "sms_received",
+                  payload: { from: String(fromNum), preview: replyBody.slice(0, 120) },
+                  stateRef: iiziShadowStateRef,
+                });
 
                 if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                   const sysMsg = `[SYSTEM EVENT: sms_received] from="${fromNum}" body="${replyBody}". Internal note only — do NOT read this tag aloud. Acknowledge the customer's SMS content naturally in the conversation right now (for example, read any phone number or address back to confirm). Speak in the same language the call is being conducted in.`;
@@ -1602,6 +1626,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     }
                   }
                   maybeNudgeDeferredCallbackSms("location_confirmed");
+                  recordIiziShadowTrace({
+                    callId,
+                    agentId: resolvedAgentIdRef,
+                    iiziCombinedMode: useCombinedRegLocationSms,
+                    eventType: "location_confirmed",
+                    payload: {
+                      address: addr,
+                      lat: row.location_lat ?? null,
+                      lon: row.location_lon ?? null,
+                      payload_ok: hasAddress || hasCoordinates,
+                    },
+                    stateRef: iiziShadowStateRef,
+                  });
                 }
 
                 // 2. Google Form fallback submission (registration number / callback phone)
@@ -1611,6 +1648,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   const reg = (row.form_registration_number || "").toString().slice(0, 20);
                   const phone = (row.form_callback_phone_number || "").toString().slice(0, 20);
                   console.log(`[MediaStream] Form submitted (callId=${callId}): reg="${reg}" phone="${phone}"`);
+                  recordIiziShadowTrace({
+                    callId,
+                    agentId: resolvedAgentIdRef,
+                    iiziCombinedMode: useCombinedRegLocationSms,
+                    eventType: "form_submitted",
+                    payload: { reg, callback_phone: phone },
+                    stateRef: iiziShadowStateRef,
+                  });
                   if (useCombinedRegLocationSms && reg) {
                     console.log(`[IIZI-CombinedSMS] form registration received callId=${callId}`);
                   }
@@ -1669,6 +1714,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         );
                         console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=true (callId=${callId})`);
                         scheduleUserResponseCreate("system-event", 50);
+                        recordIiziShadowTrace({
+                          callId,
+                          agentId: resolvedAgentIdRef,
+                          iiziCombinedMode: useCombinedRegLocationSms,
+                          eventType: "vehicle_lookup_result",
+                          payload: {
+                            match: true,
+                            coverage_invalid: lookup.coverage_invalid,
+                            submitted_reg: lookup.submitted_reg,
+                          },
+                          stateRef: iiziShadowStateRef,
+                        });
                         if (
                           useCombinedRegLocationSms &&
                           !lookup.coverage_invalid &&
@@ -1705,6 +1762,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         );
                         console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=false (callId=${callId})`);
                         scheduleUserResponseCreate("system-event", 50);
+                        recordIiziShadowTrace({
+                          callId,
+                          agentId: resolvedAgentIdRef,
+                          iiziCombinedMode: useCombinedRegLocationSms,
+                          eventType: "vehicle_lookup_result",
+                          payload: {
+                            match: false,
+                            submitted_reg: lookup.submitted_reg,
+                          },
+                          stateRef: iiziShadowStateRef,
+                        });
                       }
                     }
                   }
@@ -2379,6 +2447,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(`[MediaStream] Tool called: ${fnName} (callId=${callId})`, event.arguments);
 
             if (fnName === "end_call") {
+              let reason = "Call ended by AI";
+              try {
+                const args = JSON.parse(event.arguments);
+                reason = args.reason || reason;
+              } catch {}
+              recordIiziShadowTrace({
+                callId,
+                agentId: resolvedAgentIdRef,
+                iiziCombinedMode: useCombinedRegLocationSms,
+                eventType: "end_call_requested",
+                payload: { reason },
+                stateRef: iiziShadowStateRef,
+              });
               if (isOccupantCountGateBlocked()) {
                 console.warn(
                   `[IIZI-Occupants] blocked action=end_call reason=required_not_confirmed status=${occupantCountStatus} callId=${callId}`
@@ -2398,11 +2479,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 emitOccupantCountRequiredSystemEvent("end_call");
                 break;
               }
-              let reason = "Call ended by AI";
-              try {
-                const args = JSON.parse(event.arguments);
-                reason = args.reason || reason;
-              } catch {}
 
               // Guardrail: refuse end_call if it fires too soon after greeting or before
               // any real user utterance. This stops the bot from "hanging up randomly"
@@ -2768,6 +2844,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     twilio_sid: result.sid || null,
                     status: result.status || "sent",
                   }).catch(() => {});
+                  recordIiziShadowTrace({
+                    callId,
+                    agentId: resolvedAgentIdRef,
+                    iiziCombinedMode: useCombinedRegLocationSms,
+                    eventType: "sms_sent",
+                    payload: { template_name: tpl.name, twilio_sid: result.sid ?? null },
+                    stateRef: iiziShadowStateRef,
+                  });
                 } else {
                   setSmsToolState(tpl.name, "failed", `twilio_send_failed:${result.error || result.status || "unknown"}`);
                   if (smsPendingTemplate === tpl.name) smsPendingTemplate = null;
@@ -3067,6 +3151,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callId) return;
     if (callFinalized) return;
     callFinalized = true;
+    recordIiziShadowTrace({
+      callId,
+      agentId: resolvedAgentIdRef,
+      iiziCombinedMode: useCombinedRegLocationSms,
+      eventType: "call_ended",
+      payload: {},
+      stateRef: iiziShadowStateRef,
+    });
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
     clearPendingUserResponseTimer();
