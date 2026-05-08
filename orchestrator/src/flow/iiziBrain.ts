@@ -3,9 +3,22 @@
  * Enforces SMS gate on consensus intent across OpenAI transcript vs Deepgram shadow STT.
  */
 
-export type IntentClassification = "unknown" | "roadside" | "non_roadside";
-/** Resolved triage outcome when ASR pathways disagree */
-export type ResolvedIntent = IntentClassification | "unknown_conflict";
+import type { BrainIntentSlug, CompiledBrainConfig, PathwayIntentClassification } from "./iiziBrainConfigTypes.js";
+import type { IiziBrainConfigV1 } from "./iiziBrainConfigTypes.js";
+import { mergePathwayIntents, type ResolvedBrainIntent } from "./iiziBrainMerge.js";
+export type { ResolvedBrainIntent };
+/** Merged coarse outcome for SMS gating — same as `ResolvedBrainIntent` from pathway merge */
+export type ResolvedIntent = ResolvedBrainIntent;
+
+import {
+  classifyIntentFromSpeechHybrid,
+  getDefaultCompiledBrain,
+  buildBrainConfigFromLayers,
+} from "./iiziBrainSpeechClassify.js";
+
+/** @deprecated Narrow alias — pathways use pathway labels only (+ unknown). */
+export type IntentClassification = PathwayIntentClassification;
+
 export type BrainControlMode = "observe" | "suggest" | "control";
 
 export type IiziBrainWorkflowPhase =
@@ -30,9 +43,21 @@ export interface IiziBrainEvaluateResult {
   state: string;
   /** Mirrors finalResolvedIntent for planner consumers */
   intentClassification: ResolvedIntent;
+  /** DB `agent_brain_configs.version` when a row applied; shipped default compile only → null */
+  brainConfigDbVersion: number | null;
+  brainConfigSchemaVersion: number;
+  /** Pathway classify meta (speech → intent), pre-merge */
+  matchedIntentOpenAI: BrainIntentSlug | null;
+  matchedIntentDeepgram: BrainIntentSlug | null;
+  matchedRuleOpenAI: string;
+  matchedRuleDeepgram: string;
+  classifySourceOpenAI: string;
+  classifySourceDeepgram: string;
+  /** Legacy-regex fail-open after config load error */
+  brainClassifierForceBuiltinFallback: boolean;
   /** Per-pathway keyword signals (sticky until a new clear keyword hit on that pathway) */
-  sourceIntentOpenAI: IntentClassification;
-  sourceIntentDeepgram: IntentClassification;
+  sourceIntentOpenAI: PathwayIntentClassification;
+  sourceIntentDeepgram: PathwayIntentClassification;
   finalResolvedIntent: ResolvedIntent;
   intentResolutionReason: string;
   /** Human-readable SMS policy line for logs (also inside gateSms output) */
@@ -53,80 +78,86 @@ export interface IiziBrainRuntimeState {
   lastObservedEvent: string;
   lastTranscriptSource: BrainTranscriptSource;
 
+  /** Compiled policy (defaults + DB layer). */
+  brainCompiled: CompiledBrainConfig;
+  /** DB row `version`; null if only shipped default compiled (including before async load settles) */
+  brainConfigDbVersion: number | null;
+
+  /**
+   * When true: Supabase brain load/apply failed mid-call — classify with legacy built-in regex only
+   * (`classifyIntentFromSpeechHybrid` receives no compiled rules). SMS gates still use shipped default compile.
+   */
+  brainClassifierForceBuiltinFallback: boolean;
+
+  openaiLastMatchedRuleIds: string;
+  openaiLastClassifySource: string;
+  openaiLastMatchedIntentSlug: BrainIntentSlug | null;
+  deepgramLastMatchedRuleIds: string;
+  deepgramLastClassifySource: string;
+  deepgramLastMatchedIntentSlug: BrainIntentSlug | null;
+
   /** Last clear keyword-derived intent per ASR pathway; "unknown" = no classified hit yet */
-  openaiRealtimeIntent: IntentClassification;
-  deepgramShadowIntent: IntentClassification;
+  openaiRealtimeIntent: PathwayIntentClassification;
+  deepgramShadowIntent: PathwayIntentClassification;
 
   /** Merged SMS policy intent — never blindly “last transcript wins”. */
   finalResolvedIntent: ResolvedIntent;
   intentResolutionReason: string;
 }
 
-/**
- * Eesti maanteearind — sõnad/fraasid ei tohi käivita non_roadside (arve, lukustus kütuse jne).
- * Registrid jagatud selgeteks alternatiioonidega (varem oli ühel real vigane `)?ratta` kui ka tühi
- * non_roadside alternatiivi sobiv).
- */
-const ROADSIDE_HINTS =
-  /\b(?:(?:kütus|bensiin|bentsiin)(?:\s+on)?\s+otsas\b|(?:mul\s+sai\b|(?:sai|sain|saime)\s+)?(?:mul\s+|ma\s+|meil\s+|teie\s+|ta\s+|sa\s+|me\s+)?(?:kütus|bensiin|bentsiin)\s+otsa\b|(?:auto\s+)?ei\s+käivitu\b|(?:auto\s+)?ei\s+liigu\b|ei\s+käivitu\b|ei\s+liigu\b|rehv\s+katki\b|tühi\s+rehv\b|aku\s+tühi\b|ei\s+saa\b[\s\S]{0,44}?\bautos{2,}e\b|(?:\bvõtmed\s+autos\b|\bvõtmed\b[\s\S]{0,32}?\bautos{2,}e\b)|uks\s+lukkus?\b|uks\s+lukus\b|\bvaja\b[^\n]{0,32}(?:auto\s+abi\b|autos*abi\b)|\bautos*abi\b|\bautos*\s+abi\b|puksiirr?\b|pukseerim(?:ine|ist|ise)?\b|kraav\b|avarii\b|õnnetus\b|krahh\b|jäin\s+teele\b|teele\s+jäänud\b|ei\s+käivi\b|käimatuse\b|mootor\b|vedelik\b|rehv\b|kumm\b|ratas(?:tega)?\b|(?:varu)?ratta(?:d|)\b|teel\s+abi\b|abi\s*vaja\s+tee\b|kahjustus\b)/iu;
-
-/** Mitte maanteearind (kontor, tagasihelistus, arve jne). Oluline: ilma tühja alternatiivita. */
-const NON_ROADSIDE_HINTS =
-  /\b(?:ei\s+vaja\s+(?:auto\s*)?abi|pole\s+(?:auto\s*)?abi(?:\s*küsimus)?|pole\s+tegemist\s+(?:õnnetus\b|avar(?:ii)?\b)|ainult\s+kontor(?:i|)|(?:tagasi)?helistage(?:\s*hilisemalt)?|\barve(?:tega)?\b|mitte\s+(?:auto\s*)?abi|väär\s+numer|pole\s+nöör(?:i|)|arutame\s+hind|müügi?\b|tellimus(?:tega)?|lihtsalt\s+infot|sooviks(?:in|)?\s+teada(?:\s+kui)?)/iu;
-
-function resolveMergedIntent(
-  oa: IntentClassification,
-  dg: IntentClassification,
-): { resolved: ResolvedIntent; reason: string } {
-  if (oa === "roadside" && dg === "roadside") return { resolved: "roadside", reason: "both_agree_roadside" };
-  if (oa === "non_roadside" && dg === "non_roadside") {
-    return { resolved: "non_roadside", reason: "both_agree_non_roadside" };
-  }
-
-  const conflictPair =
-    (oa === "roadside" && dg === "non_roadside") || (oa === "non_roadside" && dg === "roadside");
-  if (conflictPair) {
-    return { resolved: "unknown_conflict", reason: "source_conflict" };
-  }
-
-  if (oa === "roadside" && dg === "unknown") return { resolved: "roadside", reason: "openai_clear_deepgram_unknown" };
-  if (dg === "roadside" && oa === "unknown") return { resolved: "roadside", reason: "deepgram_clear_openai_unknown" };
-
-  if (oa === "non_roadside" && dg === "unknown") {
-    return { resolved: "non_roadside", reason: "openai_clear_deepgram_unknown" };
-  }
-  if (dg === "non_roadside" && oa === "unknown") {
-    return { resolved: "non_roadside", reason: "deepgram_clear_openai_unknown" };
-  }
-
-  return { resolved: "unknown", reason: "both_unknown_or_unclear" };
-}
-
 function recomputeFinalIntent(state: IiziBrainRuntimeState): void {
-  const { resolved, reason } = resolveMergedIntent(state.openaiRealtimeIntent, state.deepgramShadowIntent);
+  const { resolved, reason } = mergePathwayIntents(state.openaiRealtimeIntent, state.deepgramShadowIntent);
   state.finalResolvedIntent = resolved;
   state.intentResolutionReason = reason;
 }
 
-/** Conservative keyword classify from user speech */
-export function classifyIntentFromSpeech(text: string): IntentClassification | null {
-  const t = text.trim();
-  if (!t) return null;
-  /** Nt “ei ole auto abi” kui selgitus kontoriküsimuses — vältida valepositiivist “vajan auto abi”. */
-  const deniesCarRoadsideAbi =
-    /\bei\s+ole\b[^\n]{0,120}(?:\bautos*\s+abi\b|\bautos*abi\b)/i.test(t);
-  const hitNon = NON_ROADSIDE_HINTS.test(t);
-  const hitRoad = ROADSIDE_HINTS.test(t);
-  if (hitNon && hitRoad) {
-    if (deniesCarRoadsideAbi) return "non_roadside";
-    return "roadside";
-  }
-  if (hitRoad) return "roadside";
-  if (hitNon) return "non_roadside";
-  return null;
+export function applyAgentBrainConfigToState(
+  state: IiziBrainRuntimeState,
+  dbJsonPartial: unknown | null,
+  brainConfigDbVersion: number | null,
+): void {
+  state.brainCompiled = buildBrainConfigFromLayers(dbJsonPartial as Partial<IiziBrainConfigV1> | null);
+  state.brainConfigDbVersion = brainConfigDbVersion;
+  state.brainClassifierForceBuiltinFallback = false;
+}
+
+/**
+ * Fail-open: reset gates layer to shipped default compile and force legacy built-in classifier regex
+ * (covers Supabase fetch/parse errors during a live call — does not block SMS on config alone).
+ */
+export function markIiziBrainConfigLoadFailed(state: IiziBrainRuntimeState): void {
+  state.brainClassifierForceBuiltinFallback = true;
+  state.brainCompiled = getDefaultCompiledBrain();
+  state.brainConfigDbVersion = null;
+}
+
+function resetPathwayClassifyScratch(state: IiziBrainRuntimeState): void {
+  state.openaiLastMatchedRuleIds = "";
+  state.openaiLastClassifySource = "config";
+  state.openaiLastMatchedIntentSlug = null;
+  state.deepgramLastMatchedRuleIds = "";
+  state.deepgramLastClassifySource = "config";
+  state.deepgramLastMatchedIntentSlug = null;
+}
+
+/** Compiled rules for intent labels, or `null` → legacy built-in regex bundle (Supabase fail-open). */
+function compiledForClassification(state: IiziBrainRuntimeState): CompiledBrainConfig | null {
+  return state.brainClassifierForceBuiltinFallback ? null : state.brainCompiled;
+}
+
+/**
+ * Conservative classify using compiled brain (`defaults` + optional DB overlay).
+ * Internally falls back to legacy regex only if compiled rule list is empty.
+ */
+export function classifyIntentFromSpeech(
+  text: string,
+  brain?: CompiledBrainConfig | null,
+): PathwayIntentClassification | null {
+  return classifyIntentFromSpeechHybrid(text, brain ?? getDefaultCompiledBrain()).intent;
 }
 
 export function createInitialIiziBrainState(): IiziBrainRuntimeState {
+  const compiled = getDefaultCompiledBrain();
   const s: IiziBrainRuntimeState = {
     workflowPhase: "pre_sms_intent_gate",
     greetingPlaybackComplete: false,
@@ -136,6 +167,15 @@ export function createInitialIiziBrainState(): IiziBrainRuntimeState {
     silenceSignalCount: 0,
     lastObservedEvent: "init",
     lastTranscriptSource: "none",
+    brainCompiled: compiled,
+    brainConfigDbVersion: null,
+    brainClassifierForceBuiltinFallback: false,
+    openaiLastMatchedRuleIds: "",
+    openaiLastClassifySource: "config",
+    openaiLastMatchedIntentSlug: null,
+    deepgramLastMatchedRuleIds: "",
+    deepgramLastClassifySource: "config",
+    deepgramLastMatchedIntentSlug: null,
     openaiRealtimeIntent: "unknown",
     deepgramShadowIntent: "unknown",
     finalResolvedIntent: "unknown",
@@ -149,8 +189,15 @@ export function createInitialIiziBrainState(): IiziBrainRuntimeState {
 export function logIiziBrainIntentResolution(callId: string | null, state: IiziBrainRuntimeState): void {
   const cid = callId || "?";
   const gate = smsGatePeek(state);
+  const ev = evaluateIiziBrain(state, false);
   console.log(
-    `[IIZI-Brain] intent_resolution openai=${state.openaiRealtimeIntent} deepgram=${state.deepgramShadowIntent} resolved=${state.finalResolvedIntent} reason=${state.intentResolutionReason} sourceIntentOpenAI=${state.openaiRealtimeIntent} sourceIntentDeepgram=${state.deepgramShadowIntent} resolvedIntent=${state.finalResolvedIntent} intentResolutionReason=${state.intentResolutionReason} smsGateReason=${gate.smsGateReason} callId=${cid}`,
+    `[IIZI-Brain] intent_resolution openai=${state.openaiRealtimeIntent} deepgram=${state.deepgramShadowIntent} ` +
+      `resolved=${state.finalResolvedIntent} reason=${state.intentResolutionReason} ` +
+      `brainConfigDbVersion=${ev.brainConfigDbVersion ?? "null"} schema=${ev.brainConfigSchemaVersion} ` +
+      `matchedIntentOA=${ev.matchedIntentOpenAI ?? "null"} matchedRuleOA=${ev.matchedRuleOpenAI} classifySourceOA=${ev.classifySourceOpenAI} ` +
+      `matchedIntentDG=${ev.matchedIntentDeepgram ?? "null"} matchedRuleDG=${ev.matchedRuleDeepgram} classifySourceDG=${ev.classifySourceDeepgram} ` +
+      `classifierFailOpen=${ev.brainClassifierForceBuiltinFallback} ` +
+      `nextAction=${ev.expectedNextAction} smsGateReason=${gate.smsGateReason} callId=${cid}`,
   );
 }
 
@@ -170,10 +217,13 @@ function smsGatePeek(state: IiziBrainRuntimeState): {
 export function ingestIiziBrainNonemptyUserSpeech(state: IiziBrainRuntimeState, text: string): void {
   state.silenceSignalCount = 0;
   state.lastTranscriptSource = "openai_realtime";
-  const c = classifyIntentFromSpeech(text);
-  if (c) state.openaiRealtimeIntent = c;
+  const r = classifyIntentFromSpeechHybrid(text, compiledForClassification(state));
+  state.openaiLastMatchedRuleIds = r.meta.matchedRuleIds;
+  state.openaiLastClassifySource = r.meta.classifySource;
+  state.openaiLastMatchedIntentSlug = r.meta.matchedIntentSlug;
+  if (r.intent) state.openaiRealtimeIntent = r.intent;
   recomputeFinalIntent(state);
-  state.lastObservedEvent = c ? `user_transcript.${c}` : "user_transcript.unclear_needs_intent_question";
+  state.lastObservedEvent = r.intent ? `user_transcript.${r.intent}` : "user_transcript.unclear_needs_intent_question";
 }
 
 /** Deepgram finals: strengthens merge only via deepgramShadowIntent; does not wipe OpenAI pathway */
@@ -201,9 +251,12 @@ export function ingestIiziBrainTrustedShadowFinal(
   }
 
   state.lastObservedEvent = `trusted_transcript_shadow.${provider}.final`;
-  const c = classifyIntentFromSpeech(t);
-  if (c) {
-    state.deepgramShadowIntent = c;
+  const r = classifyIntentFromSpeechHybrid(t, compiledForClassification(state));
+  state.deepgramLastMatchedRuleIds = r.meta.matchedRuleIds;
+  state.deepgramLastClassifySource = r.meta.classifySource;
+  state.deepgramLastMatchedIntentSlug = r.meta.matchedIntentSlug;
+  if (r.intent) {
+    state.deepgramShadowIntent = r.intent;
     state.silenceSignalCount = 0;
     recomputeFinalIntent(state);
     return { skippedAggressiveMutation: false, shouldLogIntentResolution: true };
@@ -246,6 +299,8 @@ export function ingestIiziBrainFlow(
       state.lastTranscriptSource = "none";
       state.openaiRealtimeIntent = "unknown";
       state.deepgramShadowIntent = "unknown";
+      state.brainClassifierForceBuiltinFallback = false;
+      resetPathwayClassifyScratch(state);
       recomputeFinalIntent(state);
       state.intentResolutionReason = "call_started_reset";
       break;
@@ -286,6 +341,8 @@ export function ingestIiziBrainFlow(
       state.lastTranscriptSource = "none";
       state.openaiRealtimeIntent = "unknown";
       state.deepgramShadowIntent = "unknown";
+      state.brainClassifierForceBuiltinFallback = false;
+      resetPathwayClassifyScratch(state);
       recomputeFinalIntent(state);
       state.intentResolutionReason = "call_ended_reset";
       break;
@@ -294,7 +351,7 @@ export function ingestIiziBrainFlow(
   }
 }
 
-/** Whether combined SMS may be delivered — uses merged intent only */
+/** Whether combined SMS may be delivered — uses merged intent + brain gates */
 export function gateIiziCombinedSms(state: IiziBrainRuntimeState): {
   allow: boolean;
   reasonCode: string;
@@ -303,39 +360,64 @@ export function gateIiziCombinedSms(state: IiziBrainRuntimeState): {
 } {
   const r = state.finalResolvedIntent;
 
+  const deny = (reasonCode: string, smsGateReason: string, message: string) => ({
+    allow: false as const,
+    reasonCode,
+    smsGateReason,
+    message,
+  });
+
   if (r === "unknown_conflict") {
-    return {
-      allow: false,
-      reasonCode: "intent_conflict",
-      smsGateReason: "sms_blocked_intent_conflict_openai_vs_deepgram",
-      message:
-        "Roadside intent is unclear — OpenAI transcript and Deepgram shadow disagree on roadside vs non-roadside. Do NOT send the combined roadside SMS yet. Verbally reconcile what the caller needs; do not escalate to SMS until consensus.",
-    };
+    return deny(
+      "intent_conflict",
+      "sms_blocked_intent_conflict_openai_vs_deepgram",
+      "Roadside intent is unclear — OpenAI transcript and Deepgram shadow disagree on roadside vs non-roadside. Do NOT send the combined roadside SMS yet. Verbally reconcile what the caller needs; do not escalate to SMS until consensus.",
+    );
   }
   if (r === "non_roadside") {
-    return {
-      allow: false,
-      reasonCode: "intent_non_roadside",
-      smsGateReason: "sms_blocked_merged_non_roadside_intent",
-      message:
-        'Merged intent is NON-roadside. Do NOT send roadside SMS templates. Explain briefly that this line is for autoabi and offer transfer to human / callback.',
-    };
+    return deny(
+      "intent_non_roadside",
+      "sms_blocked_merged_non_roadside_intent",
+      'Merged intent is NON-roadside. Do NOT send roadside SMS templates. Explain briefly that this line is for autoabi and offer transfer to human / callback.',
+    );
   }
   if (r === "unknown") {
+    return deny(
+      "intent_unknown",
+      "sms_blocked_merged_unknown_intent",
+      "Merged roadside intent is unknown. Ask whether the caller needs roadside/emergency roadside assistance before sending the combined SMS. Do NOT send SMS until clarified.",
+    );
+  }
+  if (r === "emergency_handoff") {
+    return deny(
+      "intent_emergency_handoff",
+      "sms_blocked_emergency_handoff_escalate",
+      "Merged intent is EMERGENCY / medical-style escalation — do NOT send combined roadside SMS. Route to emergency services / human handling per playbook.",
+    );
+  }
+
+  if (r === "roadside") {
+    const allow = state.brainCompiled.sendCombinedSmsGate["roadside"] !== false;
+    if (!allow) {
+      return deny(
+        "brain_config_sms_gate",
+        "sms_blocked_brain_config_send_combined_sms_roadside_disabled",
+        "Brain configuration disallows combined SMS for roadside intent.",
+      );
+    }
     return {
-      allow: false,
-      reasonCode: "intent_unknown",
-      smsGateReason: "sms_blocked_merged_unknown_intent",
-      message:
-        "Merged roadside intent is unknown. Ask whether the caller needs roadside/emergency roadside assistance before sending the combined SMS. Do NOT send SMS until clarified.",
+      allow: true,
+      reasonCode: "roadside_detected",
+      smsGateReason: "sms_allowed_merged_roadside_intent",
+      message: "Allowed: merged intent is roadside — combined roadside SMS permitted by policy.",
     };
   }
-  return {
-    allow: true,
-    reasonCode: "roadside_detected",
-    smsGateReason: "sms_allowed_merged_roadside_intent",
-    message: "Allowed: merged intent is roadside — combined roadside SMS permitted by policy.",
-  };
+
+  return deny(
+    "intent_unhandled",
+    `sms_blocked_unhandled_merged_intent_${String(r)}`,
+    "Unhandled merged intent for SMS policy — do NOT send combined SMS.",
+  );
 }
 
 function guardSmsIntent(state: IiziBrainRuntimeState): IiziBrainGuardResults {
@@ -344,18 +426,17 @@ function guardSmsIntent(state: IiziBrainRuntimeState): IiziBrainGuardResults {
   if (r === "unknown_conflict") failures.push("intent_conflict");
   if (r === "unknown") failures.push("intent_unknown");
   if (r === "non_roadside") failures.push("intent_non_roadside");
+  if (r === "emergency_handoff") failures.push("intent_emergency_handoff");
   return { passed: failures.length === 0, failures };
 }
 
 export function deriveExpectedNextActionBrain(state: IiziBrainRuntimeState): string {
-  const intentForSilenceBranch: IntentClassification =
-    state.finalResolvedIntent === "unknown_conflict"
-      ? "unknown"
-      : state.finalResolvedIntent;
+  const inSilenceLadder =
+    state.finalResolvedIntent === "unknown" || state.finalResolvedIntent === "unknown_conflict";
 
   if (
     state.greetingPlaybackComplete &&
-    intentForSilenceBranch === "unknown" &&
+    inSilenceLadder &&
     state.workflowPhase === "pre_sms_intent_gate"
   ) {
     if (!state.combinedSmsSuccessfullySent && state.silenceSignalCount === 0) {
@@ -372,6 +453,8 @@ export function deriveExpectedNextActionBrain(state: IiziBrainRuntimeState): str
       return "ask_if_caller_needs_roadside_assistance";
     case "non_roadside":
       return "route_non_roadside_to_human";
+    case "emergency_handoff":
+      return "route_emergency_human_immediate";
     case "roadside":
       if (!state.combinedSmsSuccessfullySent && state.workflowPhase === "pre_sms_intent_gate") {
         return "send_combined_reg_location_sms";
@@ -402,7 +485,9 @@ export function evaluateIiziBrain(state: IiziBrainRuntimeState, controlSmsGateAc
   const guardResults = guardSmsIntent(state);
   const wf = state.workflowPhase;
   const coarseState =
-    state.finalResolvedIntent === "unknown" || state.finalResolvedIntent === "unknown_conflict"
+    state.finalResolvedIntent === "unknown" ||
+    state.finalResolvedIntent === "unknown_conflict" ||
+    state.finalResolvedIntent === "emergency_handoff"
       ? `intent_triage.${wf}`
       : `${state.finalResolvedIntent}.${wf}`;
   const gateSnapshot = smsGatePeek(state);
@@ -411,6 +496,15 @@ export function evaluateIiziBrain(state: IiziBrainRuntimeState, controlSmsGateAc
     observedEvent: state.lastObservedEvent,
     state: coarseState,
     intentClassification: state.finalResolvedIntent,
+    brainConfigDbVersion: state.brainConfigDbVersion,
+    brainConfigSchemaVersion: state.brainCompiled.schemaVersion,
+    matchedIntentOpenAI: state.openaiLastMatchedIntentSlug,
+    matchedIntentDeepgram: state.deepgramLastMatchedIntentSlug,
+    matchedRuleOpenAI: state.openaiLastMatchedRuleIds,
+    matchedRuleDeepgram: state.deepgramLastMatchedRuleIds,
+    classifySourceOpenAI: state.openaiLastClassifySource,
+    classifySourceDeepgram: state.deepgramLastClassifySource,
+    brainClassifierForceBuiltinFallback: state.brainClassifierForceBuiltinFallback,
     sourceIntentOpenAI: state.openaiRealtimeIntent,
     sourceIntentDeepgram: state.deepgramShadowIntent,
     finalResolvedIntent: state.finalResolvedIntent,
@@ -431,13 +525,28 @@ export function logIiziBrainTrustedShadowTranscript(
 ): void {
   const preview = textSlice.slice(0, 220).replace(/\s+/g, " ").trim();
   console.log(
-    `[IIZI-Brain] event=trusted_transcript_shadow source=${sourceProvider} transcriptSource=${snap.transcriptSource} intent=${snap.intentClassification} sourceIntentOpenAI=${snap.sourceIntentOpenAI} sourceIntentDeepgram=${snap.sourceIntentDeepgram} resolvedIntent=${snap.finalResolvedIntent} intentResolutionReason=${snap.intentResolutionReason} smsGateReason=${snap.smsGateReason} text="${preview}" state=${snap.state} expectedNextAction=${snap.expectedNextAction} controlMode=${snap.controlMode} callId=${callId || "?"} guardsPassed=${snap.guardResults.passed}`,
+    `[IIZI-Brain] event=trusted_transcript_shadow source=${sourceProvider} ` +
+      `brainConfigDbVersion=${snap.brainConfigDbVersion ?? "null"} schema=${snap.brainConfigSchemaVersion} ` +
+      `classifierFailOpen=${snap.brainClassifierForceBuiltinFallback} ` +
+      `matchedIntent=${snap.matchedIntentDeepgram ?? "null"} matchedRule=${snap.matchedRuleDeepgram} nextAction=${snap.expectedNextAction} ` +
+      `transcriptSource=${snap.transcriptSource} intent=${snap.intentClassification} ` +
+      `sourceIntentOpenAI=${snap.sourceIntentOpenAI} sourceIntentDeepgram=${snap.sourceIntentDeepgram} ` +
+      `resolvedIntent=${snap.finalResolvedIntent} intentResolutionReason=${snap.intentResolutionReason} ` +
+      `smsGateReason=${snap.smsGateReason} text="${preview}" state=${snap.state} controlMode=${snap.controlMode} ` +
+      `callId=${callId || "?"} guardsPassed=${snap.guardResults.passed}`,
   );
 }
 
 export function logIiziBrainSnapshot(callId: string | null, snap: IiziBrainEvaluateResult): void {
   const id = callId || "?";
   console.log(
-    `[IIZI-Brain] event=${snap.observedEvent} state=${snap.state} intent=${snap.intentClassification} sourceIntentOpenAI=${snap.sourceIntentOpenAI} sourceIntentDeepgram=${snap.sourceIntentDeepgram} resolvedIntent=${snap.finalResolvedIntent} intentResolutionReason=${snap.intentResolutionReason} smsGateReason=${snap.smsGateReason} transcriptSource=${snap.transcriptSource} expectedNextAction=${snap.expectedNextAction} controlMode=${snap.controlMode} callId=${id} guardsPassed=${snap.guardResults.passed}`,
+    `[IIZI-Brain] event=${snap.observedEvent} state=${snap.state} intent=${snap.intentClassification} ` +
+      `brainConfigDbVersion=${snap.brainConfigDbVersion ?? "null"} schema=${snap.brainConfigSchemaVersion} ` +
+      `classifierFailOpen=${snap.brainClassifierForceBuiltinFallback} ` +
+      `matchedIntentOA=${snap.matchedIntentOpenAI ?? "null"} matchedRuleOA=${snap.matchedRuleOpenAI} classifySourceOA=${snap.classifySourceOpenAI} ` +
+      `matchedIntentDG=${snap.matchedIntentDeepgram ?? "null"} matchedRuleDG=${snap.matchedRuleDeepgram} classifySourceDG=${snap.classifySourceDeepgram} ` +
+      `sourceIntentOpenAI=${snap.sourceIntentOpenAI} sourceIntentDeepgram=${snap.sourceIntentDeepgram} resolvedIntent=${snap.finalResolvedIntent} ` +
+      `intentResolutionReason=${snap.intentResolutionReason} smsGateReason=${snap.smsGateReason} transcriptSource=${snap.transcriptSource} ` +
+      `nextAction=${snap.expectedNextAction} controlMode=${snap.controlMode} callId=${id} guardsPassed=${snap.guardResults.passed}`,
   );
 }

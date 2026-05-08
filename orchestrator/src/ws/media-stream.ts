@@ -21,8 +21,11 @@ import {
   logIiziBrainTrustedShadowTranscript,
   logIiziBrainSnapshot,
   logIiziBrainIntentResolution,
+  applyAgentBrainConfigToState,
+  markIiziBrainConfigLoadFailed,
   type IiziBrainRuntimeState,
 } from "../flow/iiziBrain.js";
+import { fetchLatestEnabledBrainConfigRow } from "../agentBrainConfigRepo.js";
 import { recordIiziShadowTrace } from "../flow/trace.js";
 import type { SttStreamingAdapterHandle } from "../stt/types.js";
 import { createSttShadowSession, type SttShadowBrainHooks } from "../stt/sttShadowSession.js";
@@ -1533,6 +1536,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       null;
     resolvedAgentIdRef = resolvedAgentId;
     callStartTime = new Date();
+
+    if (useCombinedRegLocationSms && callDirection === "inbound" && resolvedAgentId) {
+      fetchLatestEnabledBrainConfigRow(resolvedAgentId)
+        .then((row) => {
+          try {
+            applyAgentBrainConfigToState(iiziBrainRef.current, row?.config_json ?? null, row?.version ?? null);
+            console.log(
+              `[IIZI-Brain] brain_config_loaded brainConfigDbVersion=${row?.version ?? "default_shipped_overlay"} schema=${iiziBrainRef.current.brainCompiled.schemaVersion} agentId=${resolvedAgentId} callId=${callId || "?"}`,
+            );
+          } catch (err) {
+            markIiziBrainConfigLoadFailed(iiziBrainRef.current);
+            console.error(`[IIZI-Brain] brain_config_apply_failed_builtin_classifier_fail_open agentId=${resolvedAgentId}`, err);
+          }
+        })
+        .catch((err) => {
+          markIiziBrainConfigLoadFailed(iiziBrainRef.current);
+          console.error(`[IIZI-Brain] brain_config_fetch_failed_builtin_classifier_fail_open agentId=${resolvedAgentId}`, err);
+        });
+    }
+
     upsertCall(callId, {
       twilio_call_sid: callSid || null,
       agent_id: resolvedAgentId,
