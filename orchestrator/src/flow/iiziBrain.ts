@@ -68,7 +68,7 @@ export interface IiziBrainRuntimeState {
  * non_roadside alternatiivi sobiv).
  */
 const ROADSIDE_HINTS =
-  /\b(?:(?:kütus|bensiin|bentsiin)(?:\s+on)?\s+otsas\b|(?:mul\s+sai\b|(?:sai|sain|saime)\s+)?(?:mul\s+|ma\s+|meil\s+|teie\s+|ta\s+|sa\s+|me\s+)?(?:kütus|bensiin|bentsiin)\s+otsa\b|(?:auto\s+)?ei\s+käivitu\b|(?:auto\s+)?ei\s+liigu\b|ei\s+käivitu\b|ei\s+liigu\b|rehv\s+katki\b|tühi\s+rehv\b|aku\s+tühi\b|ei\s+saa\b[\s\S]{0,44}?\bautos{2,}e\b|(?:\bvõtmed\s+autos\b|\bvõtmed\b[\s\S]{0,32}?\bautos{2,}e\b)|uks\s+lukkus?\b|\bvaja\b[^\n]{0,32}(?:auto\s+abi\b|autos*abi\b)|\bautos*abi\b|\bautos*\s+abi\b|puksiirr?\b|pukseerim(?:ine|ist|ise)?\b|kraav\b|avarii\b|õnnetus\b|krahh\b|jäin\s+teele\b|teele\s+jäänud\b|ei\s+käivi\b|käimatuse\b|mootor\b|vedelik\b|rehv\b|kumm\b|ratas(?:tega)?\b|(?:varu)?ratta(?:d|)\b|teel\s+abi\b|abi\s*vaja\s+tee\b|kahjustus\b)/iu;
+  /\b(?:(?:kütus|bensiin|bentsiin)(?:\s+on)?\s+otsas\b|(?:mul\s+sai\b|(?:sai|sain|saime)\s+)?(?:mul\s+|ma\s+|meil\s+|teie\s+|ta\s+|sa\s+|me\s+)?(?:kütus|bensiin|bentsiin)\s+otsa\b|(?:auto\s+)?ei\s+käivitu\b|(?:auto\s+)?ei\s+liigu\b|ei\s+käivitu\b|ei\s+liigu\b|rehv\s+katki\b|tühi\s+rehv\b|aku\s+tühi\b|ei\s+saa\b[\s\S]{0,44}?\bautos{2,}e\b|(?:\bvõtmed\s+autos\b|\bvõtmed\b[\s\S]{0,32}?\bautos{2,}e\b)|uks\s+lukkus?\b|uks\s+lukus\b|\bvaja\b[^\n]{0,32}(?:auto\s+abi\b|autos*abi\b)|\bautos*abi\b|\bautos*\s+abi\b|puksiirr?\b|pukseerim(?:ine|ist|ise)?\b|kraav\b|avarii\b|õnnetus\b|krahh\b|jäin\s+teele\b|teele\s+jäänud\b|ei\s+käivi\b|käimatuse\b|mootor\b|vedelik\b|rehv\b|kumm\b|ratas(?:tega)?\b|(?:varu)?ratta(?:d|)\b|teel\s+abi\b|abi\s*vaja\s+tee\b|kahjustus\b)/iu;
 
 /** Mitte maanteearind (kontor, tagasihelistus, arve jne). Oluline: ilma tühja alternatiivita. */
 const NON_ROADSIDE_HINTS =
