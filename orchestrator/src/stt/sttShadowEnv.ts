@@ -19,7 +19,7 @@ export function readSttShadowEnv(): SttStreamingRuntimeConfig & {
   const shadowEnabled = shadowRaw.length > 0 ? isTruthyEnv(shadowRaw) : false;
 
   const apiKey = trimEnv("DEEPGRAM_API_KEY");
-  const model = trimEnv("DEEPGRAM_MODEL") || "nova-2-phonecall";
+  const model = trimEnv("DEEPGRAM_MODEL") || "nova-2-general";
   const language = trimEnv("DEEPGRAM_LANGUAGE") || "et";
   const endRaw = trimEnv("DEEPGRAM_ENDPOINTING_MS");
   const sfRaw = trimEnv("DEEPGRAM_SMART_FORMAT");

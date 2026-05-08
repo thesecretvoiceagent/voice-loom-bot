@@ -19,6 +19,37 @@ export interface DeepgramSttShadowOpts {
   onTrustedFinal?: (payload: { callId: string; text: string }) => void;
 }
 
+/** Deepgram Listen v1 rejects unknown model slugs (HTTP 400 on WS upgrade); map legacy/env typos here. */
+function normalizeDeepgramListenModel(requestedRaw: string): {
+  requested: string;
+  effective: string;
+  mappingNote: string | null;
+} {
+  const requested = requestedRaw.trim();
+  if (/^nova-2-phonecall$/i.test(requested)) {
+    return {
+      requested,
+      effective: "nova-2-general",
+      mappingNote: "nova_2_phonecall_not_in_listen_v1_enum",
+    };
+  }
+  return { requested, effective: requested, mappingNote: null };
+}
+
+/** Serializable query snapshot for logs (never includes API key). */
+function listenQuerySanitized(opts: DeepgramSttShadowOpts, effectiveModel: string): Record<string, string> {
+  const q: Record<string, string> = {
+    encoding: "mulaw",
+    sample_rate: "8000",
+    channels: "1",
+    model: effectiveModel,
+    language: opts.language.trim(),
+  };
+  if (opts.endpointingMs !== null) q.endpointing = String(opts.endpointingMs);
+  if (opts.smartFormat) q.smart_format = "true";
+  return q;
+}
+
 function logShadowTranscript(callId: string, text: string, isFinal: boolean): void {
   const preview = text.slice(0, 400).replace(/\s+/g, " ").trim();
   console.log(
@@ -33,22 +64,21 @@ export function createDeepgramSttShadowAdapter(opts: DeepgramSttShadowOpts): Stt
   let ws: WebSocket | null = null;
   let activeCallId = "";
 
-  const buildUrl = (): string => {
-    const q = new URLSearchParams({
-      encoding: "mulaw",
-      sample_rate: "8000",
-      channels: "1",
-      model: opts.model,
-      language: opts.language,
-    });
-    if (opts.endpointingMs !== null) q.set("endpointing", String(opts.endpointingMs));
-    if (opts.smartFormat) q.set("smart_format", "true");
-    return `wss://api.deepgram.com/v1/listen?${q.toString()}`;
+  const { effective: effectiveModel, requested: requestedModel, mappingNote: modelMappingNote } =
+    normalizeDeepgramListenModel(opts.model);
+
+  const buildWsUrlAndParams = (): { url: string; listenQuery: Record<string, string> } => {
+    const listenQuery = listenQuerySanitized(opts, effectiveModel);
+    const qs = new URLSearchParams(listenQuery);
+    return {
+      listenQuery,
+      url: `wss://api.deepgram.com/v1/listen?${qs.toString()}`,
+    };
   };
 
   return {
     providerName: "deepgram",
-    model: opts.model,
+    model: effectiveModel,
     language: opts.language,
     streamingEnabled: true,
 
@@ -58,11 +88,27 @@ export function createDeepgramSttShadowAdapter(opts: DeepgramSttShadowOpts): Stt
         console.warn(`[STT] Deepgram duplicate start skipped callId=${activeCallId}`);
         return;
       }
+
+      const { url, listenQuery } = buildWsUrlAndParams();
+
       console.log(
-        `[STT] provider=deepgram shadow_enabled=true model=${opts.model} language=${opts.language} endpointingMs=${opts.endpointingMs ?? "default"} smartFormat=${opts.smartFormat} callId=${activeCallId}`,
+        `[STT] deepgram_listen_params=${JSON.stringify({
+          host: "wss://api.deepgram.com/v1/listen",
+          query: listenQuery,
+          requestedModel,
+          effectiveModel,
+          modelMappingNote,
+          endpointingMs: opts.endpointingMs ?? "default",
+          smartFormat: opts.smartFormat,
+        })}`,
+      );
+
+      console.log(
+        `[STT] provider=deepgram shadow_enabled=true requestedModel=${requestedModel} effectiveModel=${effectiveModel} language=${opts.language} endpointingMs=${opts.endpointingMs ?? "default"} smartFormat=${opts.smartFormat} modelMappingNote=${modelMappingNote ?? "none"} callId=${activeCallId}`,
       );
       try {
-        ws = new WebSocket(buildUrl(), {
+        ws = new WebSocket(url, {
+          handshakeTimeout: 15_000,
           headers: {
             Authorization: `Token ${opts.apiKey}`,
           },
@@ -72,6 +118,19 @@ export function createDeepgramSttShadowAdapter(opts: DeepgramSttShadowOpts): Stt
         ws = null;
         return;
       }
+
+      ws.once("unexpected-response", (_req, res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => {
+          chunks.push(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk));
+        });
+        res.on("end", () => {
+          const body = Buffer.concat(chunks).toString("utf8").replace(/\s+/g, " ").trim().slice(0, 900);
+          console.error(
+            `[STT] deepgram_ws_upgrade_http status=${res.statusCode} query=${JSON.stringify(listenQuery)} body_preview="${body}"`,
+          );
+        });
+      });
 
       ws.on("open", () => {
         console.log(`[STT] connected provider=deepgram callId=${activeCallId}`);

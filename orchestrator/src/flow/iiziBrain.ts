@@ -62,11 +62,17 @@ export interface IiziBrainRuntimeState {
   intentResolutionReason: string;
 }
 
+/**
+ * Eesti maanteearind — sõnad/fraasid ei tohi käivita non_roadside (arve, lukustus kütuse jne).
+ * Registrid jagatud selgeteks alternatiioonidega (varem oli ühel real vigane `)?ratta` kui ka tühi
+ * non_roadside alternatiivi sobiv).
+ */
 const ROADSIDE_HINTS =
-  /\b(avari(i|)|õnnetus|auto\s*abi|autoabi|rehv|kumm|ratas(tega|)|jäin\s+teele|teele\s+jäänud|ei\s+käivi|ei\s+käivitu|käimatuse|mootor|vedelik|kütus(bens|)|krahh|kahjustus|(varu\s*))?ratta(d|)|(teel\s+abi)|(abi\s*vaja\s+tee)/i;
+  /\b(?:(?:kütus|bensiin|bentsiin)(?:\s+on)?\s+otsas\b|(?:mul\s+sai\b|(?:sai|sain|saime)\s+)?(?:mul\s+|ma\s+|meil\s+|teie\s+|ta\s+|sa\s+|me\s+)?(?:kütus|bensiin|bentsiin)\s+otsa\b|(?:auto\s+)?ei\s+käivitu\b|(?:auto\s+)?ei\s+liigu\b|ei\s+käivitu\b|ei\s+liigu\b|rehv\s+katki\b|tühi\s+rehv\b|aku\s+tühi\b|ei\s+saa\b[\s\S]{0,44}?\bautos{2,}e\b|(?:\bvõtmed\s+autos\b|\bvõtmed\b[\s\S]{0,32}?\bautos{2,}e\b)|uks\s+lukkus?\b|\bvaja\b[^\n]{0,32}(?:auto\s+abi\b|autos*abi\b)|\bautos*abi\b|\bautos*\s+abi\b|puksiirr?\b|pukseerim(?:ine|ist|ise)?\b|kraav\b|avarii\b|õnnetus\b|krahh\b|jäin\s+teele\b|teele\s+jäänud\b|ei\s+käivi\b|käimatuse\b|mootor\b|vedelik\b|rehv\b|kumm\b|ratas(?:tega)?\b|(?:varu)?ratta(?:d|)\b|teel\s+abi\b|abi\s*vaja\s+tee\b|kahjustus\b)/iu;
 
+/** Mitte maanteearind (kontor, tagasihelistus, arve jne). Oluline: ilma tühja alternatiivita. */
 const NON_ROADSIDE_HINTS =
-  /\b(ei\s+vaja\s+(auto\s*)?abi|pole\s+(auto\s*)?abi(\s*küsimus)?|pole\s+tegemist\s+(õnnetus|avar)|ainult\s+kontor(i|)|(tagasi)?helistage(\s*hilisemalt)?|\barve(tega|)|(mitte\s+(auto\s*)?abi)|väär\s+numer|pole\s+nöör(i|)|(arutame\s+hind)|müüg|tellimus(tega|)|(lihtsalt\s+infot)|(sooviks(in|)?\s+teada(\s*kui))?)/i;
+  /\b(?:ei\s+vaja\s+(?:auto\s*)?abi|pole\s+(?:auto\s*)?abi(?:\s*küsimus)?|pole\s+tegemist\s+(?:õnnetus\b|avar(?:ii)?\b)|ainult\s+kontor(?:i|)|(?:tagasi)?helistage(?:\s*hilisemalt)?|\barve(?:tega)?\b|mitte\s+(?:auto\s*)?abi|väär\s+numer|pole\s+nöör(?:i|)|arutame\s+hind|müügi?\b|tellimus(?:tega)?|lihtsalt\s+infot|sooviks(?:in|)?\s+teada(?:\s+kui)?)/iu;
 
 function resolveMergedIntent(
   oa: IntentClassification,
@@ -106,8 +112,17 @@ function recomputeFinalIntent(state: IiziBrainRuntimeState): void {
 export function classifyIntentFromSpeech(text: string): IntentClassification | null {
   const t = text.trim();
   if (!t) return null;
-  if (NON_ROADSIDE_HINTS.test(t)) return "non_roadside";
-  if (ROADSIDE_HINTS.test(t)) return "roadside";
+  /** Nt “ei ole auto abi” kui selgitus kontoriküsimuses — vältida valepositiivist “vajan auto abi”. */
+  const deniesCarRoadsideAbi =
+    /\bei\s+ole\b[^\n]{0,120}(?:\bautos*\s+abi\b|\bautos*abi\b)/i.test(t);
+  const hitNon = NON_ROADSIDE_HINTS.test(t);
+  const hitRoad = ROADSIDE_HINTS.test(t);
+  if (hitNon && hitRoad) {
+    if (deniesCarRoadsideAbi) return "non_roadside";
+    return "roadside";
+  }
+  if (hitRoad) return "roadside";
+  if (hitNon) return "non_roadside";
   return null;
 }
 
