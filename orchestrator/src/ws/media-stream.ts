@@ -9,7 +9,23 @@ import {
   updateCall,
 } from "../supabase.js";
 import type { IiziShadowState } from "../flow/iiziShadowFlow.js";
+import {
+  createInitialIiziBrainState,
+  gateIiziCombinedSms,
+  evaluateIiziBrain,
+  ingestIiziBrainNonemptyUserSpeech,
+  ingestIiziBrainEmptyTranscript,
+  ingestIiziBrainFlow,
+  ingestIiziBrainGreetingComplete,
+  ingestIiziBrainTrustedShadowFinal,
+  logIiziBrainTrustedShadowTranscript,
+  logIiziBrainSnapshot,
+  logIiziBrainIntentResolution,
+  type IiziBrainRuntimeState,
+} from "../flow/iiziBrain.js";
 import { recordIiziShadowTrace } from "../flow/trace.js";
+import type { SttStreamingAdapterHandle } from "../stt/types.js";
+import { createSttShadowSession, type SttShadowBrainHooks } from "../stt/sttShadowSession.js";
 
 // Singleton supabase client for realtime subscriptions (uses anon key — RLS allows authenticated SELECT,
 // but for realtime on sms_messages we'll publish to anon role via the table's REPLICA IDENTITY FULL setup).
@@ -427,6 +443,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let useCombinedRegLocationSms = false;
   /** IIZI shadow state machine (read-only trace; no effect on live path). */
   const iiziShadowStateRef: { current: IiziShadowState | null } = { current: null };
+  /** IIZI combined-mode brain (intent + SMS gate); inbound only effective path. */
+  const iiziBrainRef: { current: IiziBrainRuntimeState } = { current: createInitialIiziBrainState() };
+
+  const touchIiziBrainLog = (reason: string) => {
+    if (!useCombinedRegLocationSms || callDirection !== "inbound") return;
+    try {
+      const snap = evaluateIiziBrain(iiziBrainRef.current, true);
+      logIiziBrainSnapshot(callId, snap);
+    } catch (err) {
+      console.error(`[IIZI-Brain] log_failed reason=${reason} callId=${callId || "?"}`, err);
+    }
+  };
+  /** Parallel STT shadow stream (e.g. Deepgram); default off; does not replace OpenAI Realtime transcription */
+  let sttShadowSession: SttStreamingAdapterHandle | null = null;
   let combinedLocationReadbackQueued = false;
   let vehicleValidationStatus: "unknown" | "valid" | "invalid" = "unknown";
   const COMBINED_SMS_TEMPLATE_NAME = "Registreerimisnumbri ja asukoha SMS";
@@ -1190,6 +1220,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (greetingInProgress) {
       greetingInProgress = false;
       greetingCompletedAt = Date.now();
+      if (useCombinedRegLocationSms && callDirection === "inbound") {
+        try {
+          ingestIiziBrainGreetingComplete(iiziBrainRef.current);
+          touchIiziBrainLog("greeting_complete");
+        } catch (err) {
+          console.error(`[IIZI-Brain] greeting_ingest_failed callId=${callId || "?"}`, err);
+        }
+      }
       console.log(`[GreetingGate] complete source=${source} callId=${callId}`);
       console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after ${recoveryCooldownMs}ms cooldown (callId=${callId}, responseId=${completedResponseId})`);
       clearTurnDetectionEnableTimer();
@@ -1516,6 +1554,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           payload: { direction: callDirection },
           stateRef: iiziShadowStateRef,
         });
+        if (useCombinedRegLocationSms && callDirection === "inbound") {
+          try {
+            ingestIiziBrainFlow(iiziBrainRef.current, "call_started");
+            touchIiziBrainLog("call_started");
+          } catch (err) {
+            console.error(`[IIZI-Brain] call_started_ingest_failed callId=${callId}`, err);
+          }
+        }
       })
       .catch((err) => {
         console.error(`[MediaStream] upsertCall failed (callId=${callId || "?"})`, err);
@@ -1642,6 +1688,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     },
                     stateRef: iiziShadowStateRef,
                   });
+                  if (useCombinedRegLocationSms && callDirection === "inbound") {
+                    try {
+                      ingestIiziBrainFlow(iiziBrainRef.current, "location_confirmed");
+                      touchIiziBrainLog("location_confirmed");
+                    } catch (err) {
+                      console.error(`[IIZI-Brain] location_flow_failed callId=${callId}`, err);
+                    }
+                  }
                 }
 
                 // 2. Google Form fallback submission (registration number / callback phone)
@@ -1659,6 +1713,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     payload: { reg, callback_phone: phone },
                     stateRef: iiziShadowStateRef,
                   });
+                  if (useCombinedRegLocationSms && callDirection === "inbound") {
+                    try {
+                      ingestIiziBrainFlow(iiziBrainRef.current, "form_submitted");
+                      touchIiziBrainLog("form_submitted");
+                    } catch (err) {
+                      console.error(`[IIZI-Brain] form_flow_failed callId=${callId}`, err);
+                    }
+                  }
                   if (useCombinedRegLocationSms && reg) {
                     console.log(`[IIZI-CombinedSMS] form registration received callId=${callId}`);
                   }
@@ -1729,6 +1791,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           },
                           stateRef: iiziShadowStateRef,
                         });
+                        if (useCombinedRegLocationSms && callDirection === "inbound") {
+                          try {
+                            ingestIiziBrainFlow(iiziBrainRef.current, "vehicle_lookup_result", {
+                              match: true,
+                              coverage_invalid: lookup.coverage_invalid,
+                              submitted_reg: lookup.submitted_reg,
+                            });
+                            touchIiziBrainLog("vehicle_lookup_match");
+                          } catch (err) {
+                            console.error(`[IIZI-Brain] vehicle_flow_failed callId=${callId}`, err);
+                          }
+                        }
                         if (
                           useCombinedRegLocationSms &&
                           !lookup.coverage_invalid &&
@@ -1776,6 +1850,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           },
                           stateRef: iiziShadowStateRef,
                         });
+                        if (useCombinedRegLocationSms && callDirection === "inbound") {
+                          try {
+                            ingestIiziBrainFlow(iiziBrainRef.current, "vehicle_lookup_result", {
+                              match: false,
+                              submitted_reg: lookup.submitted_reg,
+                            });
+                            touchIiziBrainLog("vehicle_lookup_nomatch");
+                          } catch (err) {
+                            console.error(`[IIZI-Brain] vehicle_flow_failed callId=${callId}`, err);
+                          }
+                        }
                       }
                     }
                   }
@@ -2403,12 +2488,34 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               const transcriptText = String(event.transcript || "").trim();
               if (!transcriptText) {
                 console.warn(`[Diag-InboundTurn] transcript.completed empty; not arming fallback (callId=${callId})`);
+                if (useCombinedRegLocationSms) {
+                  try {
+                    ingestIiziBrainEmptyTranscript(iiziBrainRef.current);
+                    touchIiziBrainLog("transcript_empty_silence_signal");
+                  } catch (err) {
+                    console.error(`[IIZI-Brain] empty_transcript_failed callId=${callId}`, err);
+                  }
+                  if (iiziBrainRef.current.greetingPlaybackComplete && iiziBrainRef.current.finalResolvedIntent === "unknown") {
+                    console.warn(
+                      `[IIZI-Brain] TODO silence_gate=no_dedicated_watchdog_using_empty_transcript_only signals=${iiziBrainRef.current.silenceSignalCount} callId=${callId}`
+                    );
+                  }
+                }
                 break;
               }
               latestCompletedInboundTranscript = { seq: fallbackSeq, text: transcriptText, at: Date.now() };
               inboundRecoveryAttemptSeq = fallbackSeq;
               inboundRecoveryAttemptsForSeq = 0;
               clearInboundTranscriptFallbackTimer();
+              if (useCombinedRegLocationSms) {
+                try {
+                  ingestIiziBrainNonemptyUserSpeech(iiziBrainRef.current, transcriptText);
+                  logIiziBrainIntentResolution(callId, iiziBrainRef.current);
+                  touchIiziBrainLog("user_transcript");
+                } catch (err) {
+                  console.error(`[IIZI-Brain] speech_ingest_failed callId=${callId}`, err);
+                }
+              }
               if (activeResponseId && !responseHasAudio && activeResponseReason !== "initial-greeting") {
                 console.warn(`[Diag-InboundTurn] new user transcript while previous response has no usable audio; resetting stale response state activeResponse=${activeResponseId} seq=${fallbackSeq} previousSeq=${activeResponseInboundTranscriptSeq} (callId=${callId})`);
                 clearInboundNoAudioTimer();
@@ -2787,6 +2894,67 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 break;
               }
 
+              if (
+                useCombinedRegLocationSms &&
+                callDirection === "inbound" &&
+                tpl &&
+                tpl.name === COMBINED_SMS_TEMPLATE_NAME
+              ) {
+                try {
+                  const gate = gateIiziCombinedSms(iiziBrainRef.current);
+                  touchIiziBrainLog("sms_gate_eval");
+                  if (!gate.allow) {
+                    console.warn(
+                      `[IIZI-Brain] control=block_sms reason=${gate.reasonCode} smsGateReason=${gate.smsGateReason} callId=${callId}`
+                    );
+                    lastSmsToolResultAt = Date.now();
+                    lastSmsToolResultTemplate = tpl.name;
+                    setSmsToolState(tpl.name, "failed", gate.reasonCode);
+                    openaiWs!.send(
+                      JSON.stringify({
+                        type: "conversation.item.create",
+                        item: {
+                          type: "function_call_output",
+                          call_id: event.call_id,
+                          output: JSON.stringify({
+                            success: false,
+                            error: gate.reasonCode,
+                            message: gate.message,
+                          }),
+                        },
+                      })
+                    );
+                    console.log(
+                      `[MediaStream] function_call_output sent tool=send_sms template="${tpl.name}" success=false error=${gate.reasonCode} call_id=${event.call_id} (callId=${callId})`
+                    );
+                    scheduleUserResponseCreate("tool-result", 50);
+                    break;
+                  }
+                  console.log(`[IIZI-Brain] control=allow_sms reason=${gate.reasonCode} smsGateReason=${gate.smsGateReason} callId=${callId}`);
+                } catch (gateErr) {
+                  console.error(`[IIZI-Brain] sms_gate_internal_error_denying_send callId=${callId}`, gateErr);
+                  lastSmsToolResultAt = Date.now();
+                  lastSmsToolResultTemplate = tpl.name;
+                  setSmsToolState(tpl.name, "failed", "brain_gate_error");
+                  openaiWs!.send(
+                    JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "function_call_output",
+                        call_id: event.call_id,
+                        output: JSON.stringify({
+                          success: false,
+                          error: "brain_gate_error",
+                          message: "Internal policy check failed — do NOT send roadside SMS yet; clarify caller need verbally.",
+                        }),
+                      },
+                    })
+                  );
+                  scheduleUserResponseCreate("tool-result", 50);
+                  break;
+                }
+              }
+
               if (tpl) {
                 setSmsToolState(tpl.name, "pending", "twilio_send_started");
                 smsPendingTemplate = tpl.name;
@@ -2855,6 +3023,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     payload: { template_name: tpl.name, twilio_sid: result.sid ?? null },
                     stateRef: iiziShadowStateRef,
                   });
+                  if (useCombinedRegLocationSms && tpl.name === COMBINED_SMS_TEMPLATE_NAME && callDirection === "inbound") {
+                    try {
+                      ingestIiziBrainFlow(iiziBrainRef.current, "combined_sms_sent");
+                      touchIiziBrainLog("combined_sms_sent");
+                    } catch (err) {
+                      console.error(`[IIZI-Brain] combined_sms_sent_ingest_failed callId=${callId}`, err);
+                    }
+                  }
                 } else {
                   setSmsToolState(tpl.name, "failed", `twilio_send_failed:${result.error || result.status || "unknown"}`);
                   if (smsPendingTemplate === tpl.name) smsPendingTemplate = null;
@@ -3154,6 +3330,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callId) return;
     if (callFinalized) return;
     callFinalized = true;
+
+    try {
+      sttShadowSession?.stop(callId);
+      sttShadowSession = null;
+    } catch (sttFinalizeErr) {
+      console.error(`[STT] finalize_stop_failed callId=${callId}`, sttFinalizeErr);
+    }
+
     recordIiziShadowTrace({
       callId,
       agentId: resolvedAgentIdRef,
@@ -3162,6 +3346,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       payload: {},
       stateRef: iiziShadowStateRef,
     });
+    if (useCombinedRegLocationSms && callDirection === "inbound") {
+      try {
+        ingestIiziBrainFlow(iiziBrainRef.current, "call_ended");
+        touchIiziBrainLog("call_ended");
+      } catch (err) {
+        console.error(`[IIZI-Brain] call_end_ingest_failed callId=${callId}`, err);
+      }
+    }
     if (callDurationTimer) clearTimeout(callDurationTimer);
     clearTurnDetectionEnableTimer();
     clearPendingUserResponseTimer();
@@ -3307,6 +3499,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           }, 5000);
 
           connectToOpenAI();
+          try {
+            const sttBrainHooks: SttShadowBrainHooks = {
+              onDeepgramFinal: ({ callId: sttCallId, text }) => {
+                try {
+                  if (!useCombinedRegLocationSms || callDirection !== "inbound") return;
+                  const shadowIngest = ingestIiziBrainTrustedShadowFinal(iiziBrainRef.current, "deepgram", text);
+                  if (shadowIngest.shouldLogIntentResolution) {
+                    logIiziBrainIntentResolution(sttCallId || callId || null, iiziBrainRef.current);
+                  }
+                  const snap = evaluateIiziBrain(iiziBrainRef.current, true);
+                  logIiziBrainTrustedShadowTranscript(sttCallId || callId || null, "deepgram", text, snap);
+                } catch (brainShadowErr) {
+                  console.error(
+                    `[IIZI-Brain] trusted_shadow_ingest_failed callId=${sttCallId || callId || "?"}`,
+                    brainShadowErr,
+                  );
+                }
+              },
+            };
+            sttShadowSession = createSttShadowSession(callId || "", sttBrainHooks);
+            sttShadowSession.start(callId || "");
+          } catch (sttAttachErr) {
+            console.error(`[STT] attach_failed`, sttAttachErr);
+          }
           break;
 
         case "media":
@@ -3348,6 +3564,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               audio: msg.media.payload,
             }));
             twilioInboundFramesForwarded += 1;
+            try {
+              sttShadowSession?.sendAudioFrameBase64(msg.media?.payload ?? "");
+            } catch (sttFwdErr) {
+              console.error(`[STT] forward_frame_failed callId=${callId}`, sttFwdErr);
+            }
             if (!firstInboundAudioForwardedToOpenAiAt) {
               firstInboundAudioForwardedToOpenAiAt = new Date().toISOString();
               console.log(
@@ -3377,6 +3598,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         case "stop":
           twilioStopReceived = true;
           console.log(`[Diag-Twilio] twilio.stop received (callId=${callId})`);
+          try {
+            sttShadowSession?.stop(callId);
+            sttShadowSession = null;
+          } catch (sttStopErr) {
+            console.error(`[STT] twilio_stop_failed callId=${callId}`, sttStopErr);
+          }
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
             openaiWs.close();
           }
@@ -3392,6 +3619,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   twilioWs.on("close", (code, reason) => {
     console.log(`[Diag-Twilio] Twilio websocket close code=${code} reason=${reason?.toString() || ""} (callId=${callId})`);
+    try {
+      sttShadowSession?.stop(callId);
+      sttShadowSession = null;
+    } catch (sttCloseErr) {
+      console.error(`[STT] twilio_ws_close_failed callId=${callId}`, sttCloseErr);
+    }
     clearInboundTranscriptFallbackTimer();
     clearInboundNoAudioTimer();
     clearResponseDoneFallbackTimer();
