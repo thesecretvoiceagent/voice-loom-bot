@@ -470,7 +470,6 @@ export default function CreateAgent() {
         order: idx,
       })),
     };
-    console.log("[CreateAgent] Saving settings:", settingsPayload);
 
     const agentData = {
       name: agentName,

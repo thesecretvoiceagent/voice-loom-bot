@@ -2842,7 +2842,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
           case "response.function_call_arguments.done": {
             const fnName = event.name;
-            console.log(`[MediaStream] Tool called: ${fnName} (callId=${callId})`, event.arguments);
+            console.log(
+              `[MediaStream] Tool called: ${fnName} (callId=${callId}) argChars=${typeof event.arguments === "string" ? event.arguments.length : 0}`,
+            );
 
             if (fnName === "end_call") {
               let reason = "Call ended by AI";
@@ -3457,8 +3459,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
             if (fnName === "send_sms") {
               let args: any = {};
-              try { args = JSON.parse(event.arguments || "{}"); } catch (e) {
-                console.error(`[MediaStream] send_sms: failed to parse arguments "${event.arguments}":`, e);
+              try {
+                args = JSON.parse(event.arguments || "{}");
+              } catch (e) {
+                const errName = e instanceof Error ? e.name : "Error";
+                const errMsg = e instanceof Error ? e.message : String(e);
+                const argLen = typeof event.arguments === "string" ? event.arguments.length : 0;
+                console.error(
+                  `[MediaStream] send_sms: JSON parse failed callId=${callId} tool=send_sms error=${errName} msg=${errMsg} argChars=${argLen}`,
+                );
               }
               let requestedName = typeof args.template_name === "string" ? args.template_name.trim() : "";
               if (requestedName === CALLBACK_SMS_TEMPLATE_NAME) {

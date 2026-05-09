@@ -211,13 +211,13 @@ export type RuntimeBrainUiSettings = {
   };
 };
 
-/** Back-compat when `settings.brainUi` missing: match legacy pathway merge + permissive gates. */
+/** Back-compat when `settings.brainUi` missing: align with admin UI safest defaults + permissive gates. */
 export const DEFAULT_RUNTIME_BRAIN_UI_SETTINGS: RuntimeBrainUiSettings = {
   version: 1,
   enabled: true,
   providerMode: "soft_guard",
   speechTrustMode: "prefer_deepgram_when_openai_unclear",
-  conflictBehavior: "prefer_deepgram",
+  conflictBehavior: "ask_clarification",
   unknownIntentBehavior: "ask_clarification",
   gates: {
     combinedSms: true,
