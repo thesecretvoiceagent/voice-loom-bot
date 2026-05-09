@@ -7,6 +7,13 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   ArrowLeft,
   Plus,
   MessageSquare,
@@ -36,12 +43,15 @@ import {
   ExternalLink,
   ClipboardList,
   Send,
+  Brain,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import type { AgentRow } from "@/hooks/useAgents";
+import type { BrainUiSettings } from "@/types/brainUiSettings";
+import { DEFAULT_BRAIN_UI_SETTINGS, mergeBrainUiSettings } from "@/types/brainUiSettings";
 import { KnowledgeBaseTable } from "@/components/agents/KnowledgeBaseTable";
 import { ScheduleStatusBadge } from "@/components/agents/ScheduleStatusBadge";
 
@@ -211,6 +221,8 @@ export default function CreateAgent() {
   const [uninterruptibleGreeting, setUninterruptibleGreeting] = useState(true);
   const [antiBargein, setAntiBargein] = useState(false);
   const [rawAgentSettings, setRawAgentSettings] = useState<Record<string, unknown>>({});
+  const [brainUi, setBrainUi] = useState<BrainUiSettings>(() => mergeBrainUiSettings(undefined));
+  const [savingBrainUi, setSavingBrainUi] = useState(false);
   const [liveTurnSettings, setLiveTurnSettings] = useState<LiveTurnSettings>(DEFAULT_LIVE_TURN_SETTINGS);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("17:00");
@@ -305,6 +317,7 @@ export default function CreateAgent() {
         setUninterruptibleGreeting((agent.settings as any).uninterruptible_greeting ?? true);
         setAntiBargein((agent.settings as any).anti_barge_in ?? false);
         const rawSettings = agent.settings as any;
+        setBrainUi(mergeBrainUiSettings(rawSettings.brainUi));
         setLiveTurnSettings(toLiveTurnSettings(rawSettings.live_turn_settings));
         if (Array.isArray(rawSettings.sms_messages)) {
           // Ensure every loaded SMS has a description field (migration for older entries)
@@ -352,6 +365,7 @@ export default function CreateAgent() {
       }
       if (!agent.settings) {
         setRawAgentSettings({});
+        setBrainUi(mergeBrainUiSettings(undefined));
         setLiveTurnSettings(DEFAULT_LIVE_TURN_SETTINGS);
         setUseInitialGreeting(true);
       }
@@ -433,6 +447,7 @@ export default function CreateAgent() {
 
     const settingsPayload = {
       ...rawAgentSettings,
+      brainUi,
       max_ring_time: maxRingTime[0],
       max_call_duration: maxCallDuration[0],
       max_retries: maxRetries,
@@ -504,6 +519,7 @@ export default function CreateAgent() {
         setSelectedVoice(saved.voice || "alloy");
         setSelectedTools(saved.tools || []);
         setRawAgentSettings((saved.settings as Record<string, unknown>) || {});
+        setBrainUi(mergeBrainUiSettings((saved.settings as any)?.brainUi));
         setLiveTurnSettings(toLiveTurnSettings((saved.settings as any)?.live_turn_settings));
         setUseInitialGreeting((saved.settings as any)?.use_initial_greeting ?? true);
         setUninterruptibleGreeting((saved.settings as any)?.uninterruptible_greeting ?? true);
@@ -561,6 +577,33 @@ export default function CreateAgent() {
       toast.error(err instanceof Error ? err.message : "Failed to save agent");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveBrainConfig = async () => {
+    if (!editId) {
+      toast.error("Open an existing agent to save brain settings on their own.");
+      return;
+    }
+    setSavingBrainUi(true);
+    try {
+      const { data, error } = await supabase.from("agents").select("settings").eq("id", editId).single();
+      if (error) throw error;
+      if (!data) throw new Error("Agent not found");
+      const existingSettings =
+        data.settings && typeof data.settings === "object" && !Array.isArray(data.settings)
+          ? ({ ...data.settings } as Record<string, unknown>)
+          : {};
+      const nextSettings = { ...existingSettings, brainUi };
+      const { error: upError } = await supabase.from("agents").update({ settings: nextSettings }).eq("id", editId);
+      if (upError) throw upError;
+      setRawAgentSettings((prev) => ({ ...prev, brainUi }));
+      toast.success("Brain configuration saved");
+    } catch (err) {
+      console.error("[CreateAgent] Save brain config failed:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to save brain configuration");
+    } finally {
+      setSavingBrainUi(false);
     }
   };
 
@@ -1187,6 +1230,222 @@ export default function CreateAgent() {
                       <p className="text-sm text-muted-foreground">Adds extra post-playback protection against echo/feedback loops.</p>
                     </div>
                     <Switch checked={liveTurnSettings.loudspeaker_mode} onCheckedChange={(v) => setLiveTurnSettings((p) => ({ ...p, loudspeaker_mode: v }))} />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* IIZI deterministic brain UI (settings.brainUi) */}
+            <div className="glass-card rounded-xl p-6">
+              <div className="flex items-start gap-4">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-500/10">
+                  <Brain className="h-5 w-5 text-violet-500" />
+                </div>
+                <div className="flex-1 space-y-5">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <h3 className="font-semibold text-foreground">Deterministic Flow Controls</h3>
+                      <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
+                        Backend-controlled guardrails for IIZI calls. Realtime may speak, but backend brain decides allowed
+                        actions.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2 shrink-0">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="gap-2"
+                        onClick={() => setBrainUi(mergeBrainUiSettings(DEFAULT_BRAIN_UI_SETTINGS))}
+                        disabled={savingBrainUi}
+                      >
+                        Reset to safe defaults
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="gap-2"
+                        onClick={handleSaveBrainConfig}
+                        disabled={savingBrainUi || !editId}
+                        title={!editId ? "Create the agent first, then use this from edit mode" : undefined}
+                      >
+                        {savingBrainUi ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Saving…
+                          </>
+                        ) : (
+                          <>
+                            <Save className="h-4 w-4" />
+                            Save brain config
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                    <div>
+                      <p className="font-medium text-foreground">Enable backend brain</p>
+                      <p className="text-sm text-muted-foreground">When off, stored config is kept but runtime may ignore it until enabled server-side.</p>
+                    </div>
+                    <Switch checked={brainUi.enabled} onCheckedChange={(v) => setBrainUi((p) => ({ ...p, enabled: v }))} />
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Provider mode</Label>
+                      <Select
+                        value={brainUi.providerMode}
+                        onValueChange={(v) =>
+                          setBrainUi((p) => ({ ...p, providerMode: v as BrainUiSettings["providerMode"] }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="shadow">shadow</SelectItem>
+                          <SelectItem value="soft_guard">soft_guard</SelectItem>
+                          <SelectItem value="hard_guard">hard_guard</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Speech trust mode</Label>
+                      <Select
+                        value={brainUi.speechTrustMode}
+                        onValueChange={(v) =>
+                          setBrainUi((p) => ({ ...p, speechTrustMode: v as BrainUiSettings["speechTrustMode"] }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="prefer_deepgram_when_openai_unclear">
+                            prefer_deepgram_when_openai_unclear
+                          </SelectItem>
+                          <SelectItem value="ask_on_conflict">ask_on_conflict</SelectItem>
+                          <SelectItem value="prefer_openai">prefer_openai</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Unknown intent behavior</Label>
+                      <Select
+                        value={brainUi.unknownIntentBehavior}
+                        onValueChange={(v) =>
+                          setBrainUi((p) => ({
+                            ...p,
+                            unknownIntentBehavior: v as BrainUiSettings["unknownIntentBehavior"],
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ask_clarification">ask_clarification</SelectItem>
+                          <SelectItem value="route_human">route_human</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Conflict behavior</Label>
+                      <Select
+                        value={brainUi.conflictBehavior}
+                        onValueChange={(v) =>
+                          setBrainUi((p) => ({ ...p, conflictBehavior: v as BrainUiSettings["conflictBehavior"] }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ask_clarification">ask_clarification</SelectItem>
+                          <SelectItem value="prefer_deepgram">prefer_deepgram</SelectItem>
+                          <SelectItem value="prefer_openai">prefer_openai</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-medium text-foreground mb-2">Tool gates</p>
+                    <div className="grid sm:grid-cols-2 gap-2">
+                      {(
+                        [
+                          ["combinedSms", "Combined SMS"],
+                          ["occupantCount", "Occupant count"],
+                          ["vehicleReadback", "Vehicle readback"],
+                          ["locationReadback", "Location readback"],
+                          ["callbackConfirmation", "Callback confirmation"],
+                          ["endCall", "End call"],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <div key={key} className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                          <span className="text-sm text-foreground">{label}</span>
+                          <Switch
+                            checked={brainUi.gates[key]}
+                            onCheckedChange={(v) =>
+                              setBrainUi((p) => ({ ...p, gates: { ...p.gates, [key]: v } }))
+                            }
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-medium text-foreground mb-2">Required before occupant count</p>
+                    <div className="grid sm:grid-cols-2 gap-2">
+                      {(
+                        [
+                          ["formSubmitted", "Form submitted"],
+                          ["vehicleLookupMatchActive", "Vehicle lookup match active"],
+                          ["locationConfirmed", "Location confirmed"],
+                          ["vehicleReadbackComplete", "Vehicle readback complete"],
+                          ["locationReadbackComplete", "Location readback complete"],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <div key={key} className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                          <span className="text-sm text-foreground">{label}</span>
+                          <Switch
+                            checked={brainUi.occupantPrerequisites[key]}
+                            onCheckedChange={(v) =>
+                              setBrainUi((p) => ({
+                                ...p,
+                                occupantPrerequisites: { ...p.occupantPrerequisites, [key]: v },
+                              }))
+                            }
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-medium text-foreground mb-2">Diagnostics</p>
+                    <div className="grid sm:grid-cols-2 gap-2">
+                      {(
+                        [
+                          ["brainDecision", "Brain decision"],
+                          ["toolBlocked", "Tool blocked"],
+                          ["transcriptCompare", "Transcript compare"],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <div key={key} className="flex items-center justify-between p-3 rounded-lg bg-secondary/50">
+                          <span className="text-sm text-foreground">{label}</span>
+                          <Switch
+                            checked={brainUi.diagnostics[key]}
+                            onCheckedChange={(v) =>
+                              setBrainUi((p) => ({ ...p, diagnostics: { ...p.diagnostics, [key]: v } }))
+                            }
+                          />
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
