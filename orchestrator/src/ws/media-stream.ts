@@ -27,6 +27,17 @@ import {
 } from "../flow/iiziBrain.js";
 import { fetchLatestEnabledBrainConfigRow } from "../agentBrainConfigRepo.js";
 import { recordIiziShadowTrace } from "../flow/trace.js";
+import type { AgentBrainConfig } from "../brain/agentBrainUiTypes.js";
+import { resolveAgentBrainConfigFromSettings } from "../brain/agentBrainUiTypes.js";
+import {
+  evaluateBrain,
+  validateIiziInboundToolCall,
+  logBrainDecision,
+  logBrainToolBlocked,
+  getDefaultAgentBrainConfigForCall,
+  type BrainRuntimeSnapshot,
+  type ToolValidationResult,
+} from "../brain/agent-brain.js";
 import type { SttStreamingAdapterHandle } from "../stt/types.js";
 import { createSttShadowSession, type SttShadowBrainHooks } from "../stt/sttShadowSession.js";
 
@@ -468,6 +479,24 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let incidentNeedsOccupantCount = false;
   let occupantCountStatus: "unknown" | "pending" | "confirmed" = "unknown";
   let occupantCountValue: string | null = null;
+  /** Combined IIZI pipeline — deterministic ordering for occupant count + callback SMS */
+  let vehicleLookupPassed = false;
+  let locationConfirmedFlag = false;
+  let vehicleReadbackDone = false;
+  let locationReadbackDone = false;
+  let iiziOccupantPromptDeferred = false;
+  type IiziCallbackMode =
+    | "unset"
+    | "same_incoming_number"
+    | "different_number_sms"
+    | "form_callback_phone"
+    | "verbal";
+  /** Caller callback preference finalized (same line, form phone, or verbal number) — NOT set on callback SMS send alone */
+  let callbackConfirmed = false;
+  let callbackMode: IiziCallbackMode = "unset";
+  let callbackSmsSent = false;
+  /** Waiting for callback number via form after different-number SMS */
+  let callbackPending = false;
   let inboundSmsChannel: RealtimeChannel | null = null;
   let locationConfirmChannel: RealtimeChannel | null = null;
   let resolvedAgentIdRef: string | null = null;
@@ -593,6 +622,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let lastAcceptedCallerAudioAt = 0;
   let roadsideContextActive = false;
   const emittedOccupantNudges = new Set<string>();
+  const emittedCallbackPreferenceNudges = new Set<string>();
+  let agentBrainUiConfig: AgentBrainConfig = getDefaultAgentBrainConfigForCall();
 
   const diagState = () =>
     `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
@@ -616,6 +647,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   ) => {
     const prev = locationStatus;
     locationStatus = next;
+    locationConfirmedFlag = next === "confirmed";
     if (value !== undefined) {
       locationConfirmedValue = value;
     }
@@ -623,6 +655,32 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       `[MediaStream] locationStatus transition from=${prev} to=${next} reason=${reason} address="${locationConfirmedValue?.address || ""}" lat=${locationConfirmedValue?.lat ?? "null"} lon=${locationConfirmedValue?.lon ?? "null"} (callId=${callId})`
     );
   };
+
+  const iiziCombinedInbound = () => useCombinedRegLocationSms && callDirection === "inbound";
+  /** Strict lookup success + location_confirmed=true */
+  const iiziBackendReadyForReadbacks = () => vehicleLookupPassed && locationConfirmedFlag;
+  const iiziCanAskOccupantQuestion = () =>
+    !iiziCombinedInbound() ||
+    (iiziBackendReadyForReadbacks() && vehicleReadbackDone && locationReadbackDone && incidentNeedsOccupantCount);
+
+  const iiziCanConfirmOccupantCount = () =>
+    !iiziCombinedInbound() ||
+    (vehicleLookupPassed &&
+      vehicleValidationStatus === "valid" &&
+      locationConfirmedFlag &&
+      vehicleReadbackDone &&
+      locationReadbackDone);
+
+  /** Ready to collect or finalize callback preference (after readbacks; occupant done if required) */
+  const iiziHandoffReadyForCallbackStep = () =>
+    iiziCombinedInbound() &&
+    vehicleLookupPassed &&
+    locationConfirmedFlag &&
+    vehicleReadbackDone &&
+    locationReadbackDone &&
+    (!incidentNeedsOccupantCount || occupantCountStatus === "confirmed");
+
+  const iiziBlockedEndCallPendingCallback = () => iiziHandoffReadyForCallbackStep() && !callbackConfirmed;
 
   const emitLocationConfirmedSystemEvent = () => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
@@ -646,6 +704,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (!callbackSmsRequestedWhileBlocked) return;
     if (vehicleValidationStatus !== "valid") return;
     if (locationStatus !== "confirmed") return;
+    if (iiziCombinedInbound() && (!vehicleReadbackDone || !locationReadbackDone)) {
+      console.log(
+        `[IIZI-CallbackSMS] deferred reason=readback_incomplete vehicleRb=${vehicleReadbackDone} locRb=${locationReadbackDone} source=${source} callId=${callId}`
+      );
+      return;
+    }
     if (incidentNeedsOccupantCount && occupantCountStatus !== "confirmed") return;
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
 
@@ -654,8 +718,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const sysMsg =
       `[SYSTEM EVENT: callback_sms_ready] callback_sms_ready=true. ` +
       `Internal note only — do NOT read this tag or field names aloud. ` +
-      `The caller requested callback to a different number earlier, and gates are now satisfied. ` +
-      `If callback to a different number is still needed, call send_sms with template_name="${CALLBACK_SMS_TEMPLATE_NAME}" now.`;
+      `The caller previously asked to use a different callback number; gates are now satisfied. ` +
+      `Send the callback collection SMS now: call send_sms with template_name="${CALLBACK_SMS_TEMPLATE_NAME}". ` +
+      `Do NOT treat SMS success as final callback confirmation — wait for SYSTEM form_submitted with callback_phone or use confirm_iizi_callback_phone_verbal if they dictate a number.`;
     openaiWs.send(JSON.stringify({
       type: "conversation.item.create",
       item: {
@@ -664,6 +729,32 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         content: [{ type: "input_text", text: sysMsg }],
       },
     }));
+    scheduleUserResponseCreate("system-event", 50);
+  };
+
+  const maybeEmitCallbackPreferenceRequired = (source: string) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    if (!iiziHandoffReadyForCallbackStep()) return;
+    if (callbackConfirmed || callbackPending) return;
+    if (callbackSmsRequestedWhileBlocked) return;
+    if (source !== "end_call_blocked" && emittedCallbackPreferenceNudges.has("callback_preference_prompt")) return;
+    if (source !== "end_call_blocked") emittedCallbackPreferenceNudges.add("callback_preference_prompt");
+    const sysMsg =
+      `[SYSTEM EVENT: callback_preference_required] ` +
+      `Ask exactly once: "Kas tagasihelistamiseks kasutame sama numbrit, millelt praegu helistate?" ` +
+      `Internal note only — do NOT read this tag aloud. ` +
+      `If the caller wants the same number, call confirm_iizi_callback_same_incoming_number — do NOT send template "${CALLBACK_SMS_TEMPLATE_NAME}". ` +
+      `Only if they clearly want a different number, call send_sms with template_name="${CALLBACK_SMS_TEMPLATE_NAME}". ` +
+      `After that SMS succeeds, wait for SYSTEM form_submitted callback_phone or use confirm_iizi_callback_phone_verbal if they give and confirm a number by voice.`;
+    openaiWs.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [{ type: "input_text", text: sysMsg }],
+      },
+    }));
+    console.log(`[IIZI-Callback] preference_prompt source=${source} callId=${callId}`);
     scheduleUserResponseCreate("system-event", 50);
   };
 
@@ -712,8 +803,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const emitOccupantCountRequiredSystemEvent = (source: string) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-    if (emittedOccupantNudges.has(source)) return;
-    emittedOccupantNudges.add(source);
+    if (useCombinedRegLocationSms && callDirection === "inbound") {
+      if (vehicleValidationStatus === "invalid" || !vehicleLookupPassed) {
+        iiziOccupantPromptDeferred = false;
+        console.log(`[IIZI-Occupants] skip occupant ask — vehicle pipeline not eligible source=${source} callId=${callId}`);
+        return;
+      }
+      if (!locationConfirmedFlag) {
+        iiziOccupantPromptDeferred = true;
+        console.log(`[IIZI-Occupants] defer occupant — location not confirmed source=${source} callId=${callId}`);
+        return;
+      }
+      if (!vehicleReadbackDone || !locationReadbackDone) {
+        iiziOccupantPromptDeferred = true;
+        console.log(
+          `[IIZI-Occupants] defer occupant — readbacks incomplete source=${source} vehicleRb=${vehicleReadbackDone} locRb=${locationReadbackDone} callId=${callId}`,
+        );
+        return;
+      }
+    }
+    if (emittedOccupantNudges.has("occupant_prompt_sent")) return;
+    emittedOccupantNudges.add("occupant_prompt_sent");
     const sysMsg =
       `[SYSTEM EVENT: occupant_count_required] Ask exactly: "Mitu inimest on autos koos juhiga?" ` +
       `Do not continue until answered. Internal note only — do NOT read this tag aloud.`;
@@ -725,10 +835,78 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           role: "system",
           content: [{ type: "input_text", text: sysMsg }],
         },
-      })
+      }),
     );
-    console.log(`[IIZI-Occupants] blocked action=${source} reason=required_not_confirmed callId=${callId}`);
+    console.log(`[IIZI-Occupants] occupant_prompt emitted source=${source} callId=${callId}`);
+    iiziOccupantPromptDeferred = false;
     scheduleUserResponseCreate("system-event", 50);
+  };
+
+  const maybeEmitDeferredOccupantPrompt = () => {
+    if (!iiziCombinedInbound()) return;
+    if (!iiziOccupantPromptDeferred) return;
+    if (!incidentNeedsOccupantCount || occupantCountStatus === "confirmed") {
+      iiziOccupantPromptDeferred = false;
+      return;
+    }
+    if (vehicleValidationStatus === "invalid" || !vehicleLookupPassed) {
+      iiziOccupantPromptDeferred = false;
+      return;
+    }
+    if (!iiziCanAskOccupantQuestion()) return;
+    emitOccupantCountRequiredSystemEvent("deferred_gates_open");
+  };
+
+  const buildBrainRuntimeSnapshot = (): BrainRuntimeSnapshot => ({
+    callId,
+    agentBrainConfig: agentBrainUiConfig,
+    useCombinedRegLocationSms,
+    callDirection,
+    iiziBrain: iiziBrainRef.current,
+    vehicleLookupPassed,
+    vehicleValidationStatus,
+    locationConfirmedFlag,
+    locationStatus,
+    vehicleReadbackDone,
+    locationReadbackDone,
+    incidentNeedsOccupantCount,
+    occupantCountStatus,
+    occupantSystemPromptEmitted: emittedOccupantNudges.has("occupant_prompt_sent"),
+    callbackConfirmed,
+    callbackPending,
+    combinedSmsTemplateName: COMBINED_SMS_TEMPLATE_NAME,
+    callbackSmsTemplateName: CALLBACK_SMS_TEMPLATE_NAME,
+    greetingCompletedAt,
+    userUtteranceCount,
+  });
+
+  const injectBrainToolCorrection = (text: string) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !text.trim()) return;
+    openaiWs.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [{ type: "input_text", text: text.trim() }],
+        },
+      }),
+    );
+  };
+
+  /** Returns block result if IIZI brain denies tool; otherwise null. */
+  const rejectToolIfBrainBlocks = (
+    fnName: string,
+    toolArgs: { template_name?: string; count?: string },
+  ): ToolValidationResult | null => {
+    if (!iiziCombinedInbound()) return null;
+    const snap = buildBrainRuntimeSnapshot();
+    const decision = evaluateBrain(snap);
+    logBrainDecision(snap, decision, fnName);
+    const v = validateIiziInboundToolCall(snap, fnName, toolArgs);
+    if (v.allowed) return null;
+    logBrainToolBlocked(snap, fnName, v);
+    return v;
   };
 
   const diagnoseBreakPoint = () => {
@@ -938,9 +1116,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         clearPendingUserResponseTimer();
         pendingUserResponseReason = reason;
         pendingUserResponseAttempts = 0;
+      } else if (reason.startsWith("system-event") && (pendingUserResponseReason || "").startsWith("system-event")) {
+        clearPendingUserResponseTimer();
+        pendingUserResponseAttempts = 0;
+        pendingUserResponseReason = "system-event-coalesced";
+        console.log(`[Diag] system-event responses coalesced → single pending follow-up (callId=${callId})`);
       } else {
-      console.log(`[Diag] response.create schedule skipped reason=${reason} skip=already_pending pendingReason=${pendingUserResponseReason || "none"} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
-      return;
+        console.log(`[Diag] response.create schedule skipped reason=${reason} skip=already_pending pendingReason=${pendingUserResponseReason || "none"} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
+        return;
       }
     }
     pendingUserResponseReason = pendingUserResponseReason || reason;
@@ -1284,6 +1467,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (agentConfig.knowledge_base) agentKnowledgeBase = agentConfig.knowledge_base as any[];
       if (agentConfig.settings) {
         const settings = agentConfig.settings as Record<string, unknown>;
+        agentBrainUiConfig = resolveAgentBrainConfigFromSettings(settings);
         maxCallDurationMinutes = (settings.max_call_duration as number) || 0;
         if (typeof settings.temperature === "number") {
           agentTemperature = settings.temperature;
@@ -1698,6 +1882,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     }
                   }
                   maybeNudgeDeferredCallbackSms("location_confirmed");
+                  maybeEmitDeferredOccupantPrompt();
                   recordIiziShadowTrace({
                     callId,
                     agentId: resolvedAgentIdRef,
@@ -1747,6 +1932,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   if (useCombinedRegLocationSms && reg) {
                     console.log(`[IIZI-CombinedSMS] form registration received callId=${callId}`);
                   }
+                  if (useCombinedRegLocationSms && callDirection === "inbound" && phone.trim()) {
+                    callbackConfirmed = true;
+                    callbackPending = false;
+                    callbackMode = "form_callback_phone";
+                    console.log(`[IIZI-Callback] confirmed via form_callback_phone callId=${callId}`);
+                  }
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                     const fieldParts: string[] = [];
@@ -1784,9 +1975,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         if (useCombinedRegLocationSms) {
                           if (lookup.coverage_invalid) {
                             vehicleValidationStatus = "invalid";
+                            vehicleLookupPassed = false;
+                            vehicleReadbackDone = false;
+                            locationReadbackDone = false;
                             console.log(`[IIZI-CombinedSMS] vehicle invalid, blocking flow callId=${callId}`);
                           } else {
                             vehicleValidationStatus = "valid";
+                            vehicleLookupPassed = true;
+                            vehicleReadbackDone = false;
+                            locationReadbackDone = false;
                             console.log(`[IIZI-CombinedSMS] vehicle valid, continuing callId=${callId}`);
                           }
                         }
@@ -1835,6 +2032,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           const emitted = emitLocationConfirmedSystemEvent();
                           if (emitted) combinedLocationReadbackQueued = false;
                         }
+                        maybeEmitDeferredOccupantPrompt();
                         maybeNudgeDeferredCallbackSms("vehicle_valid");
                       } else {
                         const vehicleEvent =
@@ -1848,6 +2046,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         );
                         if (useCombinedRegLocationSms) {
                           vehicleValidationStatus = "invalid";
+                          vehicleLookupPassed = false;
+                          vehicleReadbackDone = false;
+                          locationReadbackDone = false;
                           console.log(`[IIZI-CombinedSMS] vehicle invalid, blocking flow callId=${callId}`);
                         }
                         openaiWs.send(
@@ -2019,6 +2220,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - If asked about something outside your scope, briefly redirect back to the topic.
 - ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
 
+      if (useCombinedRegLocationSms && callDirection === "inbound") {
+        fullInstructions += `\n\nIIZI COMBINED INBOUND — HARD ORDER (follow exactly; do not improvise):
+- NEVER claim or imply that an SMS was sent (e.g. do not say "saadan" / "saatsin" about the registration+location SMS) until the send_sms tool has returned success=true for that send.
+- Combined registration+location SMS: send at most once using the combined template when the script allows.
+- Wait in order for: roadside classification → one CRM acknowledgement if instructed → combined SMS send (after success only) → customer submits the form (SYSTEM form_submitted) → SYSTEM vehicle_lookup_result → location_confirmed for the pin/link flow.
+- If vehicle_lookup_result has match=true and coverage is active/valid (coverage_invalid=false), read vehicle and insurance/coverage details aloud to the caller once, then call confirm_iizi_vehicle_readback_complete.
+- Only after that, read the confirmed location address aloud once, then call confirm_iizi_location_readback_complete.
+- Only after BOTH confirm tools have succeeded and occupant count is required for this case, ask exactly once: "Mitu inimest on autos koos juhiga?" — do not ask earlier and do not repeat unless the tool failed.
+- Use confirm_occupant_count only after that question was asked and answered.
+- Callback: default is the same incoming phone number. Ask once: "Kas tagasihelistamiseks kasutame sama numbrit, millelt praegu helistate?" If yes — call confirm_iizi_callback_same_incoming_number; do NOT send the callback SMS template. Send template "${CALLBACK_SMS_TEMPLATE_NAME}" only if the caller explicitly wants a different number; SMS success does not finalize callback — wait for form callback_phone or confirm_iizi_callback_phone_verbal.
+- Do not jump to summary, handoff, or end_call until required gates in your instructions are satisfied (including callback preference finalized).`;
+      }
+
       // Inject SMS catalog so the AI knows which named SMSes are available, when to use them, and what they say.
       const duringSmsList = smsMessages.filter((m) => m.trigger === "during");
       const afterSmsList = smsMessages.filter((m) => m.trigger === "after");
@@ -2127,7 +2341,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         type: "function",
         name: "mark_occupant_count_required",
         description:
-          "Call this immediately after classifying a case as accident, towing, stranded, auto ei käivitu, auto ei liigu, stuck, or vehicle cannot move. This marks occupant count as mandatory before callback collection.",
+          "Call this immediately after classifying a case as accident, towing, stranded, auto ei käivitu, auto ei liigu, stuck, or vehicle cannot move. This marks occupant count as mandatory before the callback-preference step.",
         parameters: {
           type: "object",
           properties: {
@@ -2156,6 +2370,46 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           required: ["count"],
         },
       });
+
+      if (useCombinedRegLocationSms && callDirection === "inbound") {
+        tools.push({
+          type: "function",
+          name: "confirm_iizi_vehicle_readback_complete",
+          description:
+            "Call ONCE immediately after you have spoken the vehicle and insurance/coverage details from SYSTEM vehicle_lookup_result to the caller. Requires vehicle lookup passed with valid cover and location_confirmed. Do NOT call before those conditions.",
+          parameters: { type: "object", properties: {}, required: [] },
+        });
+        tools.push({
+          type: "function",
+          name: "confirm_iizi_location_readback_complete",
+          description:
+            "Call ONCE immediately after you have read the confirmed location address aloud. Must be called after confirm_iizi_vehicle_readback_complete when the vehicle path is valid.",
+          parameters: { type: "object", properties: {}, required: [] },
+        });
+        tools.push({
+          type: "function",
+          name: "confirm_iizi_callback_same_incoming_number",
+          description:
+            "Call ONLY after asking the callback question and the caller confirms they want tagasihelistamine on the same number they are calling from. Does NOT send any SMS.",
+          parameters: { type: "object", properties: {}, required: [] },
+        });
+        tools.push({
+          type: "function",
+          name: "confirm_iizi_callback_phone_verbal",
+          description:
+            "Call ONLY after the caller explicitly gives a different callback phone number by voice and confirms it (e.g. repeats it back). Use when they are not using the callback SMS form flow.",
+          parameters: {
+            type: "object",
+            properties: {
+              phone: {
+                type: "string",
+                description: "Callback number as confirmed with the caller (digits, may include country code).",
+              },
+            },
+            required: ["phone"],
+          },
+        });
+      }
 
       // Clamp temperature to OpenAI Realtime's valid range [0.6, 1.2] — values outside
       // this range can cause the model to emit malformed audio (heard as static/clicks).
@@ -2593,6 +2847,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 payload: { reason },
                 stateRef: iiziShadowStateRef,
               });
+              const brainBlockEnd = rejectToolIfBrainBlocks("end_call", {});
+              if (brainBlockEnd) {
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: brainBlockEnd.errorCode || "brain_blocked",
+                        message: brainBlockEnd.message || "end_call blocked by policy.",
+                      }),
+                    },
+                  }),
+                );
+                if (brainBlockEnd.correctionSystemText) injectBrainToolCorrection(brainBlockEnd.correctionSystemText);
+                const hadDeferredCallbackSms = callbackSmsRequestedWhileBlocked;
+                maybeNudgeDeferredCallbackSms("end_call_brain_blocked");
+                if (!hadDeferredCallbackSms) maybeEmitCallbackPreferenceRequired("end_call_blocked");
+                scheduleUserResponseCreate("tool-result", 50);
+                break;
+              }
               if (isOccupantCountGateBlocked()) {
                 console.warn(
                   `[IIZI-Occupants] blocked action=end_call reason=required_not_confirmed status=${occupantCountStatus} callId=${callId}`
@@ -2610,6 +2887,32 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   },
                 }));
                 emitOccupantCountRequiredSystemEvent("end_call");
+                break;
+              }
+              if (iiziBlockedEndCallPendingCallback()) {
+                console.warn(
+                  `[IIZI-Callback] blocked action=end_call reason=callback_not_confirmed mode=${callbackMode} pending=${callbackPending} callId=${callId}`
+                );
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({
+                      success: false,
+                      error: "callback_preference_incomplete",
+                      message:
+                        `Finalize callback preference first. Ask: "Kas tagasihelistamiseks kasutame sama numbrit, millelt praegu helistate?" ` +
+                        `If same number — confirm_iizi_callback_same_incoming_number (no callback SMS). ` +
+                        `If different number — send_sms "${CALLBACK_SMS_TEMPLATE_NAME}" only after they ask, then wait for form callback_phone or use confirm_iizi_callback_phone_verbal. ` +
+                        `Do not end_call until callback is confirmed.`,
+                    }),
+                  },
+                }));
+                const hadDeferredCallbackSms = callbackSmsRequestedWhileBlocked;
+                maybeNudgeDeferredCallbackSms("end_call_blocked");
+                if (!hadDeferredCallbackSms) maybeEmitCallbackPreferenceRequired("end_call_blocked");
+                scheduleUserResponseCreate("tool-result", 50);
                 break;
               }
 
@@ -2684,27 +2987,47 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               let args: any = {};
               try { args = JSON.parse(event.arguments || "{}"); } catch {}
               const reason = typeof args.reason === "string" ? args.reason.trim() : "";
-              roadsideContextActive = true;
-              incidentNeedsOccupantCount = true;
-              if (occupantCountStatus !== "confirmed") {
-                occupantCountStatus = "pending";
+              const brainMark = rejectToolIfBrainBlocks("mark_occupant_count_required", {});
+              if (brainMark) {
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: brainMark.errorCode || "brain_blocked",
+                        message: brainMark.message || "mark_occupant_count_required blocked.",
+                      }),
+                    },
+                  }),
+                );
+                if (brainMark.correctionSystemText) injectBrainToolCorrection(brainMark.correctionSystemText);
+                scheduleUserResponseCreate("tool-result", 50);
+              } else {
+                roadsideContextActive = true;
+                incidentNeedsOccupantCount = true;
+                if (occupantCountStatus !== "confirmed") {
+                  occupantCountStatus = "pending";
+                }
+                console.log(
+                  `[OccupantGate] required=true source=tool reason=${reason || "unspecified"} callId=${callId}`
+                );
+                console.log(
+                  `[IIZI-Occupants] required reason=${reason || "unspecified"} source=tool callId=${callId}`
+                );
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({ success: true }),
+                  },
+                }));
+                emitOccupantCountRequiredSystemEvent("mark_occupant_count_required");
+                scheduleUserResponseCreate("tool-result", 50);
               }
-              console.log(
-                `[OccupantGate] required=true source=tool reason=${reason || "unspecified"} callId=${callId}`
-              );
-              console.log(
-                `[IIZI-Occupants] required reason=${reason || "unspecified"} source=tool callId=${callId}`
-              );
-              openaiWs!.send(JSON.stringify({
-                type: "conversation.item.create",
-                item: {
-                  type: "function_call_output",
-                  call_id: event.call_id,
-                  output: JSON.stringify({ success: true }),
-                },
-              }));
-              emitOccupantCountRequiredSystemEvent("mark_occupant_count_required");
-              scheduleUserResponseCreate("tool-result", 50);
             }
 
             if (fnName === "confirm_occupant_count") {
@@ -2726,22 +3049,398 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 }));
                 scheduleUserResponseCreate("tool-result", 50);
               } else {
-                incidentNeedsOccupantCount = true;
-                occupantCountStatus = "confirmed";
-                occupantCountValue = count;
-                emittedOccupantNudges.clear();
-                console.log(`[OccupantGate] confirmed count=${count} callId=${callId}`);
-                console.log(`[IIZI-Occupants] confirmed count=${count} callId=${callId}`);
-                maybeNudgeDeferredCallbackSms("occupant_confirmed");
+                const brainOcc = rejectToolIfBrainBlocks("confirm_occupant_count", { count });
+                if (brainOcc) {
+                  openaiWs!.send(
+                    JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "function_call_output",
+                        call_id: event.call_id,
+                        output: JSON.stringify({
+                          success: false,
+                          error: brainOcc.errorCode || "brain_blocked",
+                          message: brainOcc.message || "confirm_occupant_count blocked.",
+                        }),
+                      },
+                    }),
+                  );
+                  if (brainOcc.correctionSystemText) injectBrainToolCorrection(brainOcc.correctionSystemText);
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else if (
+                  iiziCombinedInbound() &&
+                  occupantCountStatus !== "confirmed" &&
+                  !iiziCanConfirmOccupantCount()
+                ) {
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "occupant_gates_not_met",
+                        message:
+                          "Do not record occupant count yet. Wait for vehicle_lookup_result (valid cover), location_confirmed, vehicle readback, and location readback; then ask the question once.",
+                      }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else {
+                  incidentNeedsOccupantCount = true;
+                  occupantCountStatus = "confirmed";
+                  occupantCountValue = count;
+                  emittedOccupantNudges.clear();
+                  console.log(`[OccupantGate] confirmed count=${count} callId=${callId}`);
+                  console.log(`[IIZI-Occupants] confirmed count=${count} callId=${callId}`);
+                  const hadDeferredCallbackSms = callbackSmsRequestedWhileBlocked;
+                  maybeNudgeDeferredCallbackSms("occupant_confirmed");
+                  if (!hadDeferredCallbackSms) maybeEmitCallbackPreferenceRequired("occupant_confirmed");
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({ success: true }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                }
+              }
+            }
+
+            if (fnName === "confirm_iizi_vehicle_readback_complete") {
+              if (!useCombinedRegLocationSms || callDirection !== "inbound") {
                 openaiWs!.send(JSON.stringify({
                   type: "conversation.item.create",
                   item: {
                     type: "function_call_output",
                     call_id: event.call_id,
-                    output: JSON.stringify({ success: true }),
+                    output: JSON.stringify({ success: false, error: "not_iizi_combined_inbound" }),
                   },
                 }));
                 scheduleUserResponseCreate("tool-result", 50);
+              } else {
+                const brainV = rejectToolIfBrainBlocks("confirm_iizi_vehicle_readback_complete", {});
+                if (brainV) {
+                  openaiWs!.send(
+                    JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "function_call_output",
+                        call_id: event.call_id,
+                        output: JSON.stringify({
+                          success: false,
+                          error: brainV.errorCode || "brain_blocked",
+                          message: brainV.message || "Vehicle readback confirm blocked.",
+                        }),
+                      },
+                    }),
+                  );
+                  if (brainV.correctionSystemText) injectBrainToolCorrection(brainV.correctionSystemText);
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else if (!vehicleLookupPassed || vehicleValidationStatus !== "valid") {
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "vehicle_not_ready",
+                        message:
+                          "Confirm only after SYSTEM vehicle_lookup_result shows match=true with valid cover. Speak those details to the caller first.",
+                      }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else if (!locationConfirmedFlag || locationStatus !== "confirmed") {
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "location_not_ready",
+                        message: "Wait for location_confirmed=true before calling this tool.",
+                      }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else if (vehicleReadbackDone) {
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({ success: true, already_confirmed: true }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else {
+                  vehicleReadbackDone = true;
+                  console.log(`[IIZI-Pipeline] vehicle_readback_done callId=${callId}`);
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({ success: true }),
+                    },
+                  }));
+                  maybeEmitDeferredOccupantPrompt();
+                  maybeNudgeDeferredCallbackSms("vehicle_readback_done");
+                  scheduleUserResponseCreate("tool-result", 50);
+                }
+              }
+            }
+
+            if (fnName === "confirm_iizi_location_readback_complete") {
+              if (!useCombinedRegLocationSms || callDirection !== "inbound") {
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({ success: false, error: "not_iizi_combined_inbound" }),
+                  },
+                }));
+                scheduleUserResponseCreate("tool-result", 50);
+              } else {
+                const brainLoc = rejectToolIfBrainBlocks("confirm_iizi_location_readback_complete", {});
+                if (brainLoc) {
+                  openaiWs!.send(
+                    JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "function_call_output",
+                        call_id: event.call_id,
+                        output: JSON.stringify({
+                          success: false,
+                          error: brainLoc.errorCode || "brain_blocked",
+                          message: brainLoc.message || "Location readback confirm blocked.",
+                        }),
+                      },
+                    }),
+                  );
+                  if (brainLoc.correctionSystemText) injectBrainToolCorrection(brainLoc.correctionSystemText);
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else if (!vehicleReadbackDone) {
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "vehicle_readback_first",
+                        message: "Call confirm_iizi_vehicle_readback_complete first after speaking vehicle/insurance details.",
+                      }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else if (!locationConfirmedFlag || locationStatus !== "confirmed") {
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "location_not_ready",
+                        message: "Wait for location_confirmed and read the address aloud before this tool.",
+                      }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else if (locationReadbackDone) {
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({ success: true, already_confirmed: true }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else {
+                  locationReadbackDone = true;
+                  console.log(`[IIZI-Pipeline] location_readback_done callId=${callId}`);
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({ success: true }),
+                    },
+                  }));
+                  maybeEmitDeferredOccupantPrompt();
+                  const hadDeferredCallbackSmsLoc = callbackSmsRequestedWhileBlocked;
+                  maybeNudgeDeferredCallbackSms("location_readback_done");
+                  if (
+                    (!incidentNeedsOccupantCount || occupantCountStatus === "confirmed") &&
+                    !hadDeferredCallbackSmsLoc
+                  ) {
+                    maybeEmitCallbackPreferenceRequired("location_readback_done");
+                  }
+                  scheduleUserResponseCreate("tool-result", 50);
+                }
+              }
+            }
+
+            if (fnName === "confirm_iizi_callback_same_incoming_number") {
+              if (!useCombinedRegLocationSms || callDirection !== "inbound") {
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({ success: false, error: "not_iizi_combined_inbound" }),
+                  },
+                }));
+                scheduleUserResponseCreate("tool-result", 50);
+              } else {
+                const brainCbSame = rejectToolIfBrainBlocks("confirm_iizi_callback_same_incoming_number", {});
+                if (brainCbSame) {
+                  openaiWs!.send(
+                    JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "function_call_output",
+                        call_id: event.call_id,
+                        output: JSON.stringify({
+                          success: false,
+                          error: brainCbSame.errorCode || "brain_blocked",
+                          message: brainCbSame.message || "Callback same-number confirm blocked.",
+                        }),
+                      },
+                    }),
+                  );
+                  if (brainCbSame.correctionSystemText) injectBrainToolCorrection(brainCbSame.correctionSystemText);
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else if (!iiziHandoffReadyForCallbackStep()) {
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "callback_gates_not_met",
+                        message: "Complete vehicle/location readbacks and occupant count (if required) before confirming callback preference.",
+                      }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else if (callbackPending) {
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "callback_pending_form",
+                        message: "Caller is in different-number SMS flow; wait for form callback_phone or use verbal confirmation tool.",
+                      }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else {
+                  callbackConfirmed = true;
+                  callbackMode = "same_incoming_number";
+                  callbackPending = false;
+                  console.log(`[IIZI-Callback] same_incoming_number confirmed callId=${callId}`);
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({ success: true }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                }
+              }
+            }
+
+            if (fnName === "confirm_iizi_callback_phone_verbal") {
+              let args: any = {};
+              try { args = JSON.parse(event.arguments || "{}"); } catch {}
+              const phone = typeof args.phone === "string" ? args.phone.trim() : "";
+              if (!useCombinedRegLocationSms || callDirection !== "inbound") {
+                openaiWs!.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({ success: false, error: "not_iizi_combined_inbound" }),
+                  },
+                }));
+                scheduleUserResponseCreate("tool-result", 50);
+              } else {
+                const brainVerb = rejectToolIfBrainBlocks("confirm_iizi_callback_phone_verbal", {});
+                if (brainVerb) {
+                  openaiWs!.send(
+                    JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "function_call_output",
+                        call_id: event.call_id,
+                        output: JSON.stringify({
+                          success: false,
+                          error: brainVerb.errorCode || "brain_blocked",
+                          message: brainVerb.message || "Verbal callback confirm blocked.",
+                        }),
+                      },
+                    }),
+                  );
+                  if (brainVerb.correctionSystemText) injectBrainToolCorrection(brainVerb.correctionSystemText);
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else if (!iiziHandoffReadyForCallbackStep()) {
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "callback_gates_not_met",
+                        message: "Complete prior steps before recording a verbal callback number.",
+                      }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else if (phone.replace(/\D/g, "").length < 5) {
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "invalid_callback_phone",
+                        message: "Ask again for a full phone number the caller confirms.",
+                      }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                } else {
+                  callbackConfirmed = true;
+                  callbackMode = "verbal";
+                  callbackPending = false;
+                  console.log(`[IIZI-Callback] verbal phone confirmed callId=${callId}`);
+                  openaiWs!.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({ success: true }),
+                    },
+                  }));
+                  scheduleUserResponseCreate("tool-result", 50);
+                }
               }
             }
 
@@ -2793,6 +3492,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(
                 `[MediaStream] send_sms selected template requested="${requestedName}" found=${Boolean(tpl)} trigger="during" (callId=${callId})`
               );
+              const brainBlockSms = rejectToolIfBrainBlocks("send_sms", { template_name: requestedName });
+              if (brainBlockSms) {
+                lastSmsToolResultAt = Date.now();
+                lastSmsToolResultTemplate = requestedName || null;
+                if (tpl) setSmsToolState(tpl.name, "failed", brainBlockSms.errorCode || "brain_blocked");
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: brainBlockSms.errorCode || "brain_blocked",
+                        message: brainBlockSms.message || "SMS blocked by policy.",
+                      }),
+                    },
+                  }),
+                );
+                if (brainBlockSms.correctionSystemText) injectBrainToolCorrection(brainBlockSms.correctionSystemText);
+                scheduleUserResponseCreate("tool-result", 50);
+                break;
+              }
               if (tpl && smsSentNames.has(tpl.name)) {
                 setSmsToolState(tpl.name, "already_sent", "duplicate_blocked");
                 lastSmsToolResultAt = Date.now();
@@ -2984,6 +3706,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 if (useCombinedRegLocationSms && tpl.name === COMBINED_SMS_TEMPLATE_NAME) {
                   setLocationStatus("pending", "combined_sms_sent", null);
                   vehicleValidationStatus = "unknown";
+                  vehicleLookupPassed = false;
+                  vehicleReadbackDone = false;
+                  locationReadbackDone = false;
+                  iiziOccupantPromptDeferred = false;
+                  emittedOccupantNudges.delete("occupant_prompt_sent");
+                  callbackConfirmed = false;
+                  callbackMode = "unset";
+                  callbackSmsSent = false;
+                  callbackPending = false;
+                  emittedCallbackPreferenceNudges.clear();
                 }
                 if (activeResponseId && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                   const responseId = activeResponseId;
@@ -3018,7 +3750,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   if (smsPendingTemplate === tpl.name) smsPendingTemplate = null;
                   if (tpl.name === CALLBACK_SMS_TEMPLATE_NAME) {
                     callbackSmsRequestedWhileBlocked = false;
-                    console.log(`[IIZI-CallbackSMS] sent ok callId=${callId}`);
+                    callbackSmsSent = true;
+                    callbackPending = true;
+                    callbackMode = "different_number_sms";
+                    console.log(`[IIZI-CallbackSMS] sent ok pending_form=true callId=${callId}`);
                   }
                   if (useCombinedRegLocationSms && tpl.name === COMBINED_SMS_TEMPLATE_NAME) {
                     console.log(`[IIZI-CombinedSMS] sent ok callId=${callId}`);
@@ -3141,6 +3876,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(
                 `[MediaStream] function_call_output sent tool=confirm_manual_location success=true call_id=${event.call_id} (callId=${callId})`
               );
+              maybeEmitDeferredOccupantPrompt();
+              maybeNudgeDeferredCallbackSms("manual_location_confirmed");
               scheduleUserResponseCreate("tool-result", 50);
             }
             break;
@@ -3242,6 +3979,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
               console.log(`[Diag-InboundTurn] response.done responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} hasAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} twilioBytes=${activeResponseTwilioBytes} finish=${finishReason} output_tokens=${outputTokens} (callId=${callId})`);
               if (activeResponseTwilioChunks === 0) {
+                if (activeResponseReason === "tool-result" && !responseHasAudio) {
+                  clearResponseDoneFallbackTimer();
+                  console.log(
+                    `[Diag-InboundTurn] response.done tool-result text-only — completing turn without no-audio grace (callId=${callId})`
+                  );
+                  maybeCompleteAiTurn("response.done-tool-text-only");
+                  break;
+                }
                 armResponseDoneNoAudioGrace(
                   responseId,
                   activeResponseInboundTranscriptSeq,
