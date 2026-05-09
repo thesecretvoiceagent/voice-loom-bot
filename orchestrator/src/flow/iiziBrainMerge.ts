@@ -1,33 +1,65 @@
 /**
- * Consensus merge — OpenAI vs Deepgram shadow pathways into SMS gate coarse intent.
+ * Consensus merge — OpenAI Realtime vs Deepgram shadow pathways into SMS gate coarse intent.
+ * Deepgram is the preferred transcript signal for roadside vs non-roadside when pathways disagree;
+ * OpenAI non_roadside vs Deepgram roadside is treated as a hard conflict (SMS blocked).
  */
 
 import type { BrainIntentSlug, PathwayIntentClassification } from "./iiziBrainConfigTypes.js";
 
 export type ResolvedBrainIntent = BrainIntentSlug | "unknown_conflict";
 
+/**
+ * Merge per-pathway classifications (OpenAI = oa, Deepgram = dg).
+ * Emergency handoff wins over commercial intents when either pathway reports it.
+ */
 export function mergePathwayIntents(
   oa: PathwayIntentClassification,
   dg: PathwayIntentClassification,
 ): { resolved: ResolvedBrainIntent; reason: string } {
   if (oa === dg) {
-    const r = reasonBoth(oa);
-    return { resolved: oa as ResolvedBrainIntent, reason: r };
+    return { resolved: oa as ResolvedBrainIntent, reason: reasonBoth(oa) };
   }
 
-  if (oa === "unknown")
-    return { resolved: dg as ResolvedBrainIntent, reason: `${dg}_clear_openai_unknown` };
-  if (dg === "unknown")
-    return { resolved: oa as ResolvedBrainIntent, reason: `${oa}_clear_deepgram_unknown` };
-
-  if (
-    (oa === "emergency_handoff" && dg === "roadside") ||
-    (dg === "emergency_handoff" && oa === "roadside")
-  ) {
-    return { resolved: "emergency_handoff", reason: "emergency_escalates_over_roadside" };
+  const hasEmergency = oa === "emergency_handoff" || dg === "emergency_handoff";
+  if (hasEmergency) {
+    return { resolved: "emergency_handoff", reason: "emergency_handoff_escalates" };
   }
 
-  return { resolved: "unknown_conflict", reason: "source_conflict" };
+  // Hard conflict: opposite commercial intents (SMS must stay blocked)
+  if (dg === "roadside" && oa === "non_roadside") {
+    return {
+      resolved: "unknown_conflict",
+      reason: "source_conflict_openai_non_roadside_vs_deepgram_roadside",
+    };
+  }
+  if (oa === "roadside" && dg === "non_roadside") {
+    return {
+      resolved: "unknown_conflict",
+      reason: "source_conflict_openai_roadside_vs_deepgram_non_roadside",
+    };
+  }
+
+  // Deepgram clear roadside — OpenAI is not non_roadside (conflicts handled above)
+  if (dg === "roadside") {
+    return { resolved: "roadside", reason: "deepgram_roadside_preferred" };
+  }
+
+  // OpenAI roadside, Deepgram unclear/missing
+  if (oa === "roadside" && dg === "unknown") {
+    return { resolved: "roadside", reason: "openai_roadside_deepgram_unknown" };
+  }
+
+  // OpenAI non-roadside but Deepgram unclear — do not trust OpenAI alone; clarify
+  if (oa === "non_roadside" && dg === "unknown") {
+    return { resolved: "unknown", reason: "openai_non_roadside_deepgram_unknown_ask_clarification" };
+  }
+
+  // Deepgram non-roadside, OpenAI unclear — clarify
+  if (oa === "unknown" && dg === "non_roadside") {
+    return { resolved: "unknown", reason: "deepgram_non_roadside_openai_unknown_ask_clarification" };
+  }
+
+  return { resolved: "unknown_conflict", reason: "source_conflict_unhandled_pair" };
 }
 
 function reasonBoth(x: PathwayIntentClassification): string {

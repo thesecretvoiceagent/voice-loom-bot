@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 
 import type { CompiledBrainConfig } from "./iiziBrainConfigTypes.js";
 import { classifyIntentFromSpeechHybrid, getDefaultCompiledBrain } from "./iiziBrainSpeechClassify.js";
+import type { PathwayIntentClassification } from "./iiziBrainConfigTypes.js";
 import type { ResolvedBrainIntent } from "./iiziBrainMerge.js";
 import { mergePathwayIntents } from "./iiziBrainMerge.js";
 
@@ -20,8 +21,8 @@ function expectHybrid(
 ): void {
   const o = classifyIntentFromSpeechHybrid(text, compiled);
   const d = classifyIntentFromSpeechHybrid(text, compiled);
-  const oIntent = (o.intent ?? "unknown") as Parameters<typeof mergePathwayIntents>[0];
-  const dIntent = (d.intent ?? "unknown") as Parameters<typeof mergePathwayIntents>[1];
+  const oIntent = (o.intent ?? "unknown") as PathwayIntentClassification;
+  const dIntent = (d.intent ?? "unknown") as PathwayIntentClassification;
   const { resolved } = mergePathwayIntents(oIntent, dIntent);
   assert.equal(resolved, expected, `${hint}: hybrid merge got ${resolved} (oa=${oIntent} dg=${dIntent})`);
   assert.ok(
@@ -32,6 +33,16 @@ function expectHybrid(
     ["config", "fallback_builtin"].includes(o.meta.classifySource),
     `${hint}: unexpected classifySource ${o.meta.classifySource}`,
   );
+}
+
+function expectMerge(
+  oa: PathwayIntentClassification,
+  dg: PathwayIntentClassification,
+  expected: ResolvedBrainIntent,
+  hint: string,
+): void {
+  const { resolved, reason } = mergePathwayIntents(oa, dg);
+  assert.equal(resolved, expected, `${hint}: merge got ${resolved} reason=${reason} (oa=${oa} dg=${dg})`);
 }
 
 /** No intent match — runtime asks / clarifies for unknown workflows. */
@@ -74,6 +85,14 @@ function run(): void {
 
   expectHybrid("Helistage homme töö ajal tagasi palun", compiled, "non_roadside", "callback wording");
 
+  // Requested phrase coverage (Deepgram-preferred merge uses same hybrid when both pathways see same text)
+  expectHybrid("mul on autoabi vaja", compiled, "roadside", "explicit autoabi need");
+  expectHybrid("auto ei käivitu", compiled, "roadside", "wont-start phrase");
+  expectHybrid("generaator ei tööta", compiled, "roadside", "generator failure roadside cue (ET)");
+  expectHybrid("generator ei tööta", compiled, "roadside", "generator failure roadside cue (EN word)");
+  expectHybrid("generaator ei lae", compiled, "roadside", "generator not charging / alternator cue");
+  expectHybrid("soovin kindlustuse kohta infot", compiled, "non_roadside", "insurance info office line");
+
   expectNoIntentMatch(
     "Tere tere hommikust kuidas teil läheb mina helistan lihtsalt",
     compiled,
@@ -83,7 +102,28 @@ function run(): void {
   const empty = classifyIntentFromSpeechHybrid("   ", compiled);
   assert.equal(empty.intent, null);
 
-  console.log("OK intent-classify-smoke:", "roadside/non_roadside/emergency/empty/unclear scenarios passed.");
+  // Both pathways unclear → merged unknown; SMS must stay blocked until clarified
+  const gibberO = classifyIntentFromSpeechHybrid("xyzabc nonsense qwerty", compiled);
+  const gibberD = classifyIntentFromSpeechHybrid("xyzabc nonsense qwerty", compiled);
+  const gibMerged = mergePathwayIntents(
+    (gibberO.intent ?? "unknown") as PathwayIntentClassification,
+    (gibberD.intent ?? "unknown") as PathwayIntentClassification,
+  );
+  assert.equal(gibMerged.resolved, "unknown", "gibberish → both unknown merge");
+
+  // --- Deepgram-preferred pathway merge matrix (OpenAI = first arg, Deepgram = second) ---
+  expectMerge("roadside", "roadside", "roadside", "both roadside");
+  expectMerge("unknown", "unknown", "unknown", "both unknown");
+  expectMerge("roadside", "unknown", "roadside", "OpenAI roadside Deepgram unknown");
+  expectMerge("unknown", "roadside", "roadside", "Deepgram roadside OpenAI unknown");
+  expectMerge("non_roadside", "unknown", "unknown", "OpenAI non_roadside Deepgram unknown → clarify");
+  expectMerge("unknown", "non_roadside", "unknown", "Deepgram non_roadside OpenAI unknown → clarify");
+  expectMerge("roadside", "non_roadside", "unknown_conflict", "OpenAI roadside vs Deepgram non_roadside");
+  expectMerge("non_roadside", "roadside", "unknown_conflict", "Deepgram roadside vs OpenAI non_roadside");
+  expectMerge("roadside", "emergency_handoff", "emergency_handoff", "emergency escalates");
+  expectMerge("unknown", "emergency_handoff", "emergency_handoff", "emergency from either pathway");
+
+  console.log("OK intent-classify-smoke:", "roadside/non_roadside/emergency/empty/unclear/merge-matrix passed.");
 }
 
 run();

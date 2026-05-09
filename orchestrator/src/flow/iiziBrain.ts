@@ -103,6 +103,13 @@ export interface IiziBrainRuntimeState {
   /** Merged SMS policy intent — never blindly “last transcript wins”. */
   finalResolvedIntent: ResolvedIntent;
   intentResolutionReason: string;
+
+  /** Monotonic per-call counter bumped on substantive OpenAI user transcript (aligns compare log with caller turn). */
+  intentCompareTurnSeq: number;
+  /** Last trimmed OpenAI Realtime transcript slice used for intent (not full session history). */
+  lastOpenaiIntentTranscriptPreview: string;
+  /** Last trimmed Deepgram shadow final transcript slice used for intent. */
+  lastDeepgramIntentTranscriptPreview: string;
 }
 
 function recomputeFinalIntent(state: IiziBrainRuntimeState): void {
@@ -180,6 +187,9 @@ export function createInitialIiziBrainState(): IiziBrainRuntimeState {
     deepgramShadowIntent: "unknown",
     finalResolvedIntent: "unknown",
     intentResolutionReason: "both_unknown_or_unclear",
+    intentCompareTurnSeq: 0,
+    lastOpenaiIntentTranscriptPreview: "",
+    lastDeepgramIntentTranscriptPreview: "",
   };
   recomputeFinalIntent(s);
   return s;
@@ -190,6 +200,7 @@ export function logIiziBrainIntentResolution(callId: string | null, state: IiziB
   const cid = callId || "?";
   const gate = smsGatePeek(state);
   const ev = evaluateIiziBrain(state, false);
+  logTranscriptCompare(callId, state);
   console.log(
     `[IIZI-Brain] intent_resolution openai=${state.openaiRealtimeIntent} deepgram=${state.deepgramShadowIntent} ` +
       `resolved=${state.finalResolvedIntent} reason=${state.intentResolutionReason} ` +
@@ -214,9 +225,34 @@ function smsGatePeek(state: IiziBrainRuntimeState): {
   };
 }
 
+const TRANSCRIPT_COMPARE_MAX = 220;
+
+function clipForTranscriptCompare(s: string): string {
+  return s.replace(/\s+/g, " ").trim().slice(0, TRANSCRIPT_COMPARE_MAX).replace(/"/g, "'");
+}
+
+/** Structured compare line for ops — Deepgram-preferred merge is reflected in resolvedIntent / smsGateReason. */
+export function logTranscriptCompare(callId: string | null, state: IiziBrainRuntimeState): void {
+  const gate = smsGatePeek(state);
+  const oaT = clipForTranscriptCompare(state.lastOpenaiIntentTranscriptPreview || "");
+  const dgT = clipForTranscriptCompare(state.lastDeepgramIntentTranscriptPreview || "");
+  console.log(
+    `[TranscriptCompare] callId=${callId || "?"} turnSeq=${state.intentCompareTurnSeq} ` +
+      `openaiTranscript="${oaT}" deepgramTranscript="${dgT}" ` +
+      `openaiIntent=${state.openaiRealtimeIntent} deepgramIntent=${state.deepgramShadowIntent} ` +
+      `resolvedIntent=${state.finalResolvedIntent} resolutionReason=${state.intentResolutionReason} ` +
+      `smsGateReason=${gate.smsGateReason}`,
+  );
+}
+
 export function ingestIiziBrainNonemptyUserSpeech(state: IiziBrainRuntimeState, text: string): void {
   state.silenceSignalCount = 0;
   state.lastTranscriptSource = "openai_realtime";
+  const trimmed = text.trim();
+  if (trimmed) {
+    state.intentCompareTurnSeq += 1;
+    state.lastOpenaiIntentTranscriptPreview = trimmed.slice(0, 400);
+  }
   const r = classifyIntentFromSpeechHybrid(text, compiledForClassification(state));
   state.openaiLastMatchedRuleIds = r.meta.matchedRuleIds;
   state.openaiLastClassifySource = r.meta.classifySource;
@@ -251,6 +287,7 @@ export function ingestIiziBrainTrustedShadowFinal(
   }
 
   state.lastObservedEvent = `trusted_transcript_shadow.${provider}.final`;
+  state.lastDeepgramIntentTranscriptPreview = t.slice(0, 400);
   const r = classifyIntentFromSpeechHybrid(t, compiledForClassification(state));
   state.deepgramLastMatchedRuleIds = r.meta.matchedRuleIds;
   state.deepgramLastClassifySource = r.meta.classifySource;
@@ -299,6 +336,9 @@ export function ingestIiziBrainFlow(
       state.lastTranscriptSource = "none";
       state.openaiRealtimeIntent = "unknown";
       state.deepgramShadowIntent = "unknown";
+      state.intentCompareTurnSeq = 0;
+      state.lastOpenaiIntentTranscriptPreview = "";
+      state.lastDeepgramIntentTranscriptPreview = "";
       state.brainClassifierForceBuiltinFallback = false;
       resetPathwayClassifyScratch(state);
       recomputeFinalIntent(state);
@@ -341,6 +381,9 @@ export function ingestIiziBrainFlow(
       state.lastTranscriptSource = "none";
       state.openaiRealtimeIntent = "unknown";
       state.deepgramShadowIntent = "unknown";
+      state.intentCompareTurnSeq = 0;
+      state.lastOpenaiIntentTranscriptPreview = "";
+      state.lastDeepgramIntentTranscriptPreview = "";
       state.brainClassifierForceBuiltinFallback = false;
       resetPathwayClassifyScratch(state);
       recomputeFinalIntent(state);
