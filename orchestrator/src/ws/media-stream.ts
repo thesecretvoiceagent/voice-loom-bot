@@ -11,6 +11,7 @@ import {
 import type { IiziShadowState } from "../flow/iiziShadowFlow.js";
 import {
   createInitialIiziBrainState,
+  refreshIiziBrainMergedIntent,
   gateIiziCombinedSms,
   evaluateIiziBrain,
   ingestIiziBrainNonemptyUserSpeech,
@@ -28,7 +29,7 @@ import {
 import { fetchLatestEnabledBrainConfigRow } from "../agentBrainConfigRepo.js";
 import { recordIiziShadowTrace } from "../flow/trace.js";
 import type { AgentBrainConfig } from "../brain/agentBrainUiTypes.js";
-import { resolveAgentBrainConfigFromSettings } from "../brain/agentBrainUiTypes.js";
+import { resolveAgentBrainConfigFromSettings, resolveRuntimeBrainUiFromSettings } from "../brain/agentBrainUiTypes.js";
 import {
   evaluateBrain,
   validateIiziInboundToolCall,
@@ -803,6 +804,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const emitOccupantCountRequiredSystemEvent = (source: string) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    if (
+      useCombinedRegLocationSms &&
+      callDirection === "inbound" &&
+      !iiziBrainRef.current.runtimeBrainUi.gates.occupantCount
+    ) {
+      console.log(`[IIZI-Occupants] skip occupant ask — occupant gate disabled in brainUi source=${source} callId=${callId}`);
+      return;
+    }
     if (useCombinedRegLocationSms && callDirection === "inbound") {
       if (vehicleValidationStatus === "invalid" || !vehicleLookupPassed) {
         iiziOccupantPromptDeferred = false;
@@ -1468,6 +1477,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (agentConfig.settings) {
         const settings = agentConfig.settings as Record<string, unknown>;
         agentBrainUiConfig = resolveAgentBrainConfigFromSettings(settings);
+        iiziBrainRef.current.runtimeBrainUi = resolveRuntimeBrainUiFromSettings(settings);
+        refreshIiziBrainMergedIntent(iiziBrainRef.current);
         maxCallDurationMinutes = (settings.max_call_duration as number) || 0;
         if (typeof settings.temperature === "number") {
           agentTemperature = settings.temperature;
