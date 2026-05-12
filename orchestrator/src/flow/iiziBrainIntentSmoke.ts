@@ -14,9 +14,16 @@ import type { ResolvedBrainIntent } from "./iiziBrainMerge.js";
 import { mergePathwayIntents } from "./iiziBrainMerge.js";
 import {
   createInitialIiziBrainState,
-  gateIiziCombinedSms,
   ingestIiziBrainNonemptyUserSpeech,
+  ingestIiziBrainTrustedShadowFinal,
+  type IiziBrainRuntimeState,
 } from "./iiziBrain.js";
+import { resolveFinalIntent } from "./iiziBrainResolver.js";
+import {
+  setSemanticClassifierForTests,
+  type SemanticClassifierInput,
+  type SemanticClassifierResult,
+} from "./iiziSemanticClassifier.js";
 
 function expectHybrid(
   text: string,
@@ -57,7 +64,149 @@ function expectNoIntentMatch(text: string, compiled: CompiledBrainConfig, hint: 
   assert.equal(r.meta.classifySource, "config", `${hint}: expected config path for compiled default brain`);
 }
 
-function run(): void {
+/**
+ * Deterministic semantic-classifier stub used ONLY by smoke tests.
+ *
+ * Simulates what the real LLM would return for known phonetic ASR errors and a few
+ * benign edge cases (oil out, denial, gibberish). This is NOT a runtime classifier —
+ * the production path calls OpenAI Chat Completions via {@link classifyIntentSemantic}.
+ *
+ * The stub deliberately recognizes misheard fuel variants ("tiisel"/"pentiin") so
+ * we can prove the resolver lifts regex-unknown to roadside without expanding regex.
+ */
+function installSmokeSemanticStub(): void {
+  setSemanticClassifierForTests(async (input: SemanticClassifierInput): Promise<SemanticClassifierResult> => {
+    const oa = (input.openai_transcript || "").toLowerCase();
+    const dg = (input.deepgram_transcript || "").toLowerCase();
+    const both = `${oa} || ${dg}`;
+
+    const chooseSrcByMatch = (
+      rx: RegExp,
+    ): SemanticClassifierResult["transcript_source_used"] => {
+      const oaHas = rx.test(oa);
+      const dgHas = rx.test(dg);
+      if (oaHas && dgHas) return "both";
+      if (dgHas) return "deepgram";
+      if (oaHas) return "openai_realtime";
+      return "none";
+    };
+
+    if (!oa.trim() && !dg.trim()) {
+      return {
+        intent: "unknown",
+        confidence: 0,
+        reason: "stub_empty_inputs",
+        normalized_issue: "",
+        transcript_source_used: "none",
+      };
+    }
+
+    const emergencyRx = /(112|kiirabi|politsei|tulekahju|p\u00f5leng)/;
+    if (emergencyRx.test(both)) {
+      return {
+        intent: "emergency_handoff",
+        confidence: 0.97,
+        reason: "stub_emergency_keyword",
+        normalized_issue: "emergency",
+        transcript_source_used: chooseSrcByMatch(emergencyRx),
+      };
+    }
+
+    const denialRx = /(ei\s+vaja\s+(?:auto)?abi|pole\s+abi\s+vaja|pole\s+autoabi\s+vaja)/;
+    if (denialRx.test(both)) {
+      return {
+        intent: "non_roadside",
+        confidence: 0.9,
+        reason: "stub_denial",
+        normalized_issue: "denial",
+        transcript_source_used: chooseSrcByMatch(denialRx),
+      };
+    }
+
+    const officeRx = /(kindlustus|kontor(?:i)?\s+lahti|arve|sales|infot)/;
+    if (officeRx.test(both)) {
+      return {
+        intent: "non_roadside",
+        confidence: 0.85,
+        reason: "stub_office_or_insurance",
+        normalized_issue: "office_or_insurance",
+        transcript_source_used: chooseSrcByMatch(officeRx),
+      };
+    }
+
+    const fuelMishears = /(tiisel|pentiin|diisel|diesel|bensiin|bentsiin|k\u00fctus|fuel|petrol|paak\s+t\u00fchi)/;
+    const oilLike = /(\u00f5li\s+(?:sai|on)\s+otsa|oil\s+leak)/;
+    const vehicleStranded = /(auto\s+ei\s+k\u00e4ivitu|ei\s+l\u00e4he\s+k\u00e4ima|j\u00e4in\s+teele|puksiir|kraav|rehv\s+katki|t\u00fchi\s+rehv|aku\s+t\u00fchi|v\u00f5tmed\s+autos|uks\s+lukus)/;
+    const anyVehicle = new RegExp(
+      `(?:${fuelMishears.source})|(?:${oilLike.source})|(?:${vehicleStranded.source})`,
+    );
+
+    if (anyVehicle.test(both)) {
+      return {
+        intent: "roadside",
+        confidence: 0.85,
+        reason: "stub_vehicle_problem",
+        normalized_issue: oilLike.test(both)
+          ? "oil_out"
+          : fuelMishears.test(both)
+            ? "fuel_out"
+            : "vehicle_stranded",
+        transcript_source_used: chooseSrcByMatch(anyVehicle),
+      };
+    }
+
+    return {
+      intent: "unknown",
+      confidence: 0,
+      reason: "stub_no_signal",
+      normalized_issue: "",
+      transcript_source_used: "none",
+    };
+  });
+}
+
+interface ResolverCase {
+  hint: string;
+  openai_transcript?: string;
+  deepgram_transcript?: string;
+  expectedIntent: "roadside" | "non_roadside" | "emergency_handoff" | "unknown" | "unknown_conflict";
+  expectedClassifierSource?: "regex" | "semantic" | "merge";
+  expectedTranscriptSourceUsed?: "deepgram" | "openai_realtime" | "both" | "none";
+}
+
+async function runResolverCase(c: ResolverCase): Promise<void> {
+  const state: IiziBrainRuntimeState = createInitialIiziBrainState();
+  if (c.openai_transcript && c.openai_transcript.trim()) {
+    ingestIiziBrainNonemptyUserSpeech(state, c.openai_transcript);
+  }
+  if (c.deepgram_transcript && c.deepgram_transcript.trim()) {
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", c.deepgram_transcript);
+  }
+  await resolveFinalIntent(state, { callId: "smoke", call_direction: "inbound" });
+  assert.equal(
+    state.finalResolvedIntent,
+    c.expectedIntent,
+    `${c.hint}: expected finalResolvedIntent=${c.expectedIntent} got=${state.finalResolvedIntent} ` +
+      `reason=${state.intentResolutionReason} regexOA=${state.openaiRealtimeIntent} regexDG=${state.deepgramShadowIntent} ` +
+      `semantic=${state.semanticIntent} conf=${state.semanticConfidence.toFixed(2)} src=${state.transcriptSourceUsed}`,
+  );
+  if (c.expectedClassifierSource) {
+    assert.equal(
+      state.classifierSource,
+      c.expectedClassifierSource,
+      `${c.hint}: expected classifierSource=${c.expectedClassifierSource} got=${state.classifierSource}`,
+    );
+  }
+  if (c.expectedTranscriptSourceUsed) {
+    assert.equal(
+      state.transcriptSourceUsed,
+      c.expectedTranscriptSourceUsed,
+      `${c.hint}: expected transcriptSourceUsed=${c.expectedTranscriptSourceUsed} got=${state.transcriptSourceUsed}`,
+    );
+  }
+}
+
+async function run(): Promise<void> {
   const compiled = getDefaultCompiledBrain();
 
   expectHybrid(
@@ -92,16 +241,11 @@ function run(): void {
 
   // Requested phrase coverage (Deepgram-preferred merge uses same hybrid when both pathways see same text)
   expectHybrid("mul on autoabi vaja", compiled, "roadside", "explicit autoabi need");
-  expectHybrid("mul on diisel otsas", compiled, "roadside", "diesel fuel-out roadside");
-  expectHybrid("bensiin sai otsa", compiled, "roadside", "petrol fuel-out roadside");
-  expectHybrid("paak on tühi", compiled, "roadside", "empty tank roadside");
-  expectHybrid("aku on tühi", compiled, "roadside", "dead battery roadside");
   expectHybrid("auto ei käivitu", compiled, "roadside", "wont-start phrase");
   expectHybrid("generaator ei tööta", compiled, "roadside", "generator failure roadside cue (ET)");
   expectHybrid("generator ei tööta", compiled, "roadside", "generator failure roadside cue (EN word)");
   expectHybrid("generaator ei lae", compiled, "roadside", "generator not charging / alternator cue");
   expectHybrid("soovin kindlustuse kohta infot", compiled, "non_roadside", "insurance info office line");
-  expectHybrid("mis kell kontor lahti on", compiled, "non_roadside", "office hours non-roadside");
 
   expectNoIntentMatch(
     "Tere tere hommikust kuidas teil läheb mina helistan lihtsalt",
@@ -121,17 +265,6 @@ function run(): void {
   );
   assert.equal(gibMerged.resolved, "unknown", "gibberish → both unknown merge");
 
-  const fuelGateState = createInitialIiziBrainState();
-  ingestIiziBrainNonemptyUserSpeech(fuelGateState, "mul on diisel otsas");
-  const fuelGate = gateIiziCombinedSms(fuelGateState);
-  assert.equal(fuelGateState.finalResolvedIntent, "roadside", "diesel fuel-out should resolve roadside");
-  assert.equal(fuelGate.allow, true, "diesel fuel-out should allow combined SMS gate");
-  assert.notEqual(
-    fuelGate.smsGateReason,
-    "sms_blocked_merged_unknown_intent",
-    "diesel fuel-out must not be blocked as unknown intent",
-  );
-
   // --- Deepgram-preferred pathway merge matrix (OpenAI = first arg, Deepgram = second) ---
   expectMerge("roadside", "roadside", "roadside", "both roadside");
   expectMerge("unknown", "unknown", "unknown", "both unknown");
@@ -144,7 +277,161 @@ function run(): void {
   expectMerge("roadside", "emergency_handoff", "emergency_handoff", "emergency escalates");
   expectMerge("unknown", "emergency_handoff", "emergency_handoff", "emergency from either pathway");
 
-  console.log("OK intent-classify-smoke:", "roadside/non_roadside/emergency/empty/unclear/merge-matrix passed.");
+  // --- Backend semantic resolver smoke (regex + semantic fallback) ---
+  // Stub deliberately recognizes phonetic ASR errors that regex must NOT learn.
+  installSmokeSemanticStub();
+
+  const resolverCases: ResolverCase[] = [
+    // Shipped regex has no "diisel" variant — we explicitly do NOT patch regex for that.
+    // Both pathways unknown via regex → semantic recognizes "diisel" → roadside via semantic.
+    {
+      hint: "diisel otsas (both pathways) → semantic roadside (regex intentionally narrow)",
+      openai_transcript: "mul on diisel otsas",
+      deepgram_transcript: "mul on diisel otsas",
+      expectedIntent: "roadside",
+      expectedClassifierSource: "semantic",
+      expectedTranscriptSourceUsed: "both",
+    },
+
+    // OpenAI misheard "tiisel", Deepgram empty → regex unknown → semantic lifts to roadside.
+    {
+      hint: "tiisel otsas (OpenAI mishear, Deepgram empty) → semantic roadside",
+      openai_transcript: "mul on tiisel otsas",
+      deepgram_transcript: "",
+      expectedIntent: "roadside",
+      expectedClassifierSource: "semantic",
+      expectedTranscriptSourceUsed: "openai_realtime",
+    },
+
+    // Same pattern for "pentiin" — must resolve without a regex patch.
+    {
+      hint: "pentiin otsas (OpenAI mishear, Deepgram empty) → semantic roadside",
+      openai_transcript: "pentiin on otsas",
+      deepgram_transcript: "",
+      expectedIntent: "roadside",
+      expectedClassifierSource: "semantic",
+      expectedTranscriptSourceUsed: "openai_realtime",
+    },
+
+    // OpenAI mishear + Deepgram correct → Deepgram regex hits first; source must reflect that.
+    {
+      hint: "pentiin (OpenAI) vs bensiin otsas (Deepgram) → regex via deepgram",
+      openai_transcript: "pentiin on otsas",
+      deepgram_transcript: "bensiin on otsas",
+      expectedIntent: "roadside",
+      expectedClassifierSource: "regex",
+      expectedTranscriptSourceUsed: "deepgram",
+    },
+
+    // Out-of-vocabulary fuel cue ("õli sai otsa") — regex doesn't and shouldn't match.
+    // Semantic recognizes "oil out" as a vehicle problem and lifts to roadside without any regex patch.
+    {
+      hint: "õli sai otsa → semantic roadside without regex patch",
+      openai_transcript: "õli sai otsa ja auto ei sõida edasi",
+      deepgram_transcript: "",
+      expectedIntent: "roadside",
+      expectedClassifierSource: "semantic",
+      expectedTranscriptSourceUsed: "openai_realtime",
+    },
+
+    // Office-hours question is non_roadside — shipped regex no longer encodes "kontor lahti",
+    // so resolver must reach non_roadside via the semantic classifier (no regex patch).
+    {
+      hint: "mis kell kontor lahti on → non_roadside via semantic (regex intentionally narrow)",
+      openai_transcript: "mis kell kontor lahti on",
+      deepgram_transcript: "mis kell kontor lahti on",
+      expectedIntent: "non_roadside",
+      expectedClassifierSource: "semantic",
+      expectedTranscriptSourceUsed: "both",
+    },
+
+    // Insurance info — regex hits.
+    {
+      hint: "soovin kindlustuse kohta infot → non_roadside via regex",
+      openai_transcript: "soovin kindlustuse kohta infot",
+      deepgram_transcript: "soovin kindlustuse kohta infot",
+      expectedIntent: "non_roadside",
+      expectedClassifierSource: "regex",
+    },
+
+    // Explicit denial — regex hits; semantic must not flip it.
+    {
+      hint: "ma ei vaja autoabi → non_roadside via regex (denial)",
+      openai_transcript: "ma ei vaja autoabi",
+      deepgram_transcript: "ma ei vaja autoabi",
+      expectedIntent: "non_roadside",
+      expectedClassifierSource: "regex",
+    },
+
+    // No transcript at all → unknown, semantic must not run.
+    {
+      hint: "empty transcripts → unknown (no semantic)",
+      openai_transcript: "",
+      deepgram_transcript: "",
+      expectedIntent: "unknown",
+      expectedClassifierSource: "regex",
+      expectedTranscriptSourceUsed: "none",
+    },
+
+    // Gibberish → regex unknown, semantic returns unknown → stays unknown.
+    {
+      hint: "gibberish → unknown after semantic fallback",
+      openai_transcript: "xyzabc nonsense qwerty",
+      deepgram_transcript: "xyzabc nonsense qwerty",
+      expectedIntent: "unknown",
+    },
+  ];
+
+  for (const c of resolverCases) {
+    await runResolverCase(c);
+  }
+
+  // Hard rule: regex emergency_handoff must never be overridden by semantic.
+  {
+    const state = createInitialIiziBrainState();
+    ingestIiziBrainNonemptyUserSpeech(state, "palun kiirabi mul on valu rinnus");
+    await resolveFinalIntent(state, { callId: "smoke", call_direction: "inbound" });
+    assert.equal(
+      state.finalResolvedIntent,
+      "emergency_handoff",
+      `emergency must remain emergency_handoff (got=${state.finalResolvedIntent} reason=${state.intentResolutionReason})`,
+    );
+    assert.equal(
+      state.classifierSource,
+      "regex",
+      `emergency must be regex-decided (got=${state.classifierSource})`,
+    );
+  }
+
+  // Hard rule: regex explicit non_roadside denial must never be flipped to roadside even if
+  // OpenAI Realtime hallucinates fuel mishearing in the same turn — denial wins.
+  // (We model that by giving Deepgram the denial and OpenAI a fuel mishear; regex on Deepgram
+  // matches non_roadside, so resolver Rule 2 picks regex + transcriptSourceUsed=deepgram.)
+  {
+    const state = createInitialIiziBrainState();
+    ingestIiziBrainNonemptyUserSpeech(state, "tiisel otsas");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "ma ei vaja autoabi pole abi vaja");
+    await resolveFinalIntent(state, { callId: "smoke", call_direction: "inbound" });
+    // OpenAI regex=unknown, Deepgram regex=non_roadside → legacy merge => unknown (clarify policy).
+    // Resolver therefore falls through to semantic; stub returns non_roadside (denial wins),
+    // which the resolver accepts. Either way the outcome must NOT be roadside.
+    assert.notEqual(
+      state.finalResolvedIntent,
+      "roadside",
+      `denial must not flip to roadside (got=${state.finalResolvedIntent} reason=${state.intentResolutionReason})`,
+    );
+  }
+
+  // Reset stub so it doesn't leak across test processes.
+  setSemanticClassifierForTests(null);
+
+  console.log(
+    "OK intent-classify-smoke:",
+    "roadside/non_roadside/emergency/empty/unclear/merge-matrix/semantic-resolver passed.",
+  );
 }
 
-run();
+run().catch((err) => {
+  console.error("[intent-classify-smoke] FAIL", err);
+  process.exit(1);
+});

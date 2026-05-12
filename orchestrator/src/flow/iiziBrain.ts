@@ -11,6 +11,13 @@ import {
   type RuntimeBrainUiSettings,
   runtimeBrainUiUsesLegacyPathwayMerge,
 } from "../brain/agentBrainUiTypes.js";
+import type {
+  SemanticClassifyIntent,
+  SemanticTranscriptSourceUsed,
+} from "./iiziSemanticClassifier.js";
+
+/** Which classifier produced the current finalResolvedIntent. */
+export type IiziClassifierSource = "regex" | "semantic" | "merge";
 export type { ResolvedBrainIntent };
 /** Merged coarse outcome for SMS gating — same as `ResolvedBrainIntent` from pathway merge */
 export type ResolvedIntent = ResolvedBrainIntent;
@@ -118,6 +125,24 @@ export interface IiziBrainRuntimeState {
   lastOpenaiIntentTranscriptPreview: string;
   /** Last trimmed Deepgram shadow final transcript slice used for intent. */
   lastDeepgramIntentTranscriptPreview: string;
+
+  /** Last semantic classifier verdict — only populated when semantic ran. */
+  semanticIntent: SemanticClassifyIntent;
+  /** [0..1] confidence reported by the semantic classifier (0 when not run / fail-closed). */
+  semanticConfidence: number;
+  /** Short reason returned by the semantic classifier (or fail-closed reason). */
+  semanticReason: string;
+  /** Normalized issue label from the semantic classifier (free-text, short). */
+  semanticNormalizedIssue: string;
+  /** Transcript pathway the semantic classifier reports as authoritative for its verdict. */
+  semanticTranscriptSourceUsed: SemanticTranscriptSourceUsed;
+  /** Cache key for the last (oa,dg) transcript pair the semantic classifier ran on. */
+  semanticLastInputKey: string;
+
+  /** Which classifier produced the current finalResolvedIntent. */
+  classifierSource: IiziClassifierSource;
+  /** Transcript pathway that decided the current finalResolvedIntent. */
+  transcriptSourceUsed: SemanticTranscriptSourceUsed;
 }
 
 function recomputeFinalIntent(state: IiziBrainRuntimeState): void {
@@ -166,6 +191,15 @@ function resetPathwayClassifyScratch(state: IiziBrainRuntimeState): void {
   state.deepgramLastMatchedIntentSlug = null;
 }
 
+function resetSemanticScratch(state: IiziBrainRuntimeState): void {
+  state.semanticIntent = "unknown";
+  state.semanticConfidence = 0;
+  state.semanticReason = "";
+  state.semanticNormalizedIssue = "";
+  state.semanticTranscriptSourceUsed = "none";
+  state.semanticLastInputKey = "";
+}
+
 /** Compiled rules for intent labels, or `null` → legacy built-in regex bundle (Supabase fail-open). */
 function compiledForClassification(state: IiziBrainRuntimeState): CompiledBrainConfig | null {
   return state.brainClassifierForceBuiltinFallback ? null : state.brainCompiled;
@@ -210,6 +244,14 @@ export function createInitialIiziBrainState(): IiziBrainRuntimeState {
     intentCompareTurnSeq: 0,
     lastOpenaiIntentTranscriptPreview: "",
     lastDeepgramIntentTranscriptPreview: "",
+    semanticIntent: "unknown",
+    semanticConfidence: 0,
+    semanticReason: "",
+    semanticNormalizedIssue: "",
+    semanticTranscriptSourceUsed: "none",
+    semanticLastInputKey: "",
+    classifierSource: "regex",
+    transcriptSourceUsed: "none",
   };
   recomputeFinalIntent(s);
   return s;
@@ -225,11 +267,14 @@ export function logIiziBrainIntentResolution(callId: string | null, state: IiziB
   }
   console.log(
     `[IIZI-Brain] intent_resolution openai=${state.openaiRealtimeIntent} deepgram=${state.deepgramShadowIntent} ` +
+      `regexIntentOA=${state.openaiRealtimeIntent} regexIntentDG=${state.deepgramShadowIntent} ` +
+      `semanticIntent=${state.semanticIntent} semanticConfidence=${state.semanticConfidence.toFixed(2)} ` +
+      `transcriptSourceUsed=${state.transcriptSourceUsed} classifierSource=${state.classifierSource} ` +
       `resolved=${state.finalResolvedIntent} reason=${state.intentResolutionReason} ` +
       `brainConfigDbVersion=${ev.brainConfigDbVersion ?? "null"} schema=${ev.brainConfigSchemaVersion} ` +
       `matchedIntentOA=${ev.matchedIntentOpenAI ?? "null"} matchedRuleOA=${ev.matchedRuleOpenAI} classifySourceOA=${ev.classifySourceOpenAI} ` +
       `matchedIntentDG=${ev.matchedIntentDeepgram ?? "null"} matchedRuleDG=${ev.matchedRuleDeepgram} classifySourceDG=${ev.classifySourceDeepgram} ` +
-      `classifierFailOpen=${ev.brainClassifierForceBuiltinFallback} ` +
+      `classifierFailOpen=${ev.brainClassifierForceBuiltinFallback} currentPhase=${state.workflowPhase} ` +
       `nextAction=${ev.expectedNextAction} smsGateReason=${gate.smsGateReason} callId=${cid}`,
   );
 }
@@ -258,12 +303,15 @@ export function logTranscriptCompare(callId: string | null, state: IiziBrainRunt
   const gate = smsGatePeek(state);
   const oaT = clipForTranscriptCompare(state.lastOpenaiIntentTranscriptPreview || "");
   const dgT = clipForTranscriptCompare(state.lastDeepgramIntentTranscriptPreview || "");
+  const ev = evaluateIiziBrain(state, false);
   console.log(
     `[TranscriptCompare] callId=${callId || "?"} turnSeq=${state.intentCompareTurnSeq} ` +
       `openaiTranscript="${oaT}" deepgramTranscript="${dgT}" ` +
-      `openaiIntent=${state.openaiRealtimeIntent} deepgramIntent=${state.deepgramShadowIntent} ` +
-      `resolvedIntent=${state.finalResolvedIntent} resolutionReason=${state.intentResolutionReason} ` +
-      `smsGateReason=${gate.smsGateReason}`,
+      `regexIntentOpenAI=${state.openaiRealtimeIntent} regexIntentDeepgram=${state.deepgramShadowIntent} ` +
+      `semanticIntent=${state.semanticIntent} semanticConfidence=${state.semanticConfidence.toFixed(2)} ` +
+      `transcriptSourceUsed=${state.transcriptSourceUsed} classifierSource=${state.classifierSource} ` +
+      `finalResolvedIntent=${state.finalResolvedIntent} resolutionReason=${state.intentResolutionReason} ` +
+      `smsGateReason=${gate.smsGateReason} currentPhase=${state.workflowPhase} nextAction=${ev.expectedNextAction}`,
   );
 }
 
@@ -362,9 +410,12 @@ export function ingestIiziBrainFlow(
       state.lastOpenaiIntentTranscriptPreview = "";
       state.lastDeepgramIntentTranscriptPreview = "";
       state.brainClassifierForceBuiltinFallback = false;
+      resetSemanticScratch(state);
       resetPathwayClassifyScratch(state);
       recomputeFinalIntent(state);
       state.intentResolutionReason = "call_started_reset";
+      state.classifierSource = "regex";
+      state.transcriptSourceUsed = "none";
       break;
     case "combined_sms_sent":
       state.workflowPhase = "waiting_for_form_and_location";
@@ -407,9 +458,12 @@ export function ingestIiziBrainFlow(
       state.lastOpenaiIntentTranscriptPreview = "";
       state.lastDeepgramIntentTranscriptPreview = "";
       state.brainClassifierForceBuiltinFallback = false;
+      resetSemanticScratch(state);
       resetPathwayClassifyScratch(state);
       recomputeFinalIntent(state);
       state.intentResolutionReason = "call_ended_reset";
+      state.classifierSource = "regex";
+      state.transcriptSourceUsed = "none";
       break;
     default:
       break;
