@@ -40,6 +40,15 @@ export const DEFAULT_IIZI_BRAIN_CONFIG: IiziBrainConfigV1 = {
             String.raw`\b(helistage\s+)?tagasi\b`,
           ],
         },
+        {
+          id: "insurance_info_office_inquiry",
+          examples: ["Soovin kindlustuse kohta infot", "Kindlustuse kohta infot"],
+          keywords: [],
+          patterns: [
+            /** Narrow: general info about insurance (office line), not live cover/roadside diagnosis. */
+            String.raw`(?:\b(?:soovin|sooviksin|tahan)\s+)?\bkindlustuse\s+kohta\s+infot\b`,
+          ],
+        },
       ],
     },
     emergency_handoff: {
@@ -122,6 +131,15 @@ export const DEFAULT_IIZI_BRAIN_CONFIG: IiziBrainConfigV1 = {
           id: "battery",
           keywords: ["aku tühi"],
           patterns: [],
+        },
+        {
+          id: "generator_alternator_failure",
+          examples: ["Generaator ei tööta", "Generator won't charge"],
+          keywords: [],
+          patterns: [
+            String.raw`\b(?:generaator|generator)\s+ei\s+tööta\b`,
+            String.raw`\b(?:generaator|generator)\s+ei\s+lae\b`,
+          ],
         },
         {
           id: "lockout_keys_inside",

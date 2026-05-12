@@ -168,3 +168,175 @@ export function resolveAgentBrainConfigFromSettings(
     version: typeof version === "number" ? version : base.version,
   };
 }
+
+// --- Runtime policy from admin UI `settings.brainUi` (voice-loom frontend) ---
+
+export type UiBrainProviderMode = "shadow" | "soft_guard" | "hard_guard";
+
+export type SpeechTrustMode =
+  | "prefer_deepgram_when_openai_unclear"
+  | "ask_on_conflict"
+  | "prefer_openai";
+
+export type UnknownIntentBehaviorUi = "ask_clarification" | "route_human";
+
+export type ConflictBehaviorUi = "ask_clarification" | "prefer_deepgram" | "prefer_openai";
+
+export type RuntimeBrainUiSettings = {
+  version: 1;
+  enabled: boolean;
+  providerMode: UiBrainProviderMode;
+  speechTrustMode: SpeechTrustMode;
+  unknownIntentBehavior: UnknownIntentBehaviorUi;
+  conflictBehavior: ConflictBehaviorUi;
+  gates: {
+    combinedSms: boolean;
+    occupantCount: boolean;
+    vehicleReadback: boolean;
+    locationReadback: boolean;
+    callbackConfirmation: boolean;
+    endCall: boolean;
+  };
+  occupantPrerequisites: {
+    formSubmitted: boolean;
+    vehicleLookupMatchActive: boolean;
+    locationConfirmed: boolean;
+    vehicleReadbackComplete: boolean;
+    locationReadbackComplete: boolean;
+  };
+  diagnostics: {
+    brainDecision: boolean;
+    toolBlocked: boolean;
+    transcriptCompare: boolean;
+  };
+};
+
+/** Back-compat when `settings.brainUi` missing: align with admin UI safest defaults + permissive gates. */
+export const DEFAULT_RUNTIME_BRAIN_UI_SETTINGS: RuntimeBrainUiSettings = {
+  version: 1,
+  enabled: true,
+  providerMode: "soft_guard",
+  speechTrustMode: "prefer_deepgram_when_openai_unclear",
+  conflictBehavior: "ask_clarification",
+  unknownIntentBehavior: "ask_clarification",
+  gates: {
+    combinedSms: true,
+    occupantCount: true,
+    vehicleReadback: true,
+    locationReadback: true,
+    callbackConfirmation: true,
+    endCall: true,
+  },
+  occupantPrerequisites: {
+    formSubmitted: true,
+    vehicleLookupMatchActive: true,
+    locationConfirmed: true,
+    vehicleReadbackComplete: true,
+    locationReadbackComplete: true,
+  },
+  diagnostics: {
+    brainDecision: true,
+    toolBlocked: true,
+    transcriptCompare: true,
+  },
+};
+
+function asBool(v: unknown, d: boolean): boolean {
+  return typeof v === "boolean" ? v : d;
+}
+
+export function resolveRuntimeBrainUiFromSettings(
+  settings: Record<string, unknown> | null | undefined,
+): RuntimeBrainUiSettings {
+  const d = DEFAULT_RUNTIME_BRAIN_UI_SETTINGS;
+  if (!settings || typeof settings !== "object") return { ...d };
+
+  const raw = settings.brainUi;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ...d };
+
+  const o = raw as Record<string, unknown>;
+
+  const providerMode: UiBrainProviderMode =
+    o.providerMode === "shadow" || o.providerMode === "soft_guard" || o.providerMode === "hard_guard"
+      ? o.providerMode
+      : d.providerMode;
+
+  const speechTrustMode: SpeechTrustMode =
+    o.speechTrustMode === "prefer_deepgram_when_openai_unclear" ||
+    o.speechTrustMode === "ask_on_conflict" ||
+    o.speechTrustMode === "prefer_openai"
+      ? o.speechTrustMode
+      : d.speechTrustMode;
+
+  const unknownIntentBehavior: UnknownIntentBehaviorUi =
+    o.unknownIntentBehavior === "ask_clarification" || o.unknownIntentBehavior === "route_human"
+      ? o.unknownIntentBehavior
+      : d.unknownIntentBehavior;
+
+  const conflictBehavior: ConflictBehaviorUi =
+    o.conflictBehavior === "ask_clarification" ||
+    o.conflictBehavior === "prefer_deepgram" ||
+    o.conflictBehavior === "prefer_openai"
+      ? o.conflictBehavior
+      : d.conflictBehavior;
+
+  const gatesIn =
+    o.gates && typeof o.gates === "object" && !Array.isArray(o.gates)
+      ? (o.gates as Record<string, unknown>)
+      : {};
+  const occIn =
+    o.occupantPrerequisites &&
+    typeof o.occupantPrerequisites === "object" &&
+    !Array.isArray(o.occupantPrerequisites)
+      ? (o.occupantPrerequisites as Record<string, unknown>)
+      : {};
+  const diagIn =
+    o.diagnostics && typeof o.diagnostics === "object" && !Array.isArray(o.diagnostics)
+      ? (o.diagnostics as Record<string, unknown>)
+      : {};
+
+  return {
+    version: 1,
+    enabled: asBool(o.enabled, d.enabled),
+    providerMode,
+    speechTrustMode,
+    unknownIntentBehavior,
+    conflictBehavior,
+    gates: {
+      combinedSms: asBool(gatesIn.combinedSms, d.gates.combinedSms),
+      occupantCount: asBool(gatesIn.occupantCount, d.gates.occupantCount),
+      vehicleReadback: asBool(gatesIn.vehicleReadback, d.gates.vehicleReadback),
+      locationReadback: asBool(gatesIn.locationReadback, d.gates.locationReadback),
+      callbackConfirmation: asBool(gatesIn.callbackConfirmation, d.gates.callbackConfirmation),
+      endCall: asBool(gatesIn.endCall, d.gates.endCall),
+    },
+    occupantPrerequisites: {
+      formSubmitted: asBool(occIn.formSubmitted, d.occupantPrerequisites.formSubmitted),
+      vehicleLookupMatchActive: asBool(
+        occIn.vehicleLookupMatchActive,
+        d.occupantPrerequisites.vehicleLookupMatchActive,
+      ),
+      locationConfirmed: asBool(occIn.locationConfirmed, d.occupantPrerequisites.locationConfirmed),
+      vehicleReadbackComplete: asBool(
+        occIn.vehicleReadbackComplete,
+        d.occupantPrerequisites.vehicleReadbackComplete,
+      ),
+      locationReadbackComplete: asBool(
+        occIn.locationReadbackComplete,
+        d.occupantPrerequisites.locationReadbackComplete,
+      ),
+    },
+    diagnostics: {
+      brainDecision: asBool(diagIn.brainDecision, d.diagnostics.brainDecision),
+      toolBlocked: asBool(diagIn.toolBlocked, d.diagnostics.toolBlocked),
+      transcriptCompare: asBool(diagIn.transcriptCompare, d.diagnostics.transcriptCompare),
+    },
+  };
+}
+
+/** True when pathway merge matches shipped legacy (`npm run intent-classify-smoke`). */
+export function runtimeBrainUiUsesLegacyPathwayMerge(ui: RuntimeBrainUiSettings): boolean {
+  return (
+    ui.speechTrustMode === "prefer_deepgram_when_openai_unclear" && ui.conflictBehavior === "prefer_deepgram"
+  );
+}

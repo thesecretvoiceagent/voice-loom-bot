@@ -9,7 +9,11 @@ import {
   deriveExpectedNextActionBrain,
   type IiziBrainRuntimeState,
 } from "../flow/iiziBrain.js";
-import { DEFAULT_IIZI_AGENT_BRAIN_CONFIG, type AgentBrainConfig } from "./agentBrainUiTypes.js";
+import {
+  DEFAULT_IIZI_AGENT_BRAIN_CONFIG,
+  type AgentBrainConfig,
+  type RuntimeBrainUiSettings,
+} from "./agentBrainUiTypes.js";
 
 export type BrainDecision = {
   resolvedIntent: string;
@@ -57,6 +61,27 @@ export type ToolValidationResult = {
 
 const CLARIFY_ROADSIDE_ET = "Kas Teil on hetkel vaja autoabi?";
 
+function uiPolicy(snap: BrainRuntimeSnapshot): RuntimeBrainUiSettings {
+  return snap.iiziBrain.runtimeBrainUi;
+}
+
+/** Occupant step required for this call when CRM flagged need AND UI gate allows. */
+function effectiveOccupantRequired(snap: BrainRuntimeSnapshot): boolean {
+  return snap.incidentNeedsOccupantCount && uiPolicy(snap).gates.occupantCount;
+}
+
+/** Per-UI prerequisite toggles — when false, that checkpoint is skipped for occupant confirm. */
+function occupantConfirmPrereqsMet(snap: BrainRuntimeSnapshot): boolean {
+  const p = uiPolicy(snap).occupantPrerequisites;
+  if (p.formSubmitted && !snap.iiziBrain.formSeenAfterSms) return false;
+  if (p.vehicleLookupMatchActive && !(snap.vehicleLookupPassed && snap.vehicleValidationStatus === "valid"))
+    return false;
+  if (p.locationConfirmed && !snap.locationConfirmedFlag) return false;
+  if (p.vehicleReadbackComplete && !snap.vehicleReadbackDone) return false;
+  if (p.locationReadbackComplete && !snap.locationReadbackDone) return false;
+  return true;
+}
+
 function confidenceFromIntent(resolved: string): number {
   if (resolved === "unknown" || resolved === "unknown_conflict") return 0.35;
   if (resolved === "roadside") return 0.92;
@@ -83,7 +108,9 @@ function computeAllowedToolNames(snap: BrainRuntimeSnapshot): string[] {
   tryAdd("send_sms", { template_name: snap.combinedSmsTemplateName });
   tryAdd("send_sms", { template_name: snap.callbackSmsTemplateName });
 
-  tryAdd("end_call");
+  if (uiPolicy(snap).gates.endCall) {
+    tryAdd("end_call");
+  }
   return Array.from(allowed);
 }
 
@@ -159,6 +186,12 @@ export function validateIiziInboundToolCall(
     return { allowed: true };
   }
 
+  const ui = uiPolicy(snap);
+  /** Fail-open when brain off or shadow — avoids breaking calls; diagnostics may still log elsewhere. */
+  if (!ui.enabled || ui.providerMode === "shadow") {
+    return { allowed: true };
+  }
+
   const gate = gateIiziCombinedSms(snap.iiziBrain);
 
   const deny = (errorCode: string, message: string, correction: string): ToolValidationResult => ({
@@ -181,7 +214,14 @@ export function validateIiziInboundToolCall(
       }
     }
     if (name === snap.callbackSmsTemplateName) {
-      if (snap.incidentNeedsOccupantCount && snap.occupantCountStatus !== "confirmed") {
+      if (!ui.gates.callbackConfirmation) {
+        return deny(
+          "callback_confirmation_disabled",
+          "Callback confirmation/SMS is disabled in brain settings.",
+          "Do not send callback collection SMS or finalize callback until policy allows.",
+        );
+      }
+      if (effectiveOccupantRequired(snap) && snap.occupantCountStatus !== "confirmed") {
         return deny(
           "occupant_count_required",
           "Occupant count must be confirmed before callback SMS.",
@@ -206,6 +246,9 @@ export function validateIiziInboundToolCall(
   }
 
   if (fnName === "confirm_iizi_vehicle_readback_complete") {
+    if (!ui.gates.vehicleReadback) {
+      return deny("vehicle_readback_gate_disabled", "Vehicle readback confirmation disabled.", "Skip vehicle readback tool per agent settings.");
+    }
     if (!snap.vehicleLookupPassed || snap.vehicleValidationStatus !== "valid") {
       return deny("vehicle_not_ready", "Vehicle pipeline not ready.", "Complete vehicle lookup with valid cover first; read details to caller, then confirm.");
     }
@@ -216,6 +259,9 @@ export function validateIiziInboundToolCall(
   }
 
   if (fnName === "confirm_iizi_location_readback_complete") {
+    if (!ui.gates.locationReadback) {
+      return deny("location_readback_gate_disabled", "Location readback confirmation disabled.", "Skip location readback tool per agent settings.");
+    }
     if (!snap.vehicleReadbackDone) {
       return deny("vehicle_readback_first", "Vehicle readback first.", "Call confirm_iizi_vehicle_readback_complete first.");
     }
@@ -230,9 +276,16 @@ export function validateIiziInboundToolCall(
     snap.locationConfirmedFlag &&
     snap.vehicleReadbackDone &&
     snap.locationReadbackDone &&
-    (!snap.incidentNeedsOccupantCount || snap.occupantCountStatus === "confirmed");
+    (!effectiveOccupantRequired(snap) || snap.occupantCountStatus === "confirmed");
 
   if (fnName === "confirm_iizi_callback_same_incoming_number") {
+    if (!ui.gates.callbackConfirmation) {
+      return deny(
+        "callback_confirmation_disabled",
+        "Callback confirmation is disabled in brain settings.",
+        "Do not finalize callback preference via tools until policy allows.",
+      );
+    }
     if (!iiziCallbackStepReady) {
       return deny(
         "callback_gates_not_met",
@@ -251,6 +304,13 @@ export function validateIiziInboundToolCall(
   }
 
   if (fnName === "confirm_iizi_callback_phone_verbal") {
+    if (!ui.gates.callbackConfirmation) {
+      return deny(
+        "callback_confirmation_disabled",
+        "Callback confirmation is disabled in brain settings.",
+        "Do not record verbal callback numbers until policy allows.",
+      );
+    }
     if (!iiziCallbackStepReady) {
       return deny(
         "callback_gates_not_met",
@@ -262,20 +322,21 @@ export function validateIiziInboundToolCall(
   }
 
   if (fnName === "confirm_occupant_count") {
+    if (!ui.gates.occupantCount) {
+      return deny(
+        "occupant_gate_disabled",
+        "Occupant count step disabled in brain settings.",
+        "Do not confirm occupant count — gate is off for this agent.",
+      );
+    }
     const count = typeof toolArgs.count === "string" ? toolArgs.count.trim() : "";
     if (!count) return { allowed: true };
 
-    const gatesOk =
-      snap.vehicleLookupPassed &&
-      snap.vehicleValidationStatus === "valid" &&
-      snap.locationConfirmedFlag &&
-      snap.vehicleReadbackDone &&
-      snap.locationReadbackDone;
-    if (!gatesOk) {
+    if (!occupantConfirmPrereqsMet(snap)) {
       return deny(
         "occupant_gates_not_met",
         "Occupant confirm before pipeline ready.",
-        "Wait for form, vehicle match with valid cover, location confirmed, and both readback tools before confirm_occupant_count.",
+        "Wait for enabled prerequisite steps before confirm_occupant_count.",
       );
     }
     if (!snap.incidentNeedsOccupantCount) {
@@ -293,6 +354,13 @@ export function validateIiziInboundToolCall(
   }
 
   if (fnName === "mark_occupant_count_required") {
+    if (!ui.gates.occupantCount) {
+      return deny(
+        "occupant_gate_disabled",
+        "Occupant count gate disabled.",
+        "Do not mark occupant count required — gate is off for this agent.",
+      );
+    }
     if (snap.iiziBrain.finalResolvedIntent === "non_roadside") {
       return deny(
         "intent_non_roadside",
@@ -304,13 +372,16 @@ export function validateIiziInboundToolCall(
   }
 
   if (fnName === "end_call") {
-    const MIN_MS = 12_000;
+    if (!ui.gates.endCall) {
+      return deny("end_call_disabled", "end_call tool disabled in brain settings.", "Continue the conversation or transfer per playbook without hanging up via tool.");
+    }
+    const MIN_MS = ui.providerMode === "hard_guard" ? 18_000 : 12_000;
     const msSinceGreeting = snap.greetingCompletedAt ? Date.now() - snap.greetingCompletedAt : 0;
     const tooEarly = !snap.greetingCompletedAt || msSinceGreeting < MIN_MS;
     if (tooEarly || snap.userUtteranceCount === 0) {
       return deny("end_call_not_allowed_yet", "Too early.", "Do not end call until caller has spoken and minimum time after greeting has passed.");
     }
-    if (snap.incidentNeedsOccupantCount && snap.occupantCountStatus !== "confirmed") {
+    if (effectiveOccupantRequired(snap) && snap.occupantCountStatus !== "confirmed") {
       return deny(
         "occupant_count_required",
         "Occupant count missing.",
@@ -322,8 +393,8 @@ export function validateIiziInboundToolCall(
       snap.locationConfirmedFlag &&
       snap.vehicleReadbackDone &&
       snap.locationReadbackDone &&
-      (!snap.incidentNeedsOccupantCount || snap.occupantCountStatus === "confirmed");
-    if (handoffReady && !snap.callbackConfirmed) {
+      (!effectiveOccupantRequired(snap) || snap.occupantCountStatus === "confirmed");
+    if (handoffReady && !snap.callbackConfirmed && ui.gates.callbackConfirmation) {
       return deny(
         "callback_preference_incomplete",
         "Callback not finalized.",
@@ -341,6 +412,7 @@ export function validateIiziInboundToolCall(
 }
 
 export function logBrainDecision(snap: BrainRuntimeSnapshot, decision: BrainDecision, toolContext?: string): void {
+  if (!snap.iiziBrain.runtimeBrainUi.diagnostics.brainDecision) return;
   const id = snap.callId || "?";
   console.log(
     `[BrainDecision] callId=${id} toolContext=${toolContext || "evaluate"} ` +
@@ -357,9 +429,10 @@ export function logBrainToolBlocked(
   fnName: string,
   result: ToolValidationResult,
 ): void {
+  if (!snap.iiziBrain.runtimeBrainUi.diagnostics.toolBlocked) return;
   const id = snap.callId || "?";
   console.warn(
-    `[BrainDecision] BLOCKED_TOOL callId=${id} tool=${fnName} error=${result.errorCode || "?"} ` +
+    `[BrainToolBlocked] callId=${id} tool=${fnName} error=${result.errorCode || "?"} ` +
       `reason=${result.message || ""} transcriptSource=${snap.iiziBrain.lastTranscriptSource} ` +
       `providerMode=${snap.agentBrainConfig.providerMode} resolvedIntent=${snap.iiziBrain.finalResolvedIntent} ` +
       `workflowPhase=${snap.iiziBrain.workflowPhase}`,

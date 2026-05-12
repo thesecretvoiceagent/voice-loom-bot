@@ -5,7 +5,12 @@
 
 import type { BrainIntentSlug, CompiledBrainConfig, PathwayIntentClassification } from "./iiziBrainConfigTypes.js";
 import type { IiziBrainConfigV1 } from "./iiziBrainConfigTypes.js";
-import { mergePathwayIntents, type ResolvedBrainIntent } from "./iiziBrainMerge.js";
+import { mergePathwayIntents, type MergePathwayOptions, type ResolvedBrainIntent } from "./iiziBrainMerge.js";
+import {
+  DEFAULT_RUNTIME_BRAIN_UI_SETTINGS,
+  type RuntimeBrainUiSettings,
+  runtimeBrainUiUsesLegacyPathwayMerge,
+} from "../brain/agentBrainUiTypes.js";
 export type { ResolvedBrainIntent };
 /** Merged coarse outcome for SMS gating — same as `ResolvedBrainIntent` from pathway merge */
 export type ResolvedIntent = ResolvedBrainIntent;
@@ -103,12 +108,33 @@ export interface IiziBrainRuntimeState {
   /** Merged SMS policy intent — never blindly “last transcript wins”. */
   finalResolvedIntent: ResolvedIntent;
   intentResolutionReason: string;
+
+  /** Admin UI policy (`settings.brainUi`); safe defaults if agent row has no JSON. */
+  runtimeBrainUi: RuntimeBrainUiSettings;
+
+  /** Monotonic per-call counter bumped on substantive OpenAI user transcript (aligns compare log with caller turn). */
+  intentCompareTurnSeq: number;
+  /** Last trimmed OpenAI Realtime transcript slice used for intent (not full session history). */
+  lastOpenaiIntentTranscriptPreview: string;
+  /** Last trimmed Deepgram shadow final transcript slice used for intent. */
+  lastDeepgramIntentTranscriptPreview: string;
 }
 
 function recomputeFinalIntent(state: IiziBrainRuntimeState): void {
-  const { resolved, reason } = mergePathwayIntents(state.openaiRealtimeIntent, state.deepgramShadowIntent);
+  const ui = state.runtimeBrainUi;
+  const useLegacy =
+    !ui.enabled || runtimeBrainUiUsesLegacyPathwayMerge(ui);
+  const opts: MergePathwayOptions | undefined = useLegacy
+    ? undefined
+    : { speechTrustMode: ui.speechTrustMode, conflictBehavior: ui.conflictBehavior };
+  const { resolved, reason } = mergePathwayIntents(state.openaiRealtimeIntent, state.deepgramShadowIntent, opts);
   state.finalResolvedIntent = resolved;
   state.intentResolutionReason = reason;
+}
+
+/** After `runtimeBrainUi` is assigned from agent settings, refresh merged intent from current pathway labels. */
+export function refreshIiziBrainMergedIntent(state: IiziBrainRuntimeState): void {
+  recomputeFinalIntent(state);
 }
 
 export function applyAgentBrainConfigToState(
@@ -170,6 +196,7 @@ export function createInitialIiziBrainState(): IiziBrainRuntimeState {
     brainCompiled: compiled,
     brainConfigDbVersion: null,
     brainClassifierForceBuiltinFallback: false,
+    runtimeBrainUi: { ...DEFAULT_RUNTIME_BRAIN_UI_SETTINGS },
     openaiLastMatchedRuleIds: "",
     openaiLastClassifySource: "config",
     openaiLastMatchedIntentSlug: null,
@@ -180,6 +207,9 @@ export function createInitialIiziBrainState(): IiziBrainRuntimeState {
     deepgramShadowIntent: "unknown",
     finalResolvedIntent: "unknown",
     intentResolutionReason: "both_unknown_or_unclear",
+    intentCompareTurnSeq: 0,
+    lastOpenaiIntentTranscriptPreview: "",
+    lastDeepgramIntentTranscriptPreview: "",
   };
   recomputeFinalIntent(s);
   return s;
@@ -190,6 +220,9 @@ export function logIiziBrainIntentResolution(callId: string | null, state: IiziB
   const cid = callId || "?";
   const gate = smsGatePeek(state);
   const ev = evaluateIiziBrain(state, false);
+  if (state.runtimeBrainUi.diagnostics.transcriptCompare) {
+    logTranscriptCompare(callId, state);
+  }
   console.log(
     `[IIZI-Brain] intent_resolution openai=${state.openaiRealtimeIntent} deepgram=${state.deepgramShadowIntent} ` +
       `resolved=${state.finalResolvedIntent} reason=${state.intentResolutionReason} ` +
@@ -214,9 +247,34 @@ function smsGatePeek(state: IiziBrainRuntimeState): {
   };
 }
 
+const TRANSCRIPT_COMPARE_MAX = 220;
+
+function clipForTranscriptCompare(s: string): string {
+  return s.replace(/\s+/g, " ").trim().slice(0, TRANSCRIPT_COMPARE_MAX).replace(/"/g, "'");
+}
+
+/** Structured compare line for ops — Deepgram-preferred merge is reflected in resolvedIntent / smsGateReason. */
+export function logTranscriptCompare(callId: string | null, state: IiziBrainRuntimeState): void {
+  const gate = smsGatePeek(state);
+  const oaT = clipForTranscriptCompare(state.lastOpenaiIntentTranscriptPreview || "");
+  const dgT = clipForTranscriptCompare(state.lastDeepgramIntentTranscriptPreview || "");
+  console.log(
+    `[TranscriptCompare] callId=${callId || "?"} turnSeq=${state.intentCompareTurnSeq} ` +
+      `openaiTranscript="${oaT}" deepgramTranscript="${dgT}" ` +
+      `openaiIntent=${state.openaiRealtimeIntent} deepgramIntent=${state.deepgramShadowIntent} ` +
+      `resolvedIntent=${state.finalResolvedIntent} resolutionReason=${state.intentResolutionReason} ` +
+      `smsGateReason=${gate.smsGateReason}`,
+  );
+}
+
 export function ingestIiziBrainNonemptyUserSpeech(state: IiziBrainRuntimeState, text: string): void {
   state.silenceSignalCount = 0;
   state.lastTranscriptSource = "openai_realtime";
+  const trimmed = text.trim();
+  if (trimmed) {
+    state.intentCompareTurnSeq += 1;
+    state.lastOpenaiIntentTranscriptPreview = trimmed.slice(0, 400);
+  }
   const r = classifyIntentFromSpeechHybrid(text, compiledForClassification(state));
   state.openaiLastMatchedRuleIds = r.meta.matchedRuleIds;
   state.openaiLastClassifySource = r.meta.classifySource;
@@ -251,6 +309,7 @@ export function ingestIiziBrainTrustedShadowFinal(
   }
 
   state.lastObservedEvent = `trusted_transcript_shadow.${provider}.final`;
+  state.lastDeepgramIntentTranscriptPreview = t.slice(0, 400);
   const r = classifyIntentFromSpeechHybrid(t, compiledForClassification(state));
   state.deepgramLastMatchedRuleIds = r.meta.matchedRuleIds;
   state.deepgramLastClassifySource = r.meta.classifySource;
@@ -299,6 +358,9 @@ export function ingestIiziBrainFlow(
       state.lastTranscriptSource = "none";
       state.openaiRealtimeIntent = "unknown";
       state.deepgramShadowIntent = "unknown";
+      state.intentCompareTurnSeq = 0;
+      state.lastOpenaiIntentTranscriptPreview = "";
+      state.lastDeepgramIntentTranscriptPreview = "";
       state.brainClassifierForceBuiltinFallback = false;
       resetPathwayClassifyScratch(state);
       recomputeFinalIntent(state);
@@ -341,6 +403,9 @@ export function ingestIiziBrainFlow(
       state.lastTranscriptSource = "none";
       state.openaiRealtimeIntent = "unknown";
       state.deepgramShadowIntent = "unknown";
+      state.intentCompareTurnSeq = 0;
+      state.lastOpenaiIntentTranscriptPreview = "";
+      state.lastDeepgramIntentTranscriptPreview = "";
       state.brainClassifierForceBuiltinFallback = false;
       resetPathwayClassifyScratch(state);
       recomputeFinalIntent(state);
@@ -358,6 +423,16 @@ export function gateIiziCombinedSms(state: IiziBrainRuntimeState): {
   message: string;
   smsGateReason: string;
 } {
+  if (!state.runtimeBrainUi.gates.combinedSms) {
+    return {
+      allow: false,
+      reasonCode: "combined_sms_disabled",
+      smsGateReason: "sms_blocked_config_gate_combined_sms_false",
+      message:
+        "Combined reg+location SMS is disabled in agent brain settings. Do not send the combined template; follow verbal flow or handoff per policy.",
+    };
+  }
+
   const r = state.finalResolvedIntent;
 
   const deny = (reasonCode: string, smsGateReason: string, message: string) => ({
@@ -440,7 +515,9 @@ export function deriveExpectedNextActionBrain(state: IiziBrainRuntimeState): str
     state.workflowPhase === "pre_sms_intent_gate"
   ) {
     if (!state.combinedSmsSuccessfullySent && state.silenceSignalCount === 0) {
-      return "ask_if_caller_needs_roadside_assistance";
+      return state.runtimeBrainUi.unknownIntentBehavior === "route_human"
+        ? "route_human_unknown_intent_clarify_or_handoff"
+        : "ask_if_caller_needs_roadside_assistance";
     }
     if (state.silenceSignalCount === 1) return "ask_if_anyone_is_there";
     if (state.silenceSignalCount === 2) return "explain_autoabi_or_human_route";
@@ -450,6 +527,18 @@ export function deriveExpectedNextActionBrain(state: IiziBrainRuntimeState): str
   switch (state.finalResolvedIntent) {
     case "unknown":
     case "unknown_conflict":
+      if (
+        state.finalResolvedIntent === "unknown" &&
+        state.runtimeBrainUi.unknownIntentBehavior === "route_human"
+      ) {
+        return "route_human_unknown_intent_clarify_or_handoff";
+      }
+      if (
+        state.finalResolvedIntent === "unknown_conflict" &&
+        state.runtimeBrainUi.unknownIntentBehavior === "route_human"
+      ) {
+        return "route_human_unknown_conflict_escalate_or_clarify";
+      }
       return "ask_if_caller_needs_roadside_assistance";
     case "non_roadside":
       return "route_non_roadside_to_human";
