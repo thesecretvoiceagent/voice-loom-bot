@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useParams, useSearchParams, useNavigate, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -189,6 +189,33 @@ const toLiveTurnSettings = (raw: unknown): LiveTurnSettings => {
   };
 };
 
+/** Same flag orchestrator reads for IIZI combined reg+location SMS inbound pipeline (`media-stream.ts`). */
+function hasIiziCombinedSmsFlag(settings: Record<string, unknown>): boolean {
+  return settings.use_combined_reg_location_sms === true;
+}
+
+type SmsMessageLite = { name: string; description: string; content: string };
+
+/**
+ * TEMPORARY fallback until agents have an explicit kind/template id in UI + DB.
+ * Prefer `use_combined_reg_location_sms` when set.
+ */
+const IIZI_ROADSIDE_HEURISTIC_RE = /\b(iizi|autoabi|roadside)\b/i;
+
+function matchesIiziRoadsideHeuristicText(args: {
+  agentName: string;
+  systemPrompt: string;
+  greeting: string;
+  smsMessages: SmsMessageLite[];
+  rawAgentSettings: Record<string, unknown>;
+}): boolean {
+  const smsBlob = args.smsMessages.map((m) => `${m.name} ${m.description} ${m.content}`).join(" ");
+  const { brainUi: _ignored, ...restSettings } = args.rawAgentSettings;
+  const settingsBlob = JSON.stringify(restSettings);
+  const haystack = [args.agentName, args.systemPrompt, args.greeting, smsBlob, settingsBlob].join("\n");
+  return IIZI_ROADSIDE_HEURISTIC_RE.test(haystack);
+}
+
 export default function CreateAgent() {
   const { type } = useParams<{ type: "inbound" | "outbound" }>();
   const [searchParams] = useSearchParams();
@@ -275,6 +302,18 @@ export default function CreateAgent() {
   };
 
   const isInbound = type === "inbound";
+
+  const isIiziRoadsideAgent = useMemo(() => {
+    if (!isInbound) return false;
+    if (hasIiziCombinedSmsFlag(rawAgentSettings)) return true;
+    return matchesIiziRoadsideHeuristicText({
+      agentName,
+      systemPrompt,
+      greeting,
+      smsMessages,
+      rawAgentSettings,
+    });
+  }, [isInbound, rawAgentSettings, agentName, systemPrompt, greeting, smsMessages]);
 
   // Load existing agent for editing
   useEffect(() => {
@@ -1234,7 +1273,8 @@ export default function CreateAgent() {
               </div>
             </div>
 
-            {/* IIZI deterministic brain UI (settings.brainUi) */}
+            {/* IIZI deterministic brain UI (settings.brainUi) — inbound IIZI / combined-SMS agents only */}
+            {isIiziRoadsideAgent && (
             <div className="glass-card rounded-xl p-6">
               <div className="flex items-start gap-4">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-500/10">
@@ -1449,6 +1489,7 @@ export default function CreateAgent() {
                 </div>
               </div>
             </div>
+            )}
 
             {/* AI Temperature */}
             <div className="glass-card rounded-xl p-6">
