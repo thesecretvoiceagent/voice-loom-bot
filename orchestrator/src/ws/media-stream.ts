@@ -617,6 +617,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let activeResponseInboundTranscriptSeq = 0;
   let activeResponseTwilioChunks = 0;
   let activeResponseTwilioBytes = 0;
+  // Backend-owned first-turn response control for IIZI inbound.
+  // While in pre_sms_intent_gate with unresolved intent, server_vad.create_response is set to false
+  // so OpenAI Realtime does not auto-fire a response before resolveFinalIntent settles.
+  // The Whisper transcript handler triggers a single controlled response after resolution.
+  let iiziAutoResponseSuppressed = false;
   let liveTurnSettings: LiveTurnSettings = { ...DEFAULT_LIVE_TURN_SETTINGS };
   let turnGateAcceptedFrames = 0;
   const turnGateDropCounts: Record<string, number> = {};
@@ -1336,18 +1341,133 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     clearResponseDoneFallbackTimer();
   };
 
+  /**
+   * IIZI first-turn gate: while phase=pre_sms_intent_gate and final intent is still unknown,
+   * OpenAI Realtime must NOT auto-create an assistant response before the backend brain has
+   * decided the SMS-gate intent. Otherwise the voice model may promise SMS while the SMS gate
+   * is still blocking it. Caller direction must be inbound and IIZI combined-SMS flow active.
+   */
+  const iiziShouldSuppressAutoResponse = (): boolean => {
+    if (!useCombinedRegLocationSms || callDirection !== "inbound") return false;
+    const s = iiziBrainRef.current;
+    if (s.workflowPhase !== "pre_sms_intent_gate") return false;
+    return s.finalResolvedIntent === "unknown" || s.finalResolvedIntent === "unknown_conflict";
+  };
+
+  /**
+   * Patch the active OpenAI Realtime session's server_vad config to enable/disable auto
+   * response creation, without touching threshold/silence_duration/prefix_padding settings.
+   */
+  const sendIiziVadCreateResponseFlag = (createResponse: boolean, reason: string) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    openaiWs.send(JSON.stringify({
+      type: "session.update",
+      session: {
+        turn_detection: {
+          type: "server_vad",
+          threshold: liveTurnSettings.vad_threshold,
+          prefix_padding_ms: liveTurnSettings.prefix_padding_ms,
+          silence_duration_ms: liveTurnSettings.silence_duration_ms,
+          create_response: createResponse,
+          interrupt_response: liveTurnSettings.interrupt_response,
+        },
+      },
+    }));
+    console.log(`[IiziGate] session.update.create_response=${createResponse} reason=${reason} callId=${callId}`);
+  };
+
+  // Compact backend prompts for the controlled responses — kept short on purpose;
+  // the live system prompt remains the primary instruction surface.
+  const IIZI_INSTR_ROADSIDE =
+    "Said aru, et helistaja vajab autoabi. Ütle lühidalt eesti keeles, et saadad nüüd SMS-i, kus klient saab sisestada auto registreerimisnumbri ja kinnitada asukoha, ning et tegele autoabi vooga edasi.";
+  const IIZI_INSTR_NON_ROADSIDE =
+    "Kõne ei puuduta autoabi. Vasta eesti keeles lühidalt, et see liin on autoabi jaoks, ja paku tagasihelistamist või kontorinumbrit. Ära luba ega saada SMS-i.";
+  const IIZI_INSTR_EMERGENCY =
+    "Tundub hädaolukord. Vasta eesti keeles lühidalt: palu klienti helistada 112, või suuname kohe inimese juurde. Ära saada autoabi SMS-i.";
+  const IIZI_INSTR_CLARIFY =
+    'Küsi täpselt ühe lühilausega eesti keeles: "Kas Teil on hetkel vaja autoabi?"';
+
+  /**
+   * Called after the IIZI brain resolves the first incident intent on a Whisper transcript.
+   * Emits exactly one controlled response.create whose instructions depend on the resolved
+   * intent. While unknown, suppression stays on so the next caller turn re-enters this gate.
+   * Once a clear intent resolves, server_vad.create_response is lifted back to true so the
+   * rest of the call uses normal auto-VAD.
+   */
+  const triggerIiziControlledResponseAfterResolve = (resolvedBeforeResponse: boolean) => {
+    if (!useCombinedRegLocationSms || callDirection !== "inbound") return;
+    if (!iiziAutoResponseSuppressed) return;
+    const s = iiziBrainRef.current;
+    const intent = s.finalResolvedIntent;
+    console.log(
+      `[IiziGate] backend_intent_resolved_before_response=${resolvedBeforeResponse} ` +
+        `resolvedIntent=${intent} classifierSource=${s.classifierSource} ` +
+        `semanticIntent=${s.semanticIntent} semanticConfidence=${s.semanticConfidence.toFixed(2)} ` +
+        `transcriptSourceUsed=${s.transcriptSourceUsed} currentPhase=${s.workflowPhase} callId=${callId}`,
+    );
+
+    let reasonTag: string;
+    let instructions: string;
+    let liftSuppression = false;
+
+    if (intent === "roadside") {
+      reasonTag = "roadside_intent_resolved";
+      instructions = IIZI_INSTR_ROADSIDE;
+      liftSuppression = true;
+    } else if (intent === "non_roadside") {
+      reasonTag = "non_roadside";
+      instructions = IIZI_INSTR_NON_ROADSIDE;
+      liftSuppression = true;
+    } else if (intent === "emergency_handoff") {
+      reasonTag = "emergency_handoff";
+      instructions = IIZI_INSTR_EMERGENCY;
+      liftSuppression = true;
+    } else {
+      // unknown / unknown_conflict — clarify and keep suppression so next turn is gated again.
+      reasonTag = "clarify_unknown";
+      instructions = IIZI_INSTR_CLARIFY;
+      liftSuppression = false;
+    }
+
+    console.log(`[IiziGate] controlled_response_created reason=${reasonTag} callId=${callId}`);
+
+    if (liftSuppression) {
+      sendIiziVadCreateResponseFlag(true, `lift_after_${reasonTag}`);
+      iiziAutoResponseSuppressed = false;
+    }
+
+    const ok = sendResponseCreate(`iizi-controlled-${reasonTag}`, {
+      modalities: ["text", "audio"],
+      instructions,
+    });
+    if (!ok) {
+      console.warn(`[IiziGate] controlled_response_blocked reason=${reasonTag} callId=${callId}`);
+    }
+  };
+
   const enableTurnDetection = () => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
     // Flush any audio that accumulated during greeting playback (echo, line noise)
     // BEFORE enabling VAD, so it doesn't immediately fire a false speech_started.
     openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+    const suppressAutoResponse = iiziShouldSuppressAutoResponse();
+    const createResponseFlag = !suppressAutoResponse;
+    if (suppressAutoResponse) {
+      iiziAutoResponseSuppressed = true;
+      console.log(
+        `[IiziGate] response_suppressed_pre_sms_gate=true reason=enable_vad_initial ` +
+          `phase=${iiziBrainRef.current.workflowPhase} intent=${iiziBrainRef.current.finalResolvedIntent} callId=${callId}`,
+      );
+    } else {
+      iiziAutoResponseSuppressed = false;
+    }
     const sessionPatch: any = {
       turn_detection: {
         type: "server_vad",
         threshold: liveTurnSettings.vad_threshold,
         prefix_padding_ms: liveTurnSettings.prefix_padding_ms,
         silence_duration_ms: liveTurnSettings.silence_duration_ms,
-        create_response: true,
+        create_response: createResponseFlag,
         interrupt_response: liveTurnSettings.interrupt_response,
       },
     };
@@ -2806,8 +2926,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     caller_known: false,
                     last_bot_question: "",
                   };
+                  let resolvedBeforeResponse = false;
                   try {
                     await resolveFinalIntent(iiziBrainRef.current, resolverCtx);
+                    resolvedBeforeResponse = true;
                   } catch (resolveErr) {
                     console.error(
                       `[IIZI-Brain] semantic_resolver_failed_openai_path callId=${callId}`,
@@ -2816,6 +2938,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                   logIiziBrainIntentResolution(callId, iiziBrainRef.current);
                   touchIiziBrainLog("user_transcript");
+                  // Backend-owned first-turn gate: if we suppressed auto-VAD response,
+                  // we own the response.create now. Emits exactly one controlled response
+                  // and lifts suppression when intent is clear.
+                  triggerIiziControlledResponseAfterResolve(resolvedBeforeResponse);
                 } catch (err) {
                   console.error(`[IIZI-Brain] speech_ingest_failed callId=${callId}`, err);
                 }

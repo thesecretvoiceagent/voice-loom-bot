@@ -79,7 +79,13 @@ export async function classifyIntentSemantic(
   return classifyIntentSemanticOpenAI(input);
 }
 
-const DEFAULT_TIMEOUT_MS = 1500;
+/**
+ * Default timeout for the live OpenAI classifier call.
+ * Staging recommendation: 3000 ms — gives the model enough budget for ASR-error
+ * normalization on first turns without stalling the controlled-response gate too long.
+ * Override per-env via OPENAI_SEMANTIC_CLASSIFIER_TIMEOUT_MS.
+ */
+const DEFAULT_TIMEOUT_MS = 3000;
 const DEFAULT_MODEL = "gpt-4o-mini";
 
 /**

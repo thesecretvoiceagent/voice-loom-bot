@@ -334,6 +334,18 @@ async function run(): Promise<void> {
       expectedTranscriptSourceUsed: "openai_realtime",
     },
 
+    // Real staging bug repro: Whisper merged tokens as "Monodiiselotsas".
+    // Regex must NOT learn this exact misspelling — semantic resolver must still
+    // detect "diisel" within the merged token and lift to roadside.
+    {
+      hint: "Monodiiselotsas (merged-token ASR) → semantic roadside, no regex patch",
+      openai_transcript: "Monodiiselotsas ja auto ei sõida",
+      deepgram_transcript: "",
+      expectedIntent: "roadside",
+      expectedClassifierSource: "semantic",
+      expectedTranscriptSourceUsed: "openai_realtime",
+    },
+
     // Office-hours question is non_roadside — shipped regex no longer encodes "kontor lahti",
     // so resolver must reach non_roadside via the semantic classifier (no regex patch).
     {
