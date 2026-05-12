@@ -13,6 +13,7 @@ interface AgentConfig {
   analysis_prompt: string | null;
   voice: string | null;
   tools: string[] | null;
+  /** Agent UI settings. Optional `brainUi` (see `resolveAgentBrainConfigFromSettings` in orchestrator) for future brain editor. */
   settings: Record<string, unknown> | null;
   schedule: Record<string, unknown> | null;
   knowledge_base: unknown[] | null;

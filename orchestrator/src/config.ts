@@ -37,6 +37,9 @@ export const config = {
   // Public URLs
   publicBaseUrl: process.env.PUBLIC_BASE_URL || "",
   publicWsBaseUrl: process.env.PUBLIC_WS_BASE_URL || "",
+
+  /** Shared secret for orchestrator-local admin endpoints (brain-config, etc.) */
+  orchestratorAdminSecret: process.env.ORCHESTRATOR_ADMIN_SECRET || "",
 };
 
 export function getDeploymentIdentity() {
