@@ -1,0 +1,26 @@
+---
+description: Voice Loom / IIZI agent brain, admin UI, orchestrator context
+alwaysApply: true
+---
+
+# voice-loom-bot — töö kontekst
+
+## Projekt
+- **Frontend / admin:** Vite + React (`src/`, sh `CreateAgent.tsx`).
+- **Orchestrator (backend kõned):** `orchestrator/` — Twilio Media Streams ↔ OpenAI Realtime; IIZI combined reg+location SMS inbound voog.
+
+## IIZI “brain”
+- **Admin seaded:** `settings.brainUi` (Deterministic Flow Controls) — `src/types/brainUiSettings.ts`; salvestamine: täissalvestus `settingsPayload` sisaldab `...rawAgentSettings` + `brainUi`; eraldi nupp merge’ib `{ ...existingSettings, brainUi }`.
+- **Runtime:** `orchestrator/src/brain/agentBrainUiTypes.ts` — `resolveRuntimeBrainUiFromSettings`, `DEFAULT_RUNTIME_BRAIN_UI_SETTINGS` (sh `conflictBehavior: ask_clarification`).
+- **Tööriistaväravad / SMS:** `orchestrator/src/brain/agent-brain.ts` + kombineeritud SMS intent-värav ka `media-stream.ts` (`gateIiziCombinedSms`).
+- **Intent merge:** `orchestrator/src/flow/iiziBrainMerge.ts` (legacy 2 arg vs poliitika opts); olek `orchestrator/src/flow/iiziBrain.ts` (`runtimeBrainUi`, `recomputeFinalIntent`).
+
+## Tavad
+- Ära kirjuta üle kogu `agents.settings`; säilita `...existing` / `rawAgentSettings` spread.
+- Kasutaja eelistab vastuseid **eesti keeles**.
+- Deploy / push ainult kui kasutaja palub.
+
+## Testid (orchestrator)
+```bash
+cd orchestrator && npm run typecheck && npm run intent-classify-smoke
+```
