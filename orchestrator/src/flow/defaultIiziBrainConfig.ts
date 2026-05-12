@@ -2,9 +2,9 @@ import type { BrainIntentSlug, IiziBrainConfigV1 } from "./iiziBrainConfigTypes.
 import { IIZI_BRAIN_CONFIG_SCHEMA_VERSION } from "./iiziBrainConfigTypes.js";
 
 const DEFAULT_PRECEDENCE: Exclude<BrainIntentSlug, "unknown">[] = [
-  "non_roadside",
   "emergency_handoff",
   "roadside",
+  "non_roadside",
 ];
 
 /**
@@ -42,11 +42,18 @@ export const DEFAULT_IIZI_BRAIN_CONFIG: IiziBrainConfigV1 = {
         },
         {
           id: "insurance_info_office_inquiry",
-          examples: ["Soovin kindlustuse kohta infot", "Kindlustuse kohta infot"],
-          keywords: [],
+          examples: ["Soovin kindlustuse kohta infot", "Kindlustuse kohta infot", "Mis kell kontor lahti on"],
+          keywords: [
+            "kontor lahti",
+            "kontori lahtioleku",
+            "lahtiolekuajad",
+          ],
           patterns: [
             /** Narrow: general info about insurance (office line), not live cover/roadside diagnosis. */
             String.raw`(?:\b(?:soovin|sooviksin|tahan)\s+)?\bkindlustuse\s+kohta\s+infot\b`,
+            String.raw`\bmis\s+kell\b[^\n]{0,40}\bkontor\b[^\n]{0,40}\blahti\b`,
+            String.raw`\bkontor(?:i)?\b[^\n]{0,40}\b(?:lahti|avatud|lahtiolekuajad?)\b`,
+            String.raw`\b(?:kontakt|telefon|aadress)\b[^\n]{0,60}\b(?:kontor|esindus|iizi)\b`,
           ],
         },
       ],
@@ -88,15 +95,22 @@ export const DEFAULT_IIZI_BRAIN_CONFIG: IiziBrainConfigV1 = {
         },
         {
           id: "fuel_empty",
-          examples: ["Mul sai kütus otsa", "Bensiin otsas"],
+          examples: ["Mul sai kütus otsa", "Bensiin otsas", "Mul on diisel otsas", "Paak on tühi"],
           keywords: [
             "kütus otsas",
             "bensiin otsas",
             "bentsiin otsas",
+            "diisel otsas",
+            "diesel otsas",
+            "kütus sai otsa",
+            "bensiin sai otsa",
+            "paak tühi",
           ],
           patterns: [
-            String.raw`\b(?:kütus|bensiin|bentsiin)(?:\s+on)?\s+otsas\b`,
-            String.raw`\b(?:sai|sain|saime|mul\s+sai)[^\n]{0,24}(?:kütus|bensiin|bentsiin)\s+otsa\b`,
+            String.raw`\b(?:kütus|bensiin|bentsiin|diisel|diesel)(?:\s+on)?\s+otsas\b`,
+            String.raw`\b(?:kütus|bensiin|bentsiin|diisel|diesel)\s+(?:sai|on\s+saanud)\s+otsa\b`,
+            String.raw`\b(?:sai|sain|saime|mul\s+sai)[^\n]{0,32}(?:kütus|bensiin|bentsiin|diisel|diesel)\s+otsa\b`,
+            String.raw`\bpaak(?:\s+on)?\s+tühi\b`,
           ],
         },
         {
@@ -130,7 +144,10 @@ export const DEFAULT_IIZI_BRAIN_CONFIG: IiziBrainConfigV1 = {
         {
           id: "battery",
           keywords: ["aku tühi"],
-          patterns: [],
+          patterns: [
+            String.raw`\baku(?:\s+on)?\s+tühi\b`,
+            String.raw`\b(?:auto\s+)?aku\s+(?:sai|on\s+saanud)\s+tühjaks\b`,
+          ],
         },
         {
           id: "generator_alternator_failure",
@@ -218,6 +235,6 @@ export const DEFAULT_IIZI_BRAIN_CONFIG: IiziBrainConfigV1 = {
     callback_request_sms: "Retrieval of callback number through SMS",
   },
   exceptions: {
-    deny_car_roadside_abi_pattern: String.raw`\bei\s+ole\b[^\n]{0,120}(?:\bautos*\s+abi\b|\bautos*abi\b)`,
+    deny_car_roadside_abi_pattern: String.raw`\b(?:ei\s+ole|ei\s+vaja|pole|mitte)\b[^\n]{0,120}(?:\bautos*\s+abi\b|\bautos*abi\b|auto\s+abi\b)`,
   },
 };

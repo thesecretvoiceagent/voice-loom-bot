@@ -12,6 +12,11 @@ import { classifyIntentFromSpeechHybrid, getDefaultCompiledBrain } from "./iiziB
 import type { PathwayIntentClassification } from "./iiziBrainConfigTypes.js";
 import type { ResolvedBrainIntent } from "./iiziBrainMerge.js";
 import { mergePathwayIntents } from "./iiziBrainMerge.js";
+import {
+  createInitialIiziBrainState,
+  gateIiziCombinedSms,
+  ingestIiziBrainNonemptyUserSpeech,
+} from "./iiziBrain.js";
 
 function expectHybrid(
   text: string,
@@ -87,11 +92,16 @@ function run(): void {
 
   // Requested phrase coverage (Deepgram-preferred merge uses same hybrid when both pathways see same text)
   expectHybrid("mul on autoabi vaja", compiled, "roadside", "explicit autoabi need");
+  expectHybrid("mul on diisel otsas", compiled, "roadside", "diesel fuel-out roadside");
+  expectHybrid("bensiin sai otsa", compiled, "roadside", "petrol fuel-out roadside");
+  expectHybrid("paak on tühi", compiled, "roadside", "empty tank roadside");
+  expectHybrid("aku on tühi", compiled, "roadside", "dead battery roadside");
   expectHybrid("auto ei käivitu", compiled, "roadside", "wont-start phrase");
   expectHybrid("generaator ei tööta", compiled, "roadside", "generator failure roadside cue (ET)");
   expectHybrid("generator ei tööta", compiled, "roadside", "generator failure roadside cue (EN word)");
   expectHybrid("generaator ei lae", compiled, "roadside", "generator not charging / alternator cue");
   expectHybrid("soovin kindlustuse kohta infot", compiled, "non_roadside", "insurance info office line");
+  expectHybrid("mis kell kontor lahti on", compiled, "non_roadside", "office hours non-roadside");
 
   expectNoIntentMatch(
     "Tere tere hommikust kuidas teil läheb mina helistan lihtsalt",
@@ -110,6 +120,17 @@ function run(): void {
     (gibberD.intent ?? "unknown") as PathwayIntentClassification,
   );
   assert.equal(gibMerged.resolved, "unknown", "gibberish → both unknown merge");
+
+  const fuelGateState = createInitialIiziBrainState();
+  ingestIiziBrainNonemptyUserSpeech(fuelGateState, "mul on diisel otsas");
+  const fuelGate = gateIiziCombinedSms(fuelGateState);
+  assert.equal(fuelGateState.finalResolvedIntent, "roadside", "diesel fuel-out should resolve roadside");
+  assert.equal(fuelGate.allow, true, "diesel fuel-out should allow combined SMS gate");
+  assert.notEqual(
+    fuelGate.smsGateReason,
+    "sms_blocked_merged_unknown_intent",
+    "diesel fuel-out must not be blocked as unknown intent",
+  );
 
   // --- Deepgram-preferred pathway merge matrix (OpenAI = first arg, Deepgram = second) ---
   expectMerge("roadside", "roadside", "roadside", "both roadside");

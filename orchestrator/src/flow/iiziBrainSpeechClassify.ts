@@ -18,22 +18,22 @@ export { mergePathwayIntents } from "./iiziBrainMerge.js";
 import { DEFAULT_IIZI_BRAIN_CONFIG } from "./defaultIiziBrainConfig.js";
 import { IIZI_BRAIN_CONFIG_SCHEMA_VERSION } from "./iiziBrainConfigTypes.js";
 
-/** Default slug order — office/emergency escalate before generic roadside cues */
+/** Default slug order — emergencies win; clear roadside incidents beat generic office/info wording */
 export const DEFAULT_MATCH_PRECEDENCE: Exclude<BrainIntentSlug, "unknown">[] = [
-  "non_roadside",
   "emergency_handoff",
   "roadside",
+  "non_roadside",
 ];
 
 const BUILTIN_FALLBACK_DENIES =
-  /\bei\s+ole\b[^\n]{0,120}(?:\bautos*\s+abi\b|\bautos*abi\b)/i;
+  /\b(?:ei\s+ole|ei\s+vaja|pole|mitte)\b[^\n]{0,120}(?:\bautos*\s+abi\b|\bautos*abi\b|auto\s+abi\b)/i;
 
 const BUILTIN_FALLBACK_NON =
-  /\b(?:ei\s+vaja\s+(?:auto\s*)?abi|pole\s+(?:auto\s*)?abi(?:\s*küsimus)?|pole\s+tegemist\s+(?:õnnetus\b|avar(?:ii)?\b)|ainult\s+kontor(?:i|)|(?:tagasi)?helistage(?:\s*hilisemalt)?|\barve(?:tega)?\b|mitte\s+(?:auto\s*)?abi|väär\s+numer|pole\s+nöör(?:i|)|arutame\s+hind|müügi?\b|tellimus(?:tega)?|lihtsalt\s+infot|soovin\b[^\n]{0,56}?\bkindlustus(?:e|ega|est|ele)?\b|sooviks(?:in|)?\s+teada(?:\s+kui)?)/iu;
+  /\b(?:ei\s+vaja\s+(?:auto\s*)?abi|pole\s+(?:auto\s*)?abi(?:\s*küsimus)?|pole\s+tegemist\s+(?:õnnetus\b|avar(?:ii)?\b)|ainult\s+kontor(?:i|)|kontor(?:i)?\b[^\n]{0,40}\b(?:lahti|avatud|lahtiolekuajad?)|mis\s+kell\b[^\n]{0,40}\bkontor\b[^\n]{0,40}\blahti|(?:tagasi)?helistage(?:\s*hilisemalt)?|\barve(?:tega)?\b|mitte\s+(?:auto\s*)?abi|väär\s+numer|pole\s+nöör(?:i|)|arutame\s+hind|müügi?\b|tellimus(?:tega)?|lihtsalt\s+infot|soovin\b[^\n]{0,56}?\bkindlustus(?:e|ega|est|ele)?\b|sooviks(?:in|)?\s+teada(?:\s+kui)?)/iu;
 
 /** Legacy roadside bundle if config missing / unloaded */
 const BUILTIN_FALLBACK_ROAD =
-  /\b(?:(?:kütus|bensiin|bentsiin)(?:\s+on)?\s+otsas\b|(?:mul\s+sai\b|(?:sai|sain|saime)\s+)?(?:mul\s+|ma\s+|meil\s+|teie\s+|ta\s+|sa\s+|me\s+)?(?:kütus|bensiin|bentsiin)\s+otsa\b|(?:auto\s+)?ei\s+käivitu\b|(?:auto\s+)?ei\s+liigu\b|ei\s+käivitu\b|ei\s+liigu\b|(?:generaator|generator)(?:\s+ei)?\s+tööta\b|rehv\s+katki\b|tühi\s+rehv\b|aku\s+tühi\b|ei\s+saa\b[\s\S]{0,44}?\bautos{2,}e\b|(?:\bvõtmed\s+autos\b|\bvõtmed\b[\s\S]{0,32}?\bautos{2,}e\b)|uks\s+lukkus?\b|uks\s+lukus\b|\bvaja\b[^\n]{0,32}(?:auto\s+abi\b|autos*abi\b)|\bmul\s+on\s+autoabi\s+vaja\b|\bautos*abi\b|\bautos*\s+abi\b|puksiirr?\b|pukseerim(?:ine|ist|ise)?\b|kraav\b|avarii\b|õnnetus\b|krahh\b|jäin\s+teele\b|teele\s+jäänud\b|ei\s+käivi\b|käimatuse\b|mootor\b|vedelik\b|rehv\b|kumm\b|ratas(?:tega)?\b|(?:varu)?ratta(?:d|)\b|teel\s+abi\b|abi\s*vaja\s+tee\b|kahjustus\b)/iu;
+  /\b(?:(?:kütus|bensiin|bentsiin|diisel|diesel)(?:\s+on)?\s+otsas\b|(?:kütus|bensiin|bentsiin|diisel|diesel)\s+(?:sai|on\s+saanud)\s+otsa\b|(?:mul\s+sai\b|(?:sai|sain|saime)\s+)?(?:mul\s+|ma\s+|meil\s+|teie\s+|ta\s+|sa\s+|me\s+)?(?:kütus|bensiin|bentsiin|diisel|diesel)\s+otsa\b|paak(?:\s+on)?\s+tühi\b|(?:auto\s+)?ei\s+käivitu\b|(?:auto\s+)?ei\s+liigu\b|ei\s+käivitu\b|ei\s+liigu\b|(?:generaator|generator)(?:\s+ei)?\s+tööta\b|rehv\s+katki\b|tühi\s+rehv\b|aku(?:\s+on)?\s+tühi\b|(?:auto\s+)?aku\s+(?:sai|on\s+saanud)\s+tühjaks\b|ei\s+saa\b[\s\S]{0,44}?\bautos{2,}e\b|(?:\bvõtmed\s+autos\b|\bvõtmed\b[\s\S]{0,32}?\bautos{2,}e\b)|uks\s+lukkus?\b|uks\s+lukus\b|\bvaja\b[^\n]{0,32}(?:auto\s+abi\b|autos*abi\b)|\bmul\s+on\s+autoabi\s+vaja\b|\bautos*abi\b|\bautos*\s+abi\b|puksiirr?\b|pukseerim(?:ine|ist|ise)?\b|kraav\b|avarii\b|õnnetus\b|krahh\b|jäin\s+teele\b|teele\s+jäänud\b|ei\s+käivi\b|käimatuse\b|mootor\b|vedelik\b|rehv\b|kumm\b|ratas(?:tega)?\b|(?:varu)?ratta(?:d|)\b|teel\s+abi\b|abi\s*vaja\s+tee\b|kahjustus\b)/iu;
 
 /** Narrow emergency/medical escalation cues — used only when compiled rules unavailable (fail-open path). */
 const BUILTIN_FALLBACK_EMERGENCY = /\b(?:112|kiirabi|politsei|pääste|tulekahju|süttis|veri|hingamine)\b/iu;
