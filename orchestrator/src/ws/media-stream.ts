@@ -506,6 +506,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let useInitialGreeting = true;
   let callDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let greetingInProgress = true; // Protect initial greeting from interruption
+  // HARD greeting input gate — independent of uninterruptible_greeting / anti_barge_in / interrupt_response.
+  // While active, caller audio frames are dropped (not forwarded to OpenAI or Deepgram shadow STT),
+  // speech_started is ignored, and any transcript.completed that arrives is discarded BEFORE IIZI brain
+  // ingest, intent merge, or tool decisions. Opens only when greeting playback is confirmed done
+  // (Twilio mark via maybeCompleteAiTurn), or when no greeting will be played at all.
+  let greetingInputGateActive = true;
   let activeResponseId: string | null = null; // Track current response to discard stale audio
   let ignoreAudioUntilNextResponse = false;
   let sessionConfigured = false;
@@ -1046,6 +1052,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         }
       }
     }
+    // HARD initial-greeting input gate — overrides every configurable barge-in switch.
+    if (greetingInputGateActive) {
+      return "greeting_input_gate";
+    }
     if (greetingInProgress) {
       return "greeting_playing";
     }
@@ -1415,6 +1425,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (greetingInProgress) {
       greetingInProgress = false;
       greetingCompletedAt = Date.now();
+      if (greetingInputGateActive) {
+        greetingInputGateActive = false;
+        if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+          try {
+            openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+          } catch (err) {
+            console.error(`[GreetingInputGate] input_audio_buffer.clear failed on open (callId=${callId})`, err);
+          }
+        }
+        console.log(`[GreetingInputGate] opened reason=greeting_complete source=${source} callId=${callId}`);
+      }
       if (useCombinedRegLocationSms && callDirection === "inbound") {
         try {
           ingestIiziBrainGreetingComplete(iiziBrainRef.current);
@@ -2151,6 +2172,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         pendingInitialResponse = false;
         greetingInProgress = false;
         greetingCompletedAt = Date.now();
+        if (greetingInputGateActive) {
+          greetingInputGateActive = false;
+          console.log(
+            `[GreetingInputGate] opened reason=no_greeting useInitialGreeting=${useInitialGreeting} hasGreetingText=${hasGreetingText} callId=${callId}`
+          );
+        }
         console.log(
           `[GreetingGate] use_initial_greeting=${useInitialGreeting} has_greeting_text=${hasGreetingText} skip initial greeting callId=${callId}`
         );
@@ -2230,6 +2257,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - Follow the script above exactly. Do not deviate.
 - If asked about something outside your scope, briefly redirect back to the topic.
 - ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
+
+      // TODO: When migrating to GA Realtime API, map UI speech_speed=1.2 to audio.output.speed
+      // and remove this prompt-level pace instruction.
+      if (useCombinedRegLocationSms && callDirection === "inbound") {
+        fullInstructions += `\n\nSPEAKING PACE: Speak briskly and concisely, approximately 20% faster than a normal pace, while remaining clear and natural. Do not slow down for emphasis or repetition. Keep sentences short.`;
+      }
 
       if (useCombinedRegLocationSms && callDirection === "inbound") {
         fullInstructions += `\n\nIIZI COMBINED INBOUND — HARD ORDER (follow exactly; do not improvise):
@@ -2737,7 +2770,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
-          case "conversation.item.input_audio_transcription.completed":
+          case "conversation.item.input_audio_transcription.completed": {
+            if (greetingInputGateActive) {
+              clearCallerSpeechWatchdog();
+              const dropRaw = typeof event.transcript === "string" ? event.transcript : "";
+              const dropPreview = dropRaw.replace(/\s+/g, " ").trim().slice(0, 120);
+              console.log(
+                `[GreetingInputGate] ignore_transcript reason=greeting_playback textPreview="${dropPreview}" callId=${callId}`,
+              );
+              break;
+            }
             clearCallerSpeechWatchdog();
             userTranscriptCount += 1;
             console.log(`[Diag] user_transcript #${userTranscriptCount} (callId=${callId}): "${event.transcript}"`);
@@ -2839,6 +2881,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               scheduleUserResponseCreate("user-transcript", 150, event.transcript);
             }
             break;
+          }
 
           case "response.function_call_arguments.done": {
             const fnName = event.name;
@@ -4026,7 +4069,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(`[Diag] speech_started #${speechStartedCount} (callId=${callId}) state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},antiBargein=${antiBargeinEnabled}}`);
             const speechStartBlockReason = getCallerAudioBlockReason();
             if (speechStartBlockReason) {
-              if (speechStartBlockReason === "greeting_playing") {
+              if (speechStartBlockReason === "greeting_input_gate") {
+                console.log(`[GreetingInputGate] ignore_speech_started reason=greeting_playback callId=${callId}`);
+              } else if (speechStartBlockReason === "greeting_playing") {
                 console.log(`[GreetingGate] drop caller audio reason=greeting_playing callId=${callId}`);
               }
               console.log(`[TurnGate] drop caller audio reason=${speechStartBlockReason} source=speech_started callId=${callId}`);
@@ -4318,12 +4363,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           const mediaBlockReason = getCallerAudioBlockReason();
           if (mediaBlockReason) {
             if (mediaBlockReason === "greeting_uninterruptible") twilioInboundFramesDropGreeting += 1;
+            if (mediaBlockReason === "greeting_input_gate") twilioInboundFramesDropGreeting += 1;
             if (mediaBlockReason === "post_playback_cooldown") twilioInboundFramesDropCooldown += 1;
             if (mediaBlockReason === "assistant_speaking") twilioInboundFramesDropAntiBargein += 1;
             turnGateDropCounts[mediaBlockReason] = (turnGateDropCounts[mediaBlockReason] || 0) + 1;
             const dropCount = turnGateDropCounts[mediaBlockReason];
             if (dropCount === 1 || dropCount % 25 === 0) {
-              if (mediaBlockReason === "greeting_playing") {
+              if (mediaBlockReason === "greeting_input_gate") {
+                console.log(`[GreetingInputGate] drop_audio reason=greeting_playback frame=${twilioInboundFrames} count=${dropCount} callId=${callId}`);
+              } else if (mediaBlockReason === "greeting_playing") {
                 console.log(`[GreetingGate] drop caller audio reason=greeting_playing frame=${twilioInboundFrames} callId=${callId}`);
               }
               console.log(`[TurnGate] drop caller audio reason=${mediaBlockReason} count=${dropCount} callId=${callId}`);
