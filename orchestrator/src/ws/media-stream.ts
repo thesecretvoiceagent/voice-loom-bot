@@ -4188,6 +4188,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     callbackMode = "different_number_sms";
                     console.log(`[IIZI-CallbackSMS] sent ok pending_form=true callId=${callId}`);
                   }
+                  // Combined reg+location SMS only. Do NOT chain-send the callback SMS template here
+                  // (removed legacy path that logged always_send_enabled / send_requested_after_combined_sms /
+                  // roadside_auto_after_combined / auto_after_combined). Default callback = inbound CLI.
                   if (useCombinedRegLocationSms && tpl.name === COMBINED_SMS_TEMPLATE_NAME) {
                     console.log(`[IIZI-CombinedSMS] sent ok callId=${callId}`);
                     logIiziFlowAction(callId, "send_combined_reg_location_sms");
