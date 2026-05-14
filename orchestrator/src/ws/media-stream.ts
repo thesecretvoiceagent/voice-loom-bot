@@ -2836,6 +2836,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         },
       };
 
+      if (useCombinedRegLocationSms && callDirection === "inbound") {
+        sessionUpdate.session.speed = 1.3;
+        console.log(`[VoiceSpeed] requested=1.3 mode=api callId=${callId}`);
+      }
+
       // IMPORTANT: do NOT attach tools yet. Tools are activated only after the
       // greeting playback completes (see enableTurnDetection). This prevents the
       // model from auto-calling end_call / lookup_vehicle before the greeting,
@@ -2850,6 +2855,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         input_audio_format: sessionUpdate.session.input_audio_format,
         output_audio_format: sessionUpdate.session.output_audio_format,
         voice: sessionUpdate.session.voice,
+        speed: sessionUpdate.session.speed,
         turn_detection: sessionUpdate.session.turn_detection,
         input_audio_transcription: sessionUpdate.session.input_audio_transcription,
         tools_count: tools.length,

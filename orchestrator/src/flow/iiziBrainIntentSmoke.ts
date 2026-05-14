@@ -26,6 +26,7 @@ import { resolveFinalIntent, matchYesNoRoadsideClarification } from "./iiziBrain
 import {
   formatIiziRoadsideMirrorControlledInstruction,
   getIiziRoadsideMirrorIssueSummary,
+  mirrorIssueClauseFromInputs,
 } from "./iiziRoadsideMirrorText.js";
 import {
   setSemanticClassifierForTests,
@@ -592,7 +593,7 @@ async function run(): Promise<void> {
     st.finalResolvedIntent = "roadside";
     st.semanticNormalizedIssue = "sai autoaku tühjaks";
     const instr = formatIiziRoadsideMirrorControlledInstruction(st);
-    assert.ok(instr.includes("Saan aru, et Teil sai autoaku tühjaks"), "mirror uses semantic normalized issue");
+    assert.ok(instr.includes("Sain aru, et Teil sai autoaku tühjaks"), "mirror uses Estonian semantic phrase");
     assert.ok(
       instr.includes("Saadan Teile nüüd SMS-i, kus saate sisestada auto registreerimisnumbri"),
       "mirror includes SMS clause",
@@ -605,7 +606,23 @@ async function run(): Promise<void> {
     st.lastOpenaiIntentTranscriptPreview = "mul sai aku tühjaks ja veel pikka teksti mis läheb üle piiri";
     const summary = getIiziRoadsideMirrorIssueSummary(st);
     assert.ok(summary.length <= 110, "mirror summary clipped");
-    assert.ok(summary.startsWith("mul sai aku"), "mirror fallback uses OpenAI preview");
+    assert.ok(summary.startsWith("mul sai aku"), "mirror prefers caller transcript when plausible");
+  }
+  {
+    const c1 = mirrorIssueClauseFromInputs({ semanticNormalizedIssue: "fuel_out", lastOpenaiIntentTranscriptPreview: "" });
+    assert.ok(/kütus/i.test(c1), "fuel_out maps to Estonian");
+    assert.ok(!/_/u.test(c1), "mirror clause must not contain underscores");
+    assert.ok(!/\bfuel\b/i.test(c1), "mirror clause must not expose English fuel");
+    const c2 = mirrorIssueClauseFromInputs({ semanticNormalizedIssue: "wheel_or_tire_came_off", lastOpenaiIntentTranscriptPreview: "" });
+    assert.ok(/ratas|rehv/i.test(c2), "wheel/tire slug maps to Estonian");
+    const c3 = mirrorIssueClauseFromInputs({ semanticNormalizedIssue: "dead_battery", lastOpenaiIntentTranscriptPreview: "" });
+    assert.ok(/aku/i.test(c3), "battery slug maps to Estonian");
+    const stFuel = createInitialIiziBrainState();
+    stFuel.semanticNormalizedIssue = "fuel out";
+    stFuel.lastOpenaiIntentTranscriptPreview = "";
+    const instrFuel = formatIiziRoadsideMirrorControlledInstruction(stFuel);
+    assert.ok(!/\bfuel out\b/i.test(instrFuel), "English summary must not appear verbatim in instructions");
+    assert.ok(/Sain aru, et Teil/i.test(instrFuel), "instructions use Sain aru opener");
   }
 
   // Reset stub so it doesn't leak across test processes.
