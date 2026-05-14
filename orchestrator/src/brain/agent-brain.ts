@@ -9,6 +9,7 @@ import {
   deriveExpectedNextActionBrain,
   type IiziBrainRuntimeState,
 } from "../flow/iiziBrain.js";
+import { IIZI_DEFAULT_SAME_CALLBACK_LINE_ET } from "../flow/iiziInboundCopy.js";
 import {
   DEFAULT_IIZI_AGENT_BRAIN_CONFIG,
   type AgentBrainConfig,
@@ -203,6 +204,13 @@ export function validateIiziInboundToolCall(
 
   if (fnName === "send_sms") {
     const name = (toolArgs.template_name || "").trim();
+    if (snap.iiziBrain.finalResolvedIntent === "non_roadside") {
+      return deny(
+        "intent_non_roadside",
+        "SMS not allowed for non-roadside.",
+        "Do not send any SMS for non-roadside; route to human handoff only — no registration, location, or callback SMS.",
+      );
+    }
     if (name === snap.combinedSmsTemplateName || name === "Registreerimisnumbri SMS" || name === "Asukoha SMS") {
       if (!gate.allow) {
         const clarify =
@@ -398,7 +406,8 @@ export function validateIiziInboundToolCall(
       return deny(
         "callback_preference_incomplete",
         "Callback not finalized.",
-        'Ask: "Kas tagasihelistamiseks kasutame sama numbrit, millelt praegu helistate?" and use the appropriate confirm tool or callback SMS only if they want a different number.',
+        `Say verbatim: "${IIZI_DEFAULT_SAME_CALLBACK_LINE_ET}" then call confirm_iizi_callback_same_incoming_number. ` +
+          `Only if they want a different number than the incoming CLI, send_sms callback template and follow form/verbal confirmation.`,
       );
     }
     return { allowed: true };

@@ -35,6 +35,13 @@ import {
 } from "../flow/iiziInboundOccupantHeuristics.js";
 import { resolveFinalIntent, type IiziBrainResolveContext } from "../flow/iiziBrainResolver.js";
 import { formatIiziRoadsideMirrorControlledInstruction } from "../flow/iiziRoadsideMirrorText.js";
+import {
+  findForbiddenIiziOfficePhraseViolationsEt,
+  IIZI_DEFAULT_SAME_CALLBACK_LINE_ET,
+  IIZI_FORBIDDEN_OFFICE_PHRASES_PROMPT_BLOCK,
+  IIZI_NON_ROADSIDE_HANDOFF_INSTRUCTION_ET,
+  IIZI_OCCUPANT_COUNT_QUESTION_ET,
+} from "../flow/iiziInboundCopy.js";
 import { fetchLatestEnabledBrainConfigRow } from "../agentBrainConfigRepo.js";
 import { recordIiziShadowTrace } from "../flow/trace.js";
 import type { AgentBrainConfig } from "../brain/agentBrainUiTypes.js";
@@ -678,81 +685,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(`[MediaStream] smsToolState transition template="${templateName}" from=${prev} to=${next} reason=${reason} (callId=${callId})`);
   };
 
-  /** One-shot: deterministic callback SMS after combined reg+location SMS (roadside only). */
-  let roadsideAutoCallbackAfterCombinedRequested = false;
-  let roadsideAutoCallbackAlwaysSendLogged = false;
-
-  const runRoadsideAutoCallbackSmsAfterCombined = async (trigger: string) => {
-    if (!useCombinedRegLocationSms || callDirection !== "inbound") {
-      console.log(`[IIZI-CallbackSMS] blocked/skipped reason=not_iizi_inbound callId=${callId}`);
-      return;
-    }
-    if (iiziBrainRef.current.finalResolvedIntent !== "roadside") {
-      console.log(`[IIZI-CallbackSMS] blocked/skipped reason=intent_not_roadside callId=${callId}`);
-      return;
-    }
-    if (!roadsideAutoCallbackAlwaysSendLogged) {
-      roadsideAutoCallbackAlwaysSendLogged = true;
-      console.log(`[IIZI-CallbackSMS] always_send_enabled callId=${callId}`);
-    }
-    if (smsSentNames.has(CALLBACK_SMS_TEMPLATE_NAME) || smsToolState.get(CALLBACK_SMS_TEMPLATE_NAME) === "sent") {
-      console.log(`[IIZI-CallbackSMS] blocked/skipped reason=callback_already_sent callId=${callId}`);
-      return;
-    }
-    const tplCb = smsMessages.find((m) => m.trigger === "during" && m.name === CALLBACK_SMS_TEMPLATE_NAME);
-    if (!tplCb) {
-      console.warn(`[IIZI-CallbackSMS] blocked/skipped reason=callback_template_missing callId=${callId}`);
-      return;
-    }
-    const recipientCb = fromNumber;
-    if (!recipientCb) {
-      console.warn(`[IIZI-CallbackSMS] blocked/skipped reason=missing_recipient callId=${callId}`);
-      return;
-    }
-    console.log(`[IIZI-CallbackSMS] send_requested_after_combined_sms callId=${callId} trigger=${trigger}`);
-    setSmsToolState(tplCb.name, "pending", "roadside_auto_after_combined");
-    const bodyCb = substituteVarsRef(tplCb.content);
-    try {
-      const r = await sendSms(recipientCb, bodyCb);
-      if (r.ok) {
-        smsSentNames.add(tplCb.name);
-        setSmsToolState(tplCb.name, "sent", "roadside_auto_twilio_success");
-        callbackSmsRequestedWhileBlocked = false;
-        callbackSmsSent = true;
-        callbackPending = true;
-        callbackMode = "different_number_sms";
-        console.log(`[IIZI-CallbackSMS] sent ok callId=${callId} source=auto_after_combined`);
-        persistSmsMessage({
-          call_id: callId || null,
-          agent_id: resolvedAgentIdRef,
-          template_name: tplCb.name,
-          direction: "outbound",
-          from_number: config.twilio.fromNumber || "",
-          to_number: recipientCb,
-          body: bodyCb,
-          twilio_sid: r.sid || null,
-          status: r.status || "sent",
-        }).catch(() => {});
-        recordIiziShadowTrace({
-          callId,
-          agentId: resolvedAgentIdRef,
-          iiziCombinedMode: useCombinedRegLocationSms,
-          eventType: "sms_sent",
-          payload: { template_name: tplCb.name, twilio_sid: r.sid ?? null, source: "auto_after_combined" },
-          stateRef: iiziShadowStateRef,
-        });
-      } else {
-        setSmsToolState(tplCb.name, "failed", `roadside_auto_twilio_failed:${r.error || r.status || "unknown"}`);
-        console.warn(
-          `[IIZI-CallbackSMS] blocked/skipped reason=twilio_send_failed err=${r.error || r.status || "-"} callId=${callId}`,
-        );
-      }
-    } catch (err) {
-      setSmsToolState(tplCb.name, "failed", "roadside_auto_exception");
-      console.error(`[IIZI-CallbackSMS] blocked/skipped reason=send_exception callId=${callId}`, err);
-    }
-  };
-
   const setLocationStatus = (
     next: "unknown" | "pending" | "confirmed" | "failed",
     reason: string,
@@ -845,19 +777,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     scheduleUserResponseCreate("system-event", 50);
   };
 
-  const maybeEmitCallbackPreferenceRequired = (source: string) => {
+  const emitIiziDefaultSameCallbackSystemFollowUp = (source: string) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
     if (!iiziHandoffReadyForCallbackStep()) return;
     if (callbackConfirmed || callbackPending) return;
     if (callbackSmsRequestedWhileBlocked) return;
-    if (source !== "end_call_blocked" && emittedCallbackPreferenceNudges.has("callback_preference_prompt")) return;
-    if (source !== "end_call_blocked") emittedCallbackPreferenceNudges.add("callback_preference_prompt");
+    if (emittedCallbackPreferenceNudges.has("iizi_default_same_callback_system")) return;
+    emittedCallbackPreferenceNudges.add("iizi_default_same_callback_system");
     const sysMsg =
-      `[SYSTEM EVENT: callback_preference_required] ` +
-      `Ask exactly once: "Kas tagasihelistamiseks kasutame sama numbrit, millelt praegu helistate?" ` +
+      `[SYSTEM EVENT: iizi_default_same_callback_number] ` +
+      `Say exactly once, verbatim in Estonian: "${IIZI_DEFAULT_SAME_CALLBACK_LINE_ET}" ` +
       `Internal note only — do NOT read this tag aloud. ` +
-      `If the caller wants the same number, call confirm_iizi_callback_same_incoming_number — do NOT send template "${CALLBACK_SMS_TEMPLATE_NAME}". ` +
-      `Only if they clearly want a different number, call send_sms with template_name="${CALLBACK_SMS_TEMPLATE_NAME}". ` +
+      `Immediately after saying it, call confirm_iizi_callback_same_incoming_number. ` +
+      `Do NOT send SMS template "${CALLBACK_SMS_TEMPLATE_NAME}" unless the caller clearly asks for a different callback number. ` +
       `After that SMS succeeds, wait for SYSTEM form_submitted callback_phone or use confirm_iizi_callback_phone_verbal if they give and confirm a number by voice.`;
     openaiWs.send(JSON.stringify({
       type: "conversation.item.create",
@@ -867,8 +799,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         content: [{ type: "input_text", text: sysMsg }],
       },
     }));
-    console.log(`[IIZI-Callback] preference_prompt source=${source} callId=${callId}`);
-    logIiziFlowAction(callId, "ask_callback_same_number");
+    console.log(`[IIZI-Callback] default_same_incoming source=${source} callId=${callId}`);
+    logIiziFlowAction(callId, "confirm_same_callback_incoming_default");
     scheduleUserResponseCreate("system-event", 50);
   };
 
@@ -907,7 +839,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (emittedOccupantNudges.has("occupant_prompt_sent")) return;
     emittedOccupantNudges.add("occupant_prompt_sent");
     const sysMsg =
-      `[SYSTEM EVENT: occupant_count_required] Ask exactly: "Mitu inimest on autos koos juhiga?" ` +
+      `[SYSTEM EVENT: occupant_count_required] Ask exactly: "${IIZI_OCCUPANT_COUNT_QUESTION_ET}" ` +
       `Do not continue until answered. Internal note only — do NOT read this tag aloud.`;
     openaiWs.send(
       JSON.stringify({
@@ -938,6 +870,39 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
     if (!iiziCanAskOccupantQuestion()) return;
     emitOccupantCountRequiredSystemEvent("deferred_gates_open");
+  };
+
+  const tryIiziPostVehicleLocationReadbackContinuation = (source: string) => {
+    if (!useCombinedRegLocationSms || callDirection !== "inbound") return;
+    if (!vehicleReadbackDone || !locationReadbackDone) return;
+    maybeEmitDeferredOccupantPrompt();
+    const hadDeferredCallbackSms = callbackSmsRequestedWhileBlocked;
+    maybeNudgeDeferredCallbackSms(source);
+
+    if (incidentNeedsOccupantCount && occupantCountStatus !== "confirmed") {
+      const occupantGateOff =
+        useCombinedRegLocationSms &&
+        callDirection === "inbound" &&
+        !iiziBrainRef.current.runtimeBrainUi.gates.occupantCount;
+      if (!occupantGateOff) {
+        console.log(
+          `[IIZI-Flow] vehicle_location_readback_complete nextAction=ask_occupant_count source=${source} callId=${callId}`,
+        );
+        emitOccupantCountRequiredSystemEvent(source);
+        return;
+      }
+    }
+
+    if (!hadDeferredCallbackSms) {
+      console.log(
+        `[IIZI-Flow] vehicle_location_readback_complete nextAction=confirm_same_callback_number source=${source} callId=${callId}`,
+      );
+      emitIiziDefaultSameCallbackSystemFollowUp(source);
+    } else {
+      console.log(
+        `[IIZI-Flow] vehicle_location_readback_complete nextAction=deferred_callback_sms source=${source} callId=${callId}`,
+      );
+    }
   };
 
   const buildBrainRuntimeSnapshot = (): BrainRuntimeSnapshot => ({
@@ -1620,8 +1585,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   // Compact backend prompts for the controlled responses — kept short on purpose;
   // the live system prompt remains the primary instruction surface.
-  const IIZI_INSTR_NON_ROADSIDE =
-    "Kõne ei puuduta autoabi. Vasta eesti keeles lühidalt, et see liin on autoabi jaoks, ja paku tagasihelistamist või kontorinumbrit. Ära luba ega saada SMS-i.";
   const IIZI_INSTR_EMERGENCY =
     "Tundub hädaolukord. Vasta eesti keeles lühidalt: palu klienti helistada 112, või suuname kohe inimese juurde. Ära saada autoabi SMS-i.";
   const IIZI_INSTR_CLARIFY =
@@ -1656,9 +1619,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       liftSuppression = true;
     } else if (intent === "non_roadside") {
       reasonTag = "non_roadside";
-      instructions = IIZI_INSTR_NON_ROADSIDE;
+      instructions = IIZI_NON_ROADSIDE_HANDOFF_INSTRUCTION_ET;
       liftSuppression = true;
       logIiziFlowAction(callId, "route_non_roadside_human");
+      console.log(`[IIZI-Flow] non_roadside_handoff no_sms=true callId=${callId}`);
     } else if (intent === "emergency_handoff") {
       reasonTag = "emergency_handoff";
       instructions = IIZI_INSTR_EMERGENCY;
@@ -2615,14 +2579,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
       if (useCombinedRegLocationSms && callDirection === "inbound") {
         fullInstructions += `\n\nIIZI COMBINED INBOUND — HARD ORDER (follow exactly; do not improvise):
+- ${IIZI_FORBIDDEN_OFFICE_PHRASES_PROMPT_BLOCK}
 - NEVER claim or imply that an SMS was sent (e.g. do not say "saadan" / "saatsin" about the registration+location SMS) until the send_sms tool has returned success=true for that send.
 - Combined registration+location SMS: send at most once using the combined template when the script allows.
 - Wait in order for: roadside classification → one CRM acknowledgement if instructed → combined SMS send (after success only) → customer submits the form (SYSTEM form_submitted) → SYSTEM vehicle_lookup_result → location_confirmed for the pin/link flow.
 - If vehicle_lookup_result has match=true and coverage is active/valid (coverage_invalid=false), read vehicle and insurance/coverage details aloud to the caller once, then call confirm_iizi_vehicle_readback_complete.
 - Only after that, read the confirmed location address aloud once, then call confirm_iizi_location_readback_complete.
-- Only after BOTH confirm tools have succeeded and occupant count is required for this case, ask exactly once: "Mitu inimest on autos koos juhiga?" — do not ask earlier and do not repeat unless the tool failed.
+- Only after BOTH confirm tools have succeeded and occupant count is required for this case, ask exactly once: "${IIZI_OCCUPANT_COUNT_QUESTION_ET}" — do not ask earlier, do not use yes/no phrasing (e.g. never "Kas autos on veel inimesi?"), and do not repeat unless the tool failed.
 - Use confirm_occupant_count only after that question was asked and answered.
-- Callback: default is the same incoming phone number. Ask once: "Kas tagasihelistamiseks kasutame sama numbrit, millelt praegu helistate?" If yes — call confirm_iizi_callback_same_incoming_number; do NOT send the callback SMS template. Send template "${CALLBACK_SMS_TEMPLATE_NAME}" only if the caller explicitly wants a different number; SMS success does not finalize callback — wait for form callback_phone or confirm_iizi_callback_phone_verbal.
+- Callback: default is the same incoming phone number. Say once verbatim: "${IIZI_DEFAULT_SAME_CALLBACK_LINE_ET}" then call confirm_iizi_callback_same_incoming_number — do NOT send the callback SMS template. Send template "${CALLBACK_SMS_TEMPLATE_NAME}" only if the caller explicitly wants a different callback number than the incoming CLI; SMS success does not finalize callback — wait for form callback_phone or confirm_iizi_callback_phone_verbal.
 - Do not jump to summary, handoff, or end_call until required gates in your instructions are satisfied (including callback preference finalized).`;
       }
 
@@ -3112,6 +3077,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             const assistantTranscript = (event.transcript || "").toString();
             console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
             transcriptLines.push(`[Agent]: ${assistantTranscript}`);
+            if (
+              useCombinedRegLocationSms &&
+              callDirection === "inbound" &&
+              activeResponseReason !== "initial-greeting" &&
+              assistantTranscript.trim()
+            ) {
+              const officeHits = findForbiddenIiziOfficePhraseViolationsEt(assistantTranscript);
+              if (officeHits.length > 0) {
+                console.warn(
+                  `[IIZI-Policy] forbidden_office_phrase_model_output hits=${officeHits.join("|")} callId=${callId}`,
+                );
+                injectBrainToolCorrection(
+                  `[SYSTEM] Never mention or offer an office number or variants (${officeHits.join(
+                    ", ",
+                  )}). For non-roadside, use only the approved handoff line from instructions.`,
+                );
+                scheduleUserResponseCreate("system-event", 50);
+              }
+            }
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
               console.log(`[Diag-InboundTurn] response.audio_transcript.done seq=${activeResponseInboundTranscriptSeq} responseId=${activeResponseId || "none"} text="${assistantTranscript.slice(0, 160)}" (callId=${callId})`);
               if (activeResponseTwilioChunks > 0) {
@@ -3321,7 +3305,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 if (brainBlockEnd.correctionSystemText) injectBrainToolCorrection(brainBlockEnd.correctionSystemText);
                 const hadDeferredCallbackSms = callbackSmsRequestedWhileBlocked;
                 maybeNudgeDeferredCallbackSms("end_call_brain_blocked");
-                if (!hadDeferredCallbackSms) maybeEmitCallbackPreferenceRequired("end_call_blocked");
+                if (!hadDeferredCallbackSms) emitIiziDefaultSameCallbackSystemFollowUp("end_call_blocked");
                 scheduleUserResponseCreate("tool-result", 50);
                 break;
               }
@@ -3357,16 +3341,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       success: false,
                       error: "callback_preference_incomplete",
                       message:
-                        `Finalize callback preference first. Ask: "Kas tagasihelistamiseks kasutame sama numbrit, millelt praegu helistate?" ` +
-                        `If same number — confirm_iizi_callback_same_incoming_number (no callback SMS). ` +
-                        `If different number — send_sms "${CALLBACK_SMS_TEMPLATE_NAME}" only after they ask, then wait for form callback_phone or use confirm_iizi_callback_phone_verbal. ` +
+                        `Finalize callback preference first. Say verbatim: "${IIZI_DEFAULT_SAME_CALLBACK_LINE_ET}" ` +
+                        `then call confirm_iizi_callback_same_incoming_number (no callback SMS). ` +
+                        `Only if they clearly want a different number than the incoming CLI — send_sms "${CALLBACK_SMS_TEMPLATE_NAME}", then wait for form callback_phone or use confirm_iizi_callback_phone_verbal. ` +
                         `Do not end_call until callback is confirmed.`,
                     }),
                   },
                 }));
                 const hadDeferredCallbackSms = callbackSmsRequestedWhileBlocked;
                 maybeNudgeDeferredCallbackSms("end_call_blocked");
-                if (!hadDeferredCallbackSms) maybeEmitCallbackPreferenceRequired("end_call_blocked");
+                if (!hadDeferredCallbackSms) emitIiziDefaultSameCallbackSystemFollowUp("end_call_blocked");
                 scheduleUserResponseCreate("tool-result", 50);
                 break;
               }
@@ -3550,7 +3534,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   console.log(`[IIZI-Occupants] confirmed count=${count} callId=${callId}`);
                   const hadDeferredCallbackSms = callbackSmsRequestedWhileBlocked;
                   maybeNudgeDeferredCallbackSms("occupant_confirmed");
-                  if (!hadDeferredCallbackSms) maybeEmitCallbackPreferenceRequired("occupant_confirmed");
+                  if (!hadDeferredCallbackSms) emitIiziDefaultSameCallbackSystemFollowUp("occupant_confirmed");
                   openaiWs!.send(JSON.stringify({
                     type: "conversation.item.create",
                     item: {
@@ -3644,8 +3628,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       output: JSON.stringify({ success: true }),
                     },
                   }));
-                  maybeEmitDeferredOccupantPrompt();
-                  maybeNudgeDeferredCallbackSms("vehicle_readback_done");
+                  tryIiziPostVehicleLocationReadbackContinuation("vehicle_readback_done");
                   scheduleUserResponseCreate("tool-result", 50);
                 }
               }
@@ -3730,15 +3713,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       output: JSON.stringify({ success: true }),
                     },
                   }));
-                  maybeEmitDeferredOccupantPrompt();
-                  const hadDeferredCallbackSmsLoc = callbackSmsRequestedWhileBlocked;
-                  maybeNudgeDeferredCallbackSms("location_readback_done");
-                  if (
-                    (!incidentNeedsOccupantCount || occupantCountStatus === "confirmed") &&
-                    !hadDeferredCallbackSmsLoc
-                  ) {
-                    maybeEmitCallbackPreferenceRequired("location_readback_done");
-                  }
+                  tryIiziPostVehicleLocationReadbackContinuation("location_readback_done");
                   scheduleUserResponseCreate("tool-result", 50);
                 }
               }
@@ -3913,7 +3888,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
               let requestedName = typeof args.template_name === "string" ? args.template_name.trim() : "";
               if (requestedName === CALLBACK_SMS_TEMPLATE_NAME) {
-                console.log(`[IIZI-CallbackSMS] requested callId=${callId}`);
+                console.log(`[IIZI-CallbackSMS] send_requested reason=caller_requested_different_number callId=${callId}`);
               }
               if (
                 useCombinedRegLocationSms &&
@@ -4216,14 +4191,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   if (useCombinedRegLocationSms && tpl.name === COMBINED_SMS_TEMPLATE_NAME) {
                     console.log(`[IIZI-CombinedSMS] sent ok callId=${callId}`);
                     logIiziFlowAction(callId, "send_combined_reg_location_sms");
-                    if (
-                      callDirection === "inbound" &&
-                      iiziBrainRef.current.finalResolvedIntent === "roadside" &&
-                      !roadsideAutoCallbackAfterCombinedRequested
-                    ) {
-                      roadsideAutoCallbackAfterCombinedRequested = true;
-                      void runRoadsideAutoCallbackSmsAfterCombined("after_combined_tool_success");
-                    }
+                    console.log(`[IIZI-CallbackSMS] skipped reason=default_same_incoming_number callId=${callId}`);
                   }
                   if (tpl.name === "Asukoha SMS") {
                     setLocationStatus("pending", "location_sms_sent", null);
