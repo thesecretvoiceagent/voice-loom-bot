@@ -16,14 +16,23 @@ import {
   createInitialIiziBrainState,
   ingestIiziBrainNonemptyUserSpeech,
   ingestIiziBrainTrustedShadowFinal,
+  ingestIiziBrainFlow,
+  setIiziBrainAwaitingYesNoRoadsideClarification,
+  gateIiziCombinedSms,
+  deriveExpectedNextActionBrain,
   type IiziBrainRuntimeState,
 } from "./iiziBrain.js";
-import { resolveFinalIntent } from "./iiziBrainResolver.js";
+import { resolveFinalIntent, matchYesNoRoadsideClarification } from "./iiziBrainResolver.js";
 import {
   setSemanticClassifierForTests,
   type SemanticClassifierInput,
   type SemanticClassifierResult,
 } from "./iiziSemanticClassifier.js";
+import {
+  iiziFuelBatteryTyreOnlyRoadsideIssue,
+  iiziMatchedRoadsideOccupantKeyword,
+  iiziTowTransportFlowHint,
+} from "./iiziInboundOccupantHeuristics.js";
 
 function expectHybrid(
   text: string,
@@ -434,12 +443,149 @@ async function run(): Promise<void> {
     );
   }
 
+  const latchInbound = {
+    callId: "latch-smoke",
+    call_direction: "inbound" as const,
+    preSmsIntentLatchActive: true,
+  };
+
+  // --- pre_sms decisive intent latch (IIZI combined inbound semantics) ---
+  {
+    const state = createInitialIiziBrainState();
+    ingestIiziBrainNonemptyUserSpeech(state, "mul on diisel otsas");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "mul on diisel otsas");
+    await resolveFinalIntent(state, latchInbound);
+    assert.equal(state.finalResolvedIntent, "roadside", "latch smoke: diesel → roadside");
+    assert.equal(state.preSmsLatchedIntent, "roadside", "latch smoke: preSmsLatchedIntent set");
+    ingestIiziBrainNonemptyUserSpeech(state, "xyzabc qwerty nonsense blah");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "xyzabc qwerty nonsense blah");
+    await resolveFinalIntent(state, latchInbound);
+    assert.equal(
+      state.finalResolvedIntent,
+      "roadside",
+      "latch smoke: late gibberish must not downgrade to unknown",
+    );
+    assert.equal(state.preSmsLatchedIntent, "roadside");
+  }
+
+  {
+    const state = createInitialIiziBrainState();
+    ingestIiziBrainNonemptyUserSpeech(state, "tere tere hommikust kuidas teil läheb");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "tere tere hommikust kuidas teil läheb");
+    await resolveFinalIntent(state, latchInbound);
+    assert.equal(state.finalResolvedIntent, "unknown", "latch smoke: unclear first → unknown");
+    setIiziBrainAwaitingYesNoRoadsideClarification(state, true);
+    ingestIiziBrainNonemptyUserSpeech(state, "jah");
+    await resolveFinalIntent(state, latchInbound);
+    assert.equal(state.finalResolvedIntent, "roadside", "latch smoke: clarification jah → roadside");
+    assert.equal(state.awaitingYesNoRoadsideClarification, false);
+    assert.equal(state.preSmsLatchedIntent, "roadside");
+  }
+
+  {
+    const state = createInitialIiziBrainState();
+    ingestIiziBrainNonemptyUserSpeech(state, "tere jama juttu pikalt");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "tere jama juttu pikalt");
+    await resolveFinalIntent(state, latchInbound);
+    setIiziBrainAwaitingYesNoRoadsideClarification(state, true);
+    ingestIiziBrainNonemptyUserSpeech(state, "ei");
+    await resolveFinalIntent(state, latchInbound);
+    assert.equal(state.finalResolvedIntent, "non_roadside", "latch smoke: clarification ei → non_roadside");
+    assert.equal(state.preSmsLatchedIntent, "non_roadside");
+  }
+
+  {
+    const state = createInitialIiziBrainState();
+    ingestIiziBrainNonemptyUserSpeech(state, "tere jama juttu pikalt");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "tere jama juttu pikalt");
+    await resolveFinalIntent(state, latchInbound);
+    setIiziBrainAwaitingYesNoRoadsideClarification(state, true);
+    ingestIiziBrainNonemptyUserSpeech(state, "kindlustus");
+    await resolveFinalIntent(state, latchInbound);
+    assert.equal(state.finalResolvedIntent, "non_roadside", "latch smoke: clarification kindlustus → non_roadside");
+    assert.equal(state.preSmsLatchedIntent, "non_roadside");
+  }
+
+  assert.equal(matchYesNoRoadsideClarification("kindlustus"), "no", "clarify matcher: kindlustus → no");
+  assert.equal(matchYesNoRoadsideClarification("mul on diisel otsas"), "yes", "clarify matcher: diisel cue → yes");
+
+  assert.ok(
+    iiziTowTransportFlowHint("vajan puksiir abi") != null &&
+      iiziMatchedRoadsideOccupantKeyword("vajan puksiir abi") != null,
+    "heuristic: tow cue implies occupant-keyword path",
+  );
+  assert.ok(
+    iiziFuelBatteryTyreOnlyRoadsideIssue("mul on bensiin otsas"),
+    "heuristic: fuel-only wording without tow/stranded cues",
+  );
+  assert.ok(
+    !iiziFuelBatteryTyreOnlyRoadsideIssue("auto ei käivitu tee peal"),
+    "heuristic: won't-start cue is not fuel-only",
+  );
+
+  {
+    const state = createInitialIiziBrainState();
+    ingestIiziBrainNonemptyUserSpeech(state, "mis kell kontor lahti on");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "mis kell kontor lahti on");
+    await resolveFinalIntent(state, latchInbound);
+    assert.equal(state.finalResolvedIntent, "non_roadside", "smoke: office hours → non_roadside");
+    const gate = gateIiziCombinedSms(state);
+    assert.equal(gate.allow, false, "non_roadside must not allow combined SMS");
+    assert.equal(deriveExpectedNextActionBrain(state), "route_non_roadside_to_human");
+  }
+
+  {
+    const state = createInitialIiziBrainState();
+    ingestIiziBrainNonemptyUserSpeech(state, "mul on diisel otsas");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "mul on diisel otsas");
+    await resolveFinalIntent(state, latchInbound);
+    ingestIiziBrainFlow(state, "combined_sms_sent");
+    assert.equal(state.workflowPhase, "waiting_for_form_and_location");
+    assert.equal(
+      deriveExpectedNextActionBrain(state),
+      "wait_for_form_and_location",
+      "roadside after combined SMS ingest → wait for form/location",
+    );
+  }
+
+  {
+    const state = createInitialIiziBrainState();
+    ingestIiziBrainNonemptyUserSpeech(state, "ma ei vaja autoabi");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "ma ei vaja autoabi");
+    await resolveFinalIntent(state, latchInbound);
+    assert.equal(state.finalResolvedIntent, "non_roadside", "latch smoke: denial → non_roadside");
+    ingestIiziBrainNonemptyUserSpeech(state, "xyz nonsense gibberish");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "xyz nonsense gibberish");
+    await resolveFinalIntent(state, latchInbound);
+    assert.equal(
+      state.finalResolvedIntent,
+      "non_roadside",
+      "latch smoke: non_roadside must not downgrade to unknown",
+    );
+  }
+
+  {
+    const state = createInitialIiziBrainState();
+    ingestIiziBrainNonemptyUserSpeech(state, "palun kiirabi mul on valu rinnus");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "palun kiirabi mul on valu rinnus");
+    await resolveFinalIntent(state, latchInbound);
+    assert.equal(state.finalResolvedIntent, "emergency_handoff", "latch smoke: emergency");
+    ingestIiziBrainNonemptyUserSpeech(state, "asdf qwerty zzz");
+    ingestIiziBrainTrustedShadowFinal(state, "deepgram", "asdf qwerty zzz");
+    await resolveFinalIntent(state, latchInbound);
+    assert.equal(
+      state.finalResolvedIntent,
+      "emergency_handoff",
+      "latch smoke: emergency must not downgrade to unknown",
+    );
+  }
+
   // Reset stub so it doesn't leak across test processes.
   setSemanticClassifierForTests(null);
 
   console.log(
     "OK intent-classify-smoke:",
-    "roadside/non_roadside/emergency/empty/unclear/merge-matrix/semantic-resolver passed.",
+    "roadside/non_roadside/emergency/empty/unclear/merge-matrix/semantic-resolver/pre_sms_latch/clarify_matcher/heuristics/gates passed.",
   );
 }
 

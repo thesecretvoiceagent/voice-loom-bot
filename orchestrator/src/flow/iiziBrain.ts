@@ -143,6 +143,15 @@ export interface IiziBrainRuntimeState {
   classifierSource: IiziClassifierSource;
   /** Transcript pathway that decided the current finalResolvedIntent. */
   transcriptSourceUsed: SemanticTranscriptSourceUsed;
+
+  /**
+   * IIZI inbound combined-SMS: once we resolve a decisive pre-SMS intent (roadside /
+   * non_roadside / emergency_handoff), it is latched for the rest of this call's
+   * pre_sms_intent_gate — late noisy transcripts must not downgrade to unknown.
+   */
+  preSmsLatchedIntent: ResolvedIntent | null;
+  /** True after we emitted the pre-SMS clarification (“autoabi vs muu IIZI küsimus”). */
+  awaitingYesNoRoadsideClarification: boolean;
 }
 
 function recomputeFinalIntent(state: IiziBrainRuntimeState): void {
@@ -153,6 +162,18 @@ function recomputeFinalIntent(state: IiziBrainRuntimeState): void {
     ? undefined
     : { speechTrustMode: ui.speechTrustMode, conflictBehavior: ui.conflictBehavior };
   const { resolved, reason } = mergePathwayIntents(state.openaiRealtimeIntent, state.deepgramShadowIntent, opts);
+  // Do not let pathway merge overwrite a latched decisive pre-SMS intent (late ASR noise).
+  if (
+    state.workflowPhase === "pre_sms_intent_gate" &&
+    !state.combinedSmsSuccessfullySent &&
+    state.preSmsLatchedIntent != null &&
+    (state.preSmsLatchedIntent === "roadside" ||
+      state.preSmsLatchedIntent === "non_roadside" ||
+      state.preSmsLatchedIntent === "emergency_handoff")
+  ) {
+    state.intentResolutionReason = `${reason}_pathway_merge_skipped_preSms_latch=${state.preSmsLatchedIntent}`;
+    return;
+  }
   state.finalResolvedIntent = resolved;
   state.intentResolutionReason = reason;
 }
@@ -198,6 +219,19 @@ function resetSemanticScratch(state: IiziBrainRuntimeState): void {
   state.semanticNormalizedIssue = "";
   state.semanticTranscriptSourceUsed = "none";
   state.semanticLastInputKey = "";
+}
+
+function resetPreSmsIntentLatch(state: IiziBrainRuntimeState): void {
+  state.preSmsLatchedIntent = null;
+  state.awaitingYesNoRoadsideClarification = false;
+}
+
+/** Called from media-stream when the controlled clarification prompt is sent. */
+export function setIiziBrainAwaitingYesNoRoadsideClarification(
+  state: IiziBrainRuntimeState,
+  pending: boolean,
+): void {
+  state.awaitingYesNoRoadsideClarification = pending;
 }
 
 /** Compiled rules for intent labels, or `null` → legacy built-in regex bundle (Supabase fail-open). */
@@ -252,12 +286,19 @@ export function createInitialIiziBrainState(): IiziBrainRuntimeState {
     semanticLastInputKey: "",
     classifierSource: "regex",
     transcriptSourceUsed: "none",
+    preSmsLatchedIntent: null,
+    awaitingYesNoRoadsideClarification: false,
   };
   recomputeFinalIntent(s);
   return s;
 }
 
 /** Log deterministic merge line after source updates */
+/** Structured ops log for IIZI inbound deterministic flow milestones (SMS, questions, routing). */
+export function logIiziFlowAction(callId: string | null, action: string): void {
+  console.log(`[IiziFlow] action=${action} callId=${callId || "?"}`);
+}
+
 export function logIiziBrainIntentResolution(callId: string | null, state: IiziBrainRuntimeState): void {
   const cid = callId || "?";
   const gate = smsGatePeek(state);
@@ -411,6 +452,7 @@ export function ingestIiziBrainFlow(
       state.lastDeepgramIntentTranscriptPreview = "";
       state.brainClassifierForceBuiltinFallback = false;
       resetSemanticScratch(state);
+      resetPreSmsIntentLatch(state);
       resetPathwayClassifyScratch(state);
       recomputeFinalIntent(state);
       state.intentResolutionReason = "call_started_reset";
@@ -422,6 +464,7 @@ export function ingestIiziBrainFlow(
       state.combinedSmsSuccessfullySent = true;
       state.formSeenAfterSms = false;
       state.locationSeenAfterSms = false;
+      resetPreSmsIntentLatch(state);
       break;
     case "form_submitted":
       if (!state.combinedSmsSuccessfullySent) break;
@@ -459,6 +502,7 @@ export function ingestIiziBrainFlow(
       state.lastDeepgramIntentTranscriptPreview = "";
       state.brainClassifierForceBuiltinFallback = false;
       resetSemanticScratch(state);
+      resetPreSmsIntentLatch(state);
       resetPathwayClassifyScratch(state);
       recomputeFinalIntent(state);
       state.intentResolutionReason = "call_ended_reset";

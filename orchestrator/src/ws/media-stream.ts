@@ -24,8 +24,15 @@ import {
   logIiziBrainIntentResolution,
   applyAgentBrainConfigToState,
   markIiziBrainConfigLoadFailed,
+  setIiziBrainAwaitingYesNoRoadsideClarification,
+  logIiziFlowAction,
   type IiziBrainRuntimeState,
 } from "../flow/iiziBrain.js";
+import {
+  IIZI_PASSENGER_OCCUPANT_KEYWORDS,
+  IIZI_ROADSIDE_OCCUPANT_KEYWORDS,
+  iiziTowTransportFlowHint,
+} from "../flow/iiziInboundOccupantHeuristics.js";
 import { resolveFinalIntent, type IiziBrainResolveContext } from "../flow/iiziBrainResolver.js";
 import { fetchLatestEnabledBrainConfigRow } from "../agentBrainConfigRepo.js";
 import { recordIiziShadowTrace } from "../flow/trace.js";
@@ -762,48 +769,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       },
     }));
     console.log(`[IIZI-Callback] preference_prompt source=${source} callId=${callId}`);
+    logIiziFlowAction(callId, "ask_callback_same_number");
     scheduleUserResponseCreate("system-event", 50);
   };
-
-  const OCCUPANT_REQUIRED_ROADSIDE_TRIGGERS = [
-    "avarii",
-    "õnnetus",
-    "kokkupõrge",
-    "accident",
-    "crash",
-    "puksiir",
-    "pukseerimine",
-    "tow",
-    "towing",
-    "auto ei käivitu",
-    "ei käivitu",
-    "auto ei liigu",
-    "sõiduk ei liigu",
-    "auto on kinni",
-    "kinni",
-    "stuck",
-    "stranded",
-    "cannot move",
-    "does not move",
-    "won't start",
-  ] as const;
-
-  const OCCUPANT_REQUIRED_PASSENGER_TRIGGERS = [
-    "girlfriend",
-    "boyfriend",
-    "wife",
-    "husband",
-    "friend",
-    "child",
-    "passenger",
-    "kaasreisija",
-    "reisija",
-    "tüdruk",
-    "naine",
-    "mees",
-    "sõber",
-    "laps",
-  ] as const;
 
   const isOccupantCountGateBlocked = () =>
     incidentNeedsOccupantCount && occupantCountStatus !== "confirmed";
@@ -853,6 +821,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }),
     );
     console.log(`[IIZI-Occupants] occupant_prompt emitted source=${source} callId=${callId}`);
+    logIiziFlowAction(callId, "ask_occupant_count");
     iiziOccupantPromptDeferred = false;
     scheduleUserResponseCreate("system-event", 50);
   };
@@ -1385,7 +1354,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const IIZI_INSTR_EMERGENCY =
     "Tundub hädaolukord. Vasta eesti keeles lühidalt: palu klienti helistada 112, või suuname kohe inimese juurde. Ära saada autoabi SMS-i.";
   const IIZI_INSTR_CLARIFY =
-    'Küsi täpselt ühe lühilausega eesti keeles: "Kas Teil on hetkel vaja autoabi?"';
+    'Küsi täpselt ühe lühilausega eesti keeles: "Kas Teil on vaja autoabi või on muu IIZI küsimus?"';
 
   /**
    * Called after the IIZI brain resolves the first incident intent on a Whisper transcript.
@@ -1418,6 +1387,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       reasonTag = "non_roadside";
       instructions = IIZI_INSTR_NON_ROADSIDE;
       liftSuppression = true;
+      logIiziFlowAction(callId, "route_non_roadside_human");
     } else if (intent === "emergency_handoff") {
       reasonTag = "emergency_handoff";
       instructions = IIZI_INSTR_EMERGENCY;
@@ -1430,6 +1400,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
 
     console.log(`[IiziGate] controlled_response_created reason=${reasonTag} callId=${callId}`);
+
+    if (reasonTag === "clarify_unknown") {
+      setIiziBrainAwaitingYesNoRoadsideClarification(iiziBrainRef.current, true);
+    } else {
+      setIiziBrainAwaitingYesNoRoadsideClarification(iiziBrainRef.current, false);
+    }
 
     if (liftSuppression) {
       sendIiziVadCreateResponseFlag(true, `lift_after_${reasonTag}`);
@@ -2866,18 +2842,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (typeof event.transcript === "string" && event.transcript.trim().length > 0) {
               userUtteranceCount += 1;
               const callerSpeechLower = event.transcript.toLowerCase();
-              const matchedRoadsideTrigger = OCCUPANT_REQUIRED_ROADSIDE_TRIGGERS.find((kw) =>
-                callerSpeechLower.includes(kw)
+              const matchedRoadsideTrigger = IIZI_ROADSIDE_OCCUPANT_KEYWORDS.find((kw) =>
+                callerSpeechLower.includes(kw),
               );
               if (matchedRoadsideTrigger && !roadsideContextActive) {
                 roadsideContextActive = true;
               }
               if (!incidentNeedsOccupantCount) {
-                const matchedPassengerTrigger = OCCUPANT_REQUIRED_PASSENGER_TRIGGERS.find((kw) =>
-                  callerSpeechLower.includes(kw)
+                const matchedPassengerTrigger = IIZI_PASSENGER_OCCUPANT_KEYWORDS.find((kw) =>
+                  callerSpeechLower.includes(kw),
                 );
                 const matchedTrigger = matchedRoadsideTrigger || (roadsideContextActive ? matchedPassengerTrigger : null);
                 if (matchedTrigger) {
+                  if (iiziTowTransportFlowHint(callerSpeechLower)) {
+                    logIiziFlowAction(callId, "ask_tow_transport_check");
+                  }
                   incidentNeedsOccupantCount = true;
                   occupantCountStatus = "pending";
                   console.log(
@@ -2925,6 +2904,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     agent_domain: "IIZI roadside assistance intake",
                     caller_known: false,
                     last_bot_question: "",
+                    preSmsIntentLatchActive: useCombinedRegLocationSms && callDirection === "inbound",
                   };
                   let resolvedBeforeResponse = false;
                   try {
@@ -3919,6 +3899,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                   if (useCombinedRegLocationSms && tpl.name === COMBINED_SMS_TEMPLATE_NAME) {
                     console.log(`[IIZI-CombinedSMS] sent ok callId=${callId}`);
+                    logIiziFlowAction(callId, "send_combined_reg_location_sms");
                   }
                   if (tpl.name === "Asukoha SMS") {
                     setLocationStatus("pending", "location_sms_sent", null);
@@ -4442,6 +4423,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       agent_domain: "IIZI roadside assistance intake",
                       caller_known: false,
                       last_bot_question: "",
+                      preSmsIntentLatchActive: useCombinedRegLocationSms && callDirection === "inbound",
                     };
                     // Fire-and-forget: SMS gate is re-checked when tool is actually called.
                     // Final log emitted after resolver settles so semantic verdict (if any) is reflected.

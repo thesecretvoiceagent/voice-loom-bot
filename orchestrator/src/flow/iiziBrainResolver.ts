@@ -31,6 +31,8 @@ export interface IiziBrainResolveContext {
   agent_domain?: string;
   caller_known?: boolean;
   last_bot_question?: string;
+  /** When true, apply call-local pre-SMS decisive intent latch (IIZI combined inbound only). */
+  preSmsIntentLatchActive?: boolean;
 }
 
 const DEFAULT_SEMANTIC_CONFIDENCE_MIN = 0.6;
@@ -158,6 +160,70 @@ async function callSemanticIfNeeded(
  *   4. Always update `finalResolvedIntent`, `intentResolutionReason`,
  *      `classifierSource`, `transcriptSourceUsed` on state.
  */
+function isDecisivePreSmsIntent(r: ResolvedIntent): boolean {
+  return r === "roadside" || r === "non_roadside" || r === "emergency_handoff";
+}
+
+/**
+ * Affirmative / negative / branch replies after the pre-SMS clarification question
+ * (“Kas Teil on vaja autoabi või on muu IIZI küsimus?” / legacy shorter variants).
+ * Exported for smoke tests only — runtime uses {@link resolveFinalIntent}.
+ */
+export function matchYesNoRoadsideClarification(text: string): "yes" | "no" | null {
+  const t = text
+    .trim()
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  if (!t) return null;
+
+  // Non-roadside / office / policy cues (prefer before short “ja” yes).
+  if (
+    /\b(muu|kindlustus|kontor|arve|leping|poliis)\b/.test(t) &&
+    t.length <= 120
+  ) {
+    return "no";
+  }
+  if (/^(ei|ei vaja|pole vaja)$/.test(t)) return "no";
+
+  if (/^(jah|jaa|ja|muidugi)$/.test(t)) return "yes";
+  if (/\b(on vaja|vajan|autoabi)\b/.test(t) && t.length <= 56) return "yes";
+  if (
+    /\b(diisel|bensiin|aku|puksiir|rehv|auto ei käivitu|auto ei sõida)\b/.test(t) &&
+    t.length <= 96
+  ) {
+    return "yes";
+  }
+  return null;
+}
+
+function latchPreSmsIntentIfNeeded(
+  state: IiziBrainRuntimeState,
+  latchOn: boolean,
+  candidate: ResolvedIntent,
+  sourceLabel: string,
+  ctx: IiziBrainResolveContext,
+): void {
+  if (!latchOn || !isDecisivePreSmsIntent(candidate)) return;
+  if (state.preSmsLatchedIntent != null) return;
+  state.preSmsLatchedIntent = candidate;
+  console.log(
+    `[IiziLatch] intent_latched intent=${candidate} source=${sourceLabel} callId=${ctx.callId || "?"}`,
+  );
+}
+
+/**
+ * Compute the final SMS-gate intent.
+ *
+ * Behavior:
+ *   1. Optional yes/no resolution after clarification (narrow phrase match).
+ *   2. Compute regex merge (existing logic).
+ *   3. If regex consensus is clear (roadside / non_roadside / emergency_handoff) → keep it.
+ *   4. If regex is unknown / unknown_conflict AND at least one transcript is non-empty,
+ *      call semantic classifier when enabled.
+ *   5. Apply pre-SMS latch (IIZI combined inbound): decisive intent cannot be downgraded
+ *      to unknown / unknown_conflict by later non-decisive resolutions.
+ */
 export async function resolveFinalIntent(
   state: IiziBrainRuntimeState,
   ctx: IiziBrainResolveContext = {},
@@ -165,58 +231,124 @@ export async function resolveFinalIntent(
   const oaText = state.lastOpenaiIntentTranscriptPreview || "";
   const dgText = state.lastDeepgramIntentTranscriptPreview || "";
 
+  const latchOn =
+    ctx.preSmsIntentLatchActive === true &&
+    state.workflowPhase === "pre_sms_intent_gate" &&
+    !state.combinedSmsSuccessfullySent;
+
+  if (latchOn && state.awaitingYesNoRoadsideClarification) {
+    const yn = matchYesNoRoadsideClarification(oaText) ?? matchYesNoRoadsideClarification(dgText);
+    if (yn === "yes") {
+      state.finalResolvedIntent = "roadside";
+      state.intentResolutionReason = "yes_no_clarification_yes";
+      state.classifierSource = "merge";
+      state.transcriptSourceUsed = oaText.trim() ? "openai_realtime" : "deepgram";
+      state.preSmsLatchedIntent = "roadside";
+      state.awaitingYesNoRoadsideClarification = false;
+      state.semanticIntent = "unknown";
+      state.semanticConfidence = 0;
+      state.semanticReason = "skipped_after_yes_no";
+      state.semanticNormalizedIssue = "";
+      state.semanticTranscriptSourceUsed = "none";
+      console.log(
+        `[IiziLatch] yes_no_clarification_resolved answer=yes resolved=roadside callId=${ctx.callId || "?"}`,
+      );
+      return;
+    }
+    if (yn === "no") {
+      state.finalResolvedIntent = "non_roadside";
+      state.intentResolutionReason = "yes_no_clarification_no";
+      state.classifierSource = "merge";
+      state.transcriptSourceUsed = oaText.trim() ? "openai_realtime" : "deepgram";
+      state.preSmsLatchedIntent = "non_roadside";
+      state.awaitingYesNoRoadsideClarification = false;
+      state.semanticIntent = "unknown";
+      state.semanticConfidence = 0;
+      state.semanticReason = "skipped_after_yes_no";
+      state.semanticNormalizedIssue = "";
+      state.semanticTranscriptSourceUsed = "none";
+      console.log(
+        `[IiziLatch] yes_no_clarification_resolved answer=no resolved=non_roadside callId=${ctx.callId || "?"}`,
+      );
+      return;
+    }
+  }
+
   const regex = computeRegexMergedIntent(state);
   const regexClear =
     regex.resolved === "roadside" ||
     regex.resolved === "non_roadside" ||
     regex.resolved === "emergency_handoff";
 
+  let candidate: ResolvedIntent;
+  let reason: string;
+  let classifierSource: "regex" | "semantic" | "merge";
+  let transcriptSourceUsed: SemanticTranscriptSourceUsed;
+
   if (regexClear) {
-    state.finalResolvedIntent = regex.resolved;
-    state.intentResolutionReason = regex.reason;
-    state.classifierSource = "regex";
-    state.transcriptSourceUsed = chooseTranscriptSourceForRegex(state);
+    candidate = regex.resolved;
+    reason = regex.reason;
+    classifierSource = "regex";
+    transcriptSourceUsed = chooseTranscriptSourceForRegex(state);
+  } else if (!isSemanticEnabled(state)) {
+    candidate = regex.resolved;
+    reason = regex.reason;
+    classifierSource = "regex";
+    transcriptSourceUsed = "none";
+  } else {
+    const semantic = await callSemanticIfNeeded(state, ctx, oaText, dgText);
+    if (!semantic) {
+      candidate = regex.resolved;
+      reason = `${regex.reason}_no_transcript_for_semantic`;
+      classifierSource = "regex";
+      transcriptSourceUsed = "none";
+    } else {
+      const threshold = getSemanticConfidenceMin();
+      const semanticUsable =
+        semantic.intent !== "unknown" && semantic.confidence >= threshold;
+
+      if (!semanticUsable) {
+        candidate = regex.resolved;
+        reason =
+          semantic.intent === "unknown"
+            ? `${regex.reason}_semantic_unknown_${semantic.reason}`
+            : `${regex.reason}_semantic_low_conf_${semantic.confidence.toFixed(2)}`;
+        classifierSource = "merge";
+        transcriptSourceUsed = semantic.transcript_source_used;
+      } else {
+        candidate = semantic.intent;
+        reason =
+          `semantic_${semantic.intent}_conf${semantic.confidence.toFixed(2)}` +
+          `_src${semantic.transcript_source_used}_reason_${slugifyReason(semantic.reason)}`;
+        classifierSource = "semantic";
+        transcriptSourceUsed = semantic.transcript_source_used;
+      }
+    }
+  }
+
+  if (
+    latchOn &&
+    state.preSmsLatchedIntent != null &&
+    isDecisivePreSmsIntent(state.preSmsLatchedIntent) &&
+    (candidate === "unknown" || candidate === "unknown_conflict")
+  ) {
+    console.log(
+      `[IiziLatch] downgrade_blocked from=${state.preSmsLatchedIntent} attempted=${candidate} ` +
+        `reason=non_decisive_late_transcript callId=${ctx.callId || "?"}`,
+    );
+    state.finalResolvedIntent = state.preSmsLatchedIntent;
+    state.intentResolutionReason = `latched_preserved_${state.preSmsLatchedIntent}_blocked_${candidate}`;
+    state.classifierSource = classifierSource;
+    state.transcriptSourceUsed = transcriptSourceUsed;
     return;
   }
 
-  if (!isSemanticEnabled(state)) {
-    state.finalResolvedIntent = regex.resolved;
-    state.intentResolutionReason = regex.reason;
-    state.classifierSource = "regex";
-    state.transcriptSourceUsed = "none";
-    return;
-  }
+  state.finalResolvedIntent = candidate;
+  state.intentResolutionReason = reason;
+  state.classifierSource = classifierSource;
+  state.transcriptSourceUsed = transcriptSourceUsed;
 
-  const semantic = await callSemanticIfNeeded(state, ctx, oaText, dgText);
-  if (!semantic) {
-    state.finalResolvedIntent = regex.resolved;
-    state.intentResolutionReason = `${regex.reason}_no_transcript_for_semantic`;
-    state.classifierSource = "regex";
-    state.transcriptSourceUsed = "none";
-    return;
-  }
-
-  const threshold = getSemanticConfidenceMin();
-  const semanticUsable =
-    semantic.intent !== "unknown" && semantic.confidence >= threshold;
-
-  if (!semanticUsable) {
-    state.finalResolvedIntent = regex.resolved;
-    state.intentResolutionReason =
-      semantic.intent === "unknown"
-        ? `${regex.reason}_semantic_unknown_${semantic.reason}`
-        : `${regex.reason}_semantic_low_conf_${semantic.confidence.toFixed(2)}`;
-    state.classifierSource = "merge";
-    state.transcriptSourceUsed = semantic.transcript_source_used;
-    return;
-  }
-
-  state.finalResolvedIntent = semantic.intent;
-  state.intentResolutionReason =
-    `semantic_${semantic.intent}_conf${semantic.confidence.toFixed(2)}` +
-    `_src${semantic.transcript_source_used}_reason_${slugifyReason(semantic.reason)}`;
-  state.classifierSource = "semantic";
-  state.transcriptSourceUsed = semantic.transcript_source_used;
+  latchPreSmsIntentIfNeeded(state, latchOn, candidate, classifierSource, ctx);
 }
 
 /** Convenience wrapper: resolve, then log. Use this from media-stream. */
