@@ -34,6 +34,7 @@ import {
   iiziTowTransportFlowHint,
 } from "../flow/iiziInboundOccupantHeuristics.js";
 import { resolveFinalIntent, type IiziBrainResolveContext } from "../flow/iiziBrainResolver.js";
+import { formatIiziRoadsideMirrorControlledInstruction } from "../flow/iiziRoadsideMirrorText.js";
 import { fetchLatestEnabledBrainConfigRow } from "../agentBrainConfigRepo.js";
 import { recordIiziShadowTrace } from "../flow/trace.js";
 import type { AgentBrainConfig } from "../brain/agentBrainUiTypes.js";
@@ -675,6 +676,81 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const prev = smsToolState.get(templateName) || "not_requested";
     smsToolState.set(templateName, next);
     console.log(`[MediaStream] smsToolState transition template="${templateName}" from=${prev} to=${next} reason=${reason} (callId=${callId})`);
+  };
+
+  /** One-shot: deterministic callback SMS after combined reg+location SMS (roadside only). */
+  let roadsideAutoCallbackAfterCombinedRequested = false;
+  let roadsideAutoCallbackAlwaysSendLogged = false;
+
+  const runRoadsideAutoCallbackSmsAfterCombined = async (trigger: string) => {
+    if (!useCombinedRegLocationSms || callDirection !== "inbound") {
+      console.log(`[IIZI-CallbackSMS] blocked/skipped reason=not_iizi_inbound callId=${callId}`);
+      return;
+    }
+    if (iiziBrainRef.current.finalResolvedIntent !== "roadside") {
+      console.log(`[IIZI-CallbackSMS] blocked/skipped reason=intent_not_roadside callId=${callId}`);
+      return;
+    }
+    if (!roadsideAutoCallbackAlwaysSendLogged) {
+      roadsideAutoCallbackAlwaysSendLogged = true;
+      console.log(`[IIZI-CallbackSMS] always_send_enabled callId=${callId}`);
+    }
+    if (smsSentNames.has(CALLBACK_SMS_TEMPLATE_NAME) || smsToolState.get(CALLBACK_SMS_TEMPLATE_NAME) === "sent") {
+      console.log(`[IIZI-CallbackSMS] blocked/skipped reason=callback_already_sent callId=${callId}`);
+      return;
+    }
+    const tplCb = smsMessages.find((m) => m.trigger === "during" && m.name === CALLBACK_SMS_TEMPLATE_NAME);
+    if (!tplCb) {
+      console.warn(`[IIZI-CallbackSMS] blocked/skipped reason=callback_template_missing callId=${callId}`);
+      return;
+    }
+    const recipientCb = fromNumber;
+    if (!recipientCb) {
+      console.warn(`[IIZI-CallbackSMS] blocked/skipped reason=missing_recipient callId=${callId}`);
+      return;
+    }
+    console.log(`[IIZI-CallbackSMS] send_requested_after_combined_sms callId=${callId} trigger=${trigger}`);
+    setSmsToolState(tplCb.name, "pending", "roadside_auto_after_combined");
+    const bodyCb = substituteVarsRef(tplCb.content);
+    try {
+      const r = await sendSms(recipientCb, bodyCb);
+      if (r.ok) {
+        smsSentNames.add(tplCb.name);
+        setSmsToolState(tplCb.name, "sent", "roadside_auto_twilio_success");
+        callbackSmsRequestedWhileBlocked = false;
+        callbackSmsSent = true;
+        callbackPending = true;
+        callbackMode = "different_number_sms";
+        console.log(`[IIZI-CallbackSMS] sent ok callId=${callId} source=auto_after_combined`);
+        persistSmsMessage({
+          call_id: callId || null,
+          agent_id: resolvedAgentIdRef,
+          template_name: tplCb.name,
+          direction: "outbound",
+          from_number: config.twilio.fromNumber || "",
+          to_number: recipientCb,
+          body: bodyCb,
+          twilio_sid: r.sid || null,
+          status: r.status || "sent",
+        }).catch(() => {});
+        recordIiziShadowTrace({
+          callId,
+          agentId: resolvedAgentIdRef,
+          iiziCombinedMode: useCombinedRegLocationSms,
+          eventType: "sms_sent",
+          payload: { template_name: tplCb.name, twilio_sid: r.sid ?? null, source: "auto_after_combined" },
+          stateRef: iiziShadowStateRef,
+        });
+      } else {
+        setSmsToolState(tplCb.name, "failed", `roadside_auto_twilio_failed:${r.error || r.status || "unknown"}`);
+        console.warn(
+          `[IIZI-CallbackSMS] blocked/skipped reason=twilio_send_failed err=${r.error || r.status || "-"} callId=${callId}`,
+        );
+      }
+    } catch (err) {
+      setSmsToolState(tplCb.name, "failed", "roadside_auto_exception");
+      console.error(`[IIZI-CallbackSMS] blocked/skipped reason=send_exception callId=${callId}`, err);
+    }
   };
 
   const setLocationStatus = (
@@ -1544,8 +1620,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   // Compact backend prompts for the controlled responses — kept short on purpose;
   // the live system prompt remains the primary instruction surface.
-  const IIZI_INSTR_ROADSIDE =
-    "Said aru, et helistaja vajab autoabi. Ütle lühidalt eesti keeles, et saadad nüüd SMS-i, kus klient saab sisestada auto registreerimisnumbri ja kinnitada asukoha, ning et tegele autoabi vooga edasi.";
   const IIZI_INSTR_NON_ROADSIDE =
     "Kõne ei puuduta autoabi. Vasta eesti keeles lühidalt, et see liin on autoabi jaoks, ja paku tagasihelistamist või kontorinumbrit. Ära luba ega saada SMS-i.";
   const IIZI_INSTR_EMERGENCY =
@@ -1578,7 +1652,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
     if (intent === "roadside") {
       reasonTag = "roadside_intent_resolved";
-      instructions = IIZI_INSTR_ROADSIDE;
+      instructions = formatIiziRoadsideMirrorControlledInstruction(s);
       liftSuppression = true;
     } else if (intent === "non_roadside") {
       reasonTag = "non_roadside";
@@ -4136,6 +4210,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   if (useCombinedRegLocationSms && tpl.name === COMBINED_SMS_TEMPLATE_NAME) {
                     console.log(`[IIZI-CombinedSMS] sent ok callId=${callId}`);
                     logIiziFlowAction(callId, "send_combined_reg_location_sms");
+                    if (
+                      callDirection === "inbound" &&
+                      iiziBrainRef.current.finalResolvedIntent === "roadside" &&
+                      !roadsideAutoCallbackAfterCombinedRequested
+                    ) {
+                      roadsideAutoCallbackAfterCombinedRequested = true;
+                      void runRoadsideAutoCallbackSmsAfterCombined("after_combined_tool_success");
+                    }
                   }
                   if (tpl.name === "Asukoha SMS") {
                     setLocationStatus("pending", "location_sms_sent", null);
@@ -4694,13 +4776,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           connectToOpenAI();
           try {
             const sttBrainHooks: SttShadowBrainHooks = {
-              onDeepgramFinal: ({ callId: sttCallId, text }) => {
+              onDeepgramFinal: (payload) => {
+                const { text, isFinal, speechFinal, msgType } = payload;
                 try {
                   if (!useCombinedRegLocationSms || callDirection !== "inbound") return;
+                  console.log(
+                    `[DeepgramFinal] brain_ingest_begin isFinal=${isFinal} speechFinal=${speechFinal} msgType=${msgType} textLen=${text.length} callId=${payload.callId || callId}`,
+                  );
                   const shadowIngest = ingestIiziBrainTrustedShadowFinal(iiziBrainRef.current, "deepgram", text);
+                  console.log(
+                    `[DeepgramFinal] brain_ingest_done skippedAggressiveMutation=${shadowIngest.skippedAggressiveMutation} shouldLogIntentResolution=${shadowIngest.shouldLogIntentResolution} callId=${payload.callId || callId}`,
+                  );
                   if (shadowIngest.shouldLogIntentResolution) {
                     const resolverCtx: IiziBrainResolveContext = {
-                      callId: sttCallId || callId || null,
+                      callId: payload.callId || callId || null,
                       call_direction: "inbound",
                       agent_domain: "IIZI roadside assistance intake",
                       caller_known: false,
@@ -4712,19 +4801,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     void resolveFinalIntent(iiziBrainRef.current, resolverCtx)
                       .catch((resolveErr) => {
                         console.error(
-                          `[IIZI-Brain] semantic_resolver_failed_deepgram_path callId=${sttCallId || callId || "?"}`,
+                          `[IIZI-Brain] semantic_resolver_failed_deepgram_path callId=${payload.callId || callId || "?"}`,
                           resolveErr,
                         );
                       })
                       .finally(() => {
-                        logIiziBrainIntentResolution(sttCallId || callId || null, iiziBrainRef.current);
+                        logIiziBrainIntentResolution(payload.callId || callId || null, iiziBrainRef.current);
                       });
                   }
                   const snap = evaluateIiziBrain(iiziBrainRef.current, true);
-                  logIiziBrainTrustedShadowTranscript(sttCallId || callId || null, "deepgram", text, snap);
+                  logIiziBrainTrustedShadowTranscript(payload.callId || callId || null, "deepgram", text, snap);
                 } catch (brainShadowErr) {
                   console.error(
-                    `[IIZI-Brain] trusted_shadow_ingest_failed callId=${sttCallId || callId || "?"}`,
+                    `[IIZI-Brain] trusted_shadow_ingest_failed callId=${payload.callId || callId || "?"}`,
                     brainShadowErr,
                   );
                 }

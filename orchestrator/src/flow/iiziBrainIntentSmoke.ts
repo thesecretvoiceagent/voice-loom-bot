@@ -24,6 +24,10 @@ import {
 } from "./iiziBrain.js";
 import { resolveFinalIntent, matchYesNoRoadsideClarification } from "./iiziBrainResolver.js";
 import {
+  formatIiziRoadsideMirrorControlledInstruction,
+  getIiziRoadsideMirrorIssueSummary,
+} from "./iiziRoadsideMirrorText.js";
+import {
   setSemanticClassifierForTests,
   type SemanticClassifierInput,
   type SemanticClassifierResult,
@@ -255,6 +259,9 @@ async function run(): Promise<void> {
   expectHybrid("generator ei tööta", compiled, "roadside", "generator failure roadside cue (EN word)");
   expectHybrid("generaator ei lae", compiled, "roadside", "generator not charging / alternator cue");
   expectHybrid("soovin kindlustuse kohta infot", compiled, "non_roadside", "insurance info office line");
+
+  expectHybrid("ratas tuli alt ära", compiled, "roadside", "wheel / tire came off ET");
+  expectHybrid("tire came off", compiled, "roadside", "wheel / tire came off EN");
 
   expectNoIntentMatch(
     "Tere tere hommikust kuidas teil läheb mina helistan lihtsalt",
@@ -580,12 +587,33 @@ async function run(): Promise<void> {
     );
   }
 
+  {
+    const st = createInitialIiziBrainState();
+    st.finalResolvedIntent = "roadside";
+    st.semanticNormalizedIssue = "sai autoaku tühjaks";
+    const instr = formatIiziRoadsideMirrorControlledInstruction(st);
+    assert.ok(instr.includes("Saan aru, et Teil sai autoaku tühjaks"), "mirror uses semantic normalized issue");
+    assert.ok(
+      instr.includes("Saadan Teile nüüd SMS-i, kus saate sisestada auto registreerimisnumbri"),
+      "mirror includes SMS clause",
+    );
+  }
+  {
+    const st = createInitialIiziBrainState();
+    st.finalResolvedIntent = "roadside";
+    st.semanticNormalizedIssue = "";
+    st.lastOpenaiIntentTranscriptPreview = "mul sai aku tühjaks ja veel pikka teksti mis läheb üle piiri";
+    const summary = getIiziRoadsideMirrorIssueSummary(st);
+    assert.ok(summary.length <= 110, "mirror summary clipped");
+    assert.ok(summary.startsWith("mul sai aku"), "mirror fallback uses OpenAI preview");
+  }
+
   // Reset stub so it doesn't leak across test processes.
   setSemanticClassifierForTests(null);
 
   console.log(
     "OK intent-classify-smoke:",
-    "roadside/non_roadside/emergency/empty/unclear/merge-matrix/semantic-resolver/pre_sms_latch/clarify_matcher/heuristics/gates passed.",
+    "roadside/non_roadside/emergency/empty/unclear/merge-matrix/semantic-resolver/pre_sms_latch/clarify_matcher/heuristics/gates/roadside_mirror_text passed.",
   );
 }
 

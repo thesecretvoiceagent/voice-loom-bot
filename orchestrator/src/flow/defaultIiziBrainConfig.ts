@@ -128,6 +128,19 @@ export const DEFAULT_IIZI_BRAIN_CONFIG: IiziBrainConfigV1 = {
           ],
         },
         {
+          id: "wheel_or_tire_came_off",
+          examples: ["Ratas tuli alt ära", "Rehv tuli ära", "Wheel came off"],
+          keywords: [],
+          patterns: [
+            String.raw`\bratas\s+tuli\s+(?:alt\s+)?ära\b`,
+            String.raw`\brata\s+saalt\s+ära\b`,
+            String.raw`\brehv\s+tuli\s+(?:alt\s+)?ära\b`,
+            String.raw`\bratas\s+puudu\b`,
+            String.raw`\b(?:tire|wheel)\s+came\s+off\b`,
+            String.raw`\b(?:tire|wheel)\s+missing\b`,
+          ],
+        },
+        {
           id: "battery",
           keywords: ["aku tühi"],
           patterns: [],

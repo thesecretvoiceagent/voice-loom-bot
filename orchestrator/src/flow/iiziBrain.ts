@@ -125,6 +125,11 @@ export interface IiziBrainRuntimeState {
   lastOpenaiIntentTranscriptPreview: string;
   /** Last trimmed Deepgram shadow final transcript slice used for intent. */
   lastDeepgramIntentTranscriptPreview: string;
+  /**
+   * Last non-empty Deepgram shadow text from a trusted final hook (including sub-threshold
+   * snippets) — for TranscriptCompare when intent ingest skipped short/empty payloads.
+   */
+  lastDeepgramShadowTextPreview: string;
 
   /** Last semantic classifier verdict — only populated when semantic ran. */
   semanticIntent: SemanticClassifyIntent;
@@ -278,6 +283,7 @@ export function createInitialIiziBrainState(): IiziBrainRuntimeState {
     intentCompareTurnSeq: 0,
     lastOpenaiIntentTranscriptPreview: "",
     lastDeepgramIntentTranscriptPreview: "",
+    lastDeepgramShadowTextPreview: "",
     semanticIntent: "unknown",
     semanticConfidence: 0,
     semanticReason: "",
@@ -343,11 +349,14 @@ function clipForTranscriptCompare(s: string): string {
 export function logTranscriptCompare(callId: string | null, state: IiziBrainRuntimeState): void {
   const gate = smsGatePeek(state);
   const oaT = clipForTranscriptCompare(state.lastOpenaiIntentTranscriptPreview || "");
-  const dgT = clipForTranscriptCompare(state.lastDeepgramIntentTranscriptPreview || "");
+  const dgIntent = clipForTranscriptCompare(state.lastDeepgramIntentTranscriptPreview || "");
+  const dgShadow = clipForTranscriptCompare(state.lastDeepgramShadowTextPreview || "");
+  const dgT = dgShadow || dgIntent;
   const ev = evaluateIiziBrain(state, false);
   console.log(
     `[TranscriptCompare] callId=${callId || "?"} turnSeq=${state.intentCompareTurnSeq} ` +
       `openaiTranscript="${oaT}" deepgramTranscript="${dgT}" ` +
+      `deepgramIntentPreview="${dgIntent}" deepgramShadowPreview="${dgShadow}" ` +
       `regexIntentOpenAI=${state.openaiRealtimeIntent} regexIntentDeepgram=${state.deepgramShadowIntent} ` +
       `semanticIntent=${state.semanticIntent} semanticConfidence=${state.semanticConfidence.toFixed(2)} ` +
       `transcriptSourceUsed=${state.transcriptSourceUsed} classifierSource=${state.classifierSource} ` +
@@ -390,6 +399,8 @@ export function ingestIiziBrainTrustedShadowFinal(
     state.lastObservedEvent = `trusted_transcript_shadow.${provider}.empty`;
     return { skippedAggressiveMutation: true, shouldLogIntentResolution: false };
   }
+
+  state.lastDeepgramShadowTextPreview = t.slice(0, 400);
 
   const shortAndAmbiguous = t.length < 4;
   if (shortAndAmbiguous) {
@@ -450,6 +461,7 @@ export function ingestIiziBrainFlow(
       state.intentCompareTurnSeq = 0;
       state.lastOpenaiIntentTranscriptPreview = "";
       state.lastDeepgramIntentTranscriptPreview = "";
+      state.lastDeepgramShadowTextPreview = "";
       state.brainClassifierForceBuiltinFallback = false;
       resetSemanticScratch(state);
       resetPreSmsIntentLatch(state);
@@ -500,6 +512,7 @@ export function ingestIiziBrainFlow(
       state.intentCompareTurnSeq = 0;
       state.lastOpenaiIntentTranscriptPreview = "";
       state.lastDeepgramIntentTranscriptPreview = "";
+      state.lastDeepgramShadowTextPreview = "";
       state.brainClassifierForceBuiltinFallback = false;
       resetSemanticScratch(state);
       resetPreSmsIntentLatch(state);

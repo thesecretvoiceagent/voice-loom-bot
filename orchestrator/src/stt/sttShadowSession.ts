@@ -5,7 +5,13 @@ import type { SttStreamingAdapterHandle } from "./types.js";
 
 export interface SttShadowBrainHooks {
   /** Deepgram finalized utterances (shadow); must never throw downstream */
-  onDeepgramFinal?: (payload: { callId: string; text: string }) => void;
+  onDeepgramFinal?: (payload: {
+    callId: string;
+    text: string;
+    isFinal: boolean;
+    speechFinal: boolean;
+    msgType: string;
+  }) => void;
 }
 
 let loggedShadowDisabledGlobally = false;

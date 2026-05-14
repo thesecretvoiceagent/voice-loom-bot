@@ -15,8 +15,17 @@ export interface DeepgramSttShadowOpts {
   language: string;
   endpointingMs: number | null;
   smartFormat: boolean;
-  /** Fires on Deepgram is_final transcripts with non-empty text; read-only orchestration hooks */
-  onTrustedFinal?: (payload: { callId: string; text: string }) => void;
+  /**
+   * Fires on Deepgram transcripts with non-empty text when `is_final` or `speech_final` is true
+   * (some streams only set `speech_final` for the utterance end).
+   */
+  onTrustedFinal?: (payload: {
+    callId: string;
+    text: string;
+    isFinal: boolean;
+    speechFinal: boolean;
+    msgType: string;
+  }) => void;
 }
 
 /** Deepgram Listen v1 rejects unknown model slugs (HTTP 400 on WS upgrade); map legacy/env typos here. */
@@ -47,17 +56,22 @@ function listenQuerySanitized(opts: DeepgramSttShadowOpts, effectiveModel: strin
   };
   if (opts.endpointingMs !== null) q.endpointing = String(opts.endpointingMs);
   if (opts.smartFormat) q.smart_format = "true";
+  q.interim_results = "true";
   return q;
 }
 
-function logShadowTranscript(callId: string, text: string, isFinal: boolean): void {
-  const preview = text.slice(0, 400).replace(/\s+/g, " ").trim();
-  console.log(
-    `[STT] transcript callId=${callId} provider=deepgram isFinal=${isFinal} text="${preview}"`,
-  );
-  console.log(
-    `[STT-Brain-Shadow] callId=${callId} provider=deepgram transcript="${preview}" isFinal=${isFinal}`,
-  );
+function extractDeepgramTranscript(msg: {
+  type?: string;
+  is_final?: boolean;
+  speech_final?: boolean;
+  channel?: { alternatives?: Array<{ transcript?: string }> };
+  channels?: Array<{ alternatives?: Array<{ transcript?: string }> }>;
+}): string {
+  const a = msg.channel?.alternatives?.[0]?.transcript;
+  if (typeof a === "string" && a.trim()) return a.trim();
+  const b = msg.channels?.[0]?.alternatives?.[0]?.transcript;
+  if (typeof b === "string" && b.trim()) return b.trim();
+  return "";
 }
 
 export function createDeepgramSttShadowAdapter(opts: DeepgramSttShadowOpts): SttStreamingAdapterHandle {
@@ -142,19 +156,37 @@ export function createDeepgramSttShadowAdapter(opts: DeepgramSttShadowOpts): Stt
           const msg = JSON.parse(raw) as {
             type?: string;
             is_final?: boolean;
+            speech_final?: boolean;
             channel?: { alternatives?: Array<{ transcript?: string }> };
+            channels?: Array<{ alternatives?: Array<{ transcript?: string }> }>;
           };
-          if (msg.type === "SpeechStarted") return;
-          const text = msg.channel?.alternatives?.[0]?.transcript?.trim() ?? "";
-          if (!text) return;
+          const msgType = typeof msg.type === "string" ? msg.type : "";
+          if (msgType === "SpeechStarted") return;
+          const text = extractDeepgramTranscript(msg);
           const isFinal = Boolean(msg.is_final);
-          logShadowTranscript(activeCallId, text, isFinal);
-          if (isFinal) {
-            try {
-              opts.onTrustedFinal?.({ callId: activeCallId, text });
-            } catch (cbErr) {
-              console.error(`[STT] trusted_final_hook_failed callId=${activeCallId}`, cbErr);
-            }
+          const speechFinal = Boolean(msg.speech_final);
+          const preview = text.slice(0, 400).replace(/\s+/g, " ").trim();
+          const hookFires = Boolean(text) && (isFinal || speechFinal);
+          const shouldLog =
+            hookFires ||
+            msgType === "UtteranceEnd" ||
+            (msgType === "Results" && (Boolean(text) || isFinal || speechFinal));
+          if (shouldLog) {
+            console.log(
+              `[DeepgramFinal] type=${msgType || "?"} text="${preview}" isFinal=${isFinal} speechFinal=${speechFinal} hookFires=${hookFires} callId=${activeCallId}`,
+            );
+          }
+          if (!hookFires) return;
+          try {
+            opts.onTrustedFinal?.({
+              callId: activeCallId,
+              text,
+              isFinal,
+              speechFinal,
+              msgType: msgType || "?",
+            });
+          } catch (cbErr) {
+            console.error(`[STT] trusted_final_hook_failed callId=${activeCallId}`, cbErr);
           }
         } catch {
           /* ignore malformed */
