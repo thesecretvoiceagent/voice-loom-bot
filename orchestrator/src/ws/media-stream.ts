@@ -1106,11 +1106,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     );
   };
 
-  /** Inbound caller-uplink only: true for first INITIAL_INBOUND_MUTE_MS after Twilio stream start. Never use as assistant/session gate. */
+  /** Inbound caller-uplink only: wall-clock from Twilio `start`; not tied to greeting/AudioGate/mark. */
   const initialInboundHardMuteActive = (): boolean => {
     if (callDirection !== "inbound") return false;
+    if (callStartedAt == null) return false;
     const windowMs = config.initialInboundMuteMs;
-    if (!windowMs || callStartedAt == null) return false;
+    if (windowMs <= 0) return false;
     return Date.now() - callStartedAt < windowMs;
   };
 
@@ -4732,6 +4733,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
         case "media":
           twilioInboundFrames += 1;
+          // Wall-clock expiry: log once when initial mute window ends (independent of greeting/AudioGate/forwarding).
+          if (callDirection === "inbound" && callStartedAt != null && config.initialInboundMuteMs > 0) {
+            const elapsedForExpiry = Date.now() - callStartedAt;
+            if (elapsedForExpiry >= config.initialInboundMuteMs && !initialHardMuteGateOpenedLogged) {
+              initialHardMuteGateOpenedLogged = true;
+              console.log(`[InitialMute] completed opening caller gate elapsedMs=${elapsedForExpiry} callId=${callId}`);
+            }
+          }
           // Inbound-only wall-clock mute: caller uplink only (not AudioGate / isCallerAudioMuted).
           if (callDirection === "inbound" && initialInboundHardMuteActive()) {
             twilioInboundFramesDropHardMute += 1;
@@ -4797,16 +4806,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN && sessionConfigured) {
             turnGateAcceptedFrames += 1;
             lastAcceptedCallerAudioAt = Date.now();
-            if (
-              callDirection === "inbound" &&
-              !initialHardMuteGateOpenedLogged &&
-              callStartedAt != null &&
-              config.initialInboundMuteMs > 0 &&
-              Date.now() - callStartedAt >= config.initialInboundMuteMs
-            ) {
-              initialHardMuteGateOpenedLogged = true;
-              console.log(`[InitialMute] completed opening caller gate elapsedMs=${Date.now() - callStartedAt} callId=${callId}`);
-            }
             if (turnGateAcceptedFrames === 1 || turnGateAcceptedFrames % 50 === 0) {
               console.log(`[TurnGate] accept caller audio reason=gate_open count=${turnGateAcceptedFrames} callId=${callId}`);
             }

@@ -42,14 +42,15 @@ export const config = {
   orchestratorAdminSecret: process.env.ORCHESTRATOR_ADMIN_SECRET || "",
 
   /**
-   * Inbound-only: wall-clock from Twilio media `start` — drop all caller uplink (OpenAI/Deepgram) for this many ms.
-   * Set to 0 to disable. Default 24000 (~24s) to cover long initial greetings without early spam turns.
+   * Inbound-only: wall-clock from Twilio media `start` — drop caller uplink (OpenAI/Deepgram) for this many ms.
+   * Env `INITIAL_INBOUND_MUTE_MS`: missing/empty/invalid → 23000; `0` disables; any positive integer is used as-is.
    */
   initialInboundMuteMs: (() => {
     const raw = process.env.INITIAL_INBOUND_MUTE_MS;
-    if (raw === undefined || raw === "") return 24_000;
+    if (raw === undefined || raw === "") return 23_000;
     const v = parseInt(raw, 10);
-    if (!Number.isFinite(v) || v < 0) return 24_000;
+    if (!Number.isFinite(v) || v < 0) return 23_000;
+    if (v === 0) return 0;
     return v;
   })(),
 };
