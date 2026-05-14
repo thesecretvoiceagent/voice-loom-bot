@@ -448,6 +448,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let initialHardMuteGateOpenedLogged = false;
   /** Log once: first assistant audio to Twilio during initial inbound hard mute + greeting. */
   let firstOutboundAssistantDuringInitialMuteLogged = false;
+  /** Log once: first caller uplink append after InitialMute window (inbound + mute enabled). */
+  let initialMuteFirstCallerAcceptLogged = false;
   let callSid: string = "";
   let campaignId: string = "";
   let callVariables: Record<string, string> = {};
@@ -4640,26 +4642,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           console.log("[MediaStream] Twilio stream connected");
           break;
 
-        case "start":
+        case "start": {
+          // Wall-clock for InitialMute: set immediately for inbound before any other start handling.
+          const inboundFromStart = msg.start?.customParameters?.direction === "inbound";
+          if (inboundFromStart) {
+            callStartedAt = Date.now();
+            initialHardMuteGateOpenedLogged = false;
+            firstOutboundAssistantDuringInitialMuteLogged = false;
+            initialMuteFirstCallerAcceptLogged = false;
+          } else {
+            callStartedAt = null;
+            initialHardMuteGateOpenedLogged = false;
+            firstOutboundAssistantDuringInitialMuteLogged = false;
+            initialMuteFirstCallerAcceptLogged = false;
+          }
           twilioStartReceived = true;
           streamSid = msg.start.streamSid;
           callId = msg.start.customParameters?.callId || "";
           agentId = msg.start.customParameters?.agentId || "";
           calledNumber = msg.start.customParameters?.calledNumber || "";
           fromNumber = msg.start.customParameters?.fromNumber || "";
-          callDirection = (msg.start.customParameters?.direction === "inbound" ? "inbound" : "outbound");
+          callDirection = inboundFromStart ? "inbound" : "outbound";
           callSid = msg.start.customParameters?.callSid || "";
           campaignId = msg.start.customParameters?.campaignId || "";
           bridgeSelfTest = msg.start.customParameters?.bridgeSelfTest || "";
-          if (callDirection === "inbound") {
-            callStartedAt = Date.now();
-            initialHardMuteGateOpenedLogged = false;
-            firstOutboundAssistantDuringInitialMuteLogged = false;
-          } else {
-            callStartedAt = null;
-            initialHardMuteGateOpenedLogged = false;
-            firstOutboundAssistantDuringInitialMuteLogged = false;
-          }
           logCallDeploymentIdentity();
           // Parse call variables
           const varsParam = msg.start.customParameters?.variables || "";
@@ -4730,6 +4736,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.error(`[STT] attach_failed`, sttAttachErr);
           }
           break;
+        }
 
         case "media":
           twilioInboundFrames += 1;
@@ -4738,7 +4745,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             const elapsedForExpiry = Date.now() - callStartedAt;
             if (elapsedForExpiry >= config.initialInboundMuteMs && !initialHardMuteGateOpenedLogged) {
               initialHardMuteGateOpenedLogged = true;
-              console.log(`[InitialMute] completed opening caller gate elapsedMs=${elapsedForExpiry} callId=${callId}`);
+              let forcedFreshCallerGateOpen = false;
+              if (requireFreshCallerAudioAfterAssistant) {
+                disarmInboundFreshCallerAudioRequirement("initial_mute_expired", "twilio.media");
+                forcedFreshCallerGateOpen = true;
+              }
+              console.log(
+                `[InitialMute] completed opening caller gate elapsedMs=${elapsedForExpiry} forcedFreshCallerGateOpen=${forcedFreshCallerGateOpen} callId=${callId}`,
+              );
             }
           }
           // Inbound-only wall-clock mute: caller uplink only (not AudioGate / isCallerAudioMuted).
@@ -4754,6 +4768,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             break;
           }
+          const elapsedSinceCallStart =
+            callDirection === "inbound" && callStartedAt != null ? Date.now() - callStartedAt : 0;
+          const postInboundInitialMute =
+            callDirection === "inbound" &&
+            config.initialInboundMuteMs > 0 &&
+            callStartedAt != null &&
+            elapsedSinceCallStart >= config.initialInboundMuteMs;
           // AudioGate (PR#8): hard mute regardless of anti_barge_in / interrupt_response.
           if (isCallerAudioMuted()) {
             const hardMuteReason = greetingInProgress ? "greeting_playing"
@@ -4767,7 +4788,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             turnGateDropCounts[hardMuteReason] = (turnGateDropCounts[hardMuteReason] || 0) + 1;
             const dropCount = turnGateDropCounts[hardMuteReason];
             if (dropCount === 1 || dropCount % 25 === 0) {
-              console.log(`[AudioGate] Dropped caller audio: reason=assistant_playback_hard_mute muteReason=${hardMuteReason} count=${dropCount} frame=${twilioInboundFrames} callId=${callId}`);
+              console.log(
+                `[AudioGate] Dropped caller audio: reason=assistant_playback_hard_mute muteReason=${hardMuteReason} count=${dropCount} frame=${twilioInboundFrames} postInitialMute=${postInboundInitialMute} callId=${callId}`,
+              );
             }
             break;
           }
@@ -4784,11 +4807,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             if (mediaBlockReason === "assistant_speaking") twilioInboundFramesDropAntiBargein += 1;
             turnGateDropCounts[mediaBlockReason] = (turnGateDropCounts[mediaBlockReason] || 0) + 1;
             const dropCount = turnGateDropCounts[mediaBlockReason];
+            if (postInboundInitialMute && mediaBlockReason === "waiting_for_fresh_caller_turn" && dropCount === 1) {
+              console.warn(
+                `[InitialMute] unexpected post-expiry drop reason=waiting_for_fresh_caller_turn callId=${callId}`,
+              );
+            }
             if (dropCount === 1 || dropCount % 25 === 0) {
               if (mediaBlockReason === "greeting_playing") {
                 console.log(`[GreetingGate] drop caller audio reason=greeting_playing frame=${twilioInboundFrames} callId=${callId}`);
               }
-              console.log(`[TurnGate] drop caller audio reason=${mediaBlockReason} count=${dropCount} callId=${callId}`);
+              const uplinkKind =
+                mediaBlockReason === "assistant_playback_hard_mute" || mediaBlockReason === "greeting_playing"
+                  ? "hard_mute_detail"
+                  : "soft_turn_gate";
+              console.log(
+                `[TurnGate] drop caller audio reason=${mediaBlockReason} count=${dropCount} postInitialMute=${postInboundInitialMute} uplinkKind=${uplinkKind} callId=${callId}`,
+              );
             }
             break;
           }
@@ -4806,6 +4840,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN && sessionConfigured) {
             turnGateAcceptedFrames += 1;
             lastAcceptedCallerAudioAt = Date.now();
+            if (
+              callDirection === "inbound" &&
+              config.initialInboundMuteMs > 0 &&
+              callStartedAt != null &&
+              !initialMuteFirstCallerAcceptLogged &&
+              Date.now() - callStartedAt >= config.initialInboundMuteMs
+            ) {
+              initialMuteFirstCallerAcceptLogged = true;
+              console.log(
+                `[InitialMute] first caller audio accepted after mute elapsedMs=${Date.now() - callStartedAt} callId=${callId}`,
+              );
+            }
             if (turnGateAcceptedFrames === 1 || turnGateAcceptedFrames % 50 === 0) {
               console.log(`[TurnGate] accept caller audio reason=gate_open count=${turnGateAcceptedFrames} callId=${callId}`);
             }
