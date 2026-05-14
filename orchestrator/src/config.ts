@@ -40,6 +40,18 @@ export const config = {
 
   /** Shared secret for orchestrator-local admin endpoints (brain-config, etc.) */
   orchestratorAdminSecret: process.env.ORCHESTRATOR_ADMIN_SECRET || "",
+
+  /**
+   * Inbound-only: wall-clock from Twilio media `start` — drop all caller uplink (OpenAI/Deepgram) for this many ms.
+   * Set to 0 to disable. Default 24000 (~24s) to cover long initial greetings without early spam turns.
+   */
+  initialInboundMuteMs: (() => {
+    const raw = process.env.INITIAL_INBOUND_MUTE_MS;
+    if (raw === undefined || raw === "") return 24_000;
+    const v = parseInt(raw, 10);
+    if (!Number.isFinite(v) || v < 0) return 24_000;
+    return v;
+  })(),
 };
 
 export function getDeploymentIdentity() {
