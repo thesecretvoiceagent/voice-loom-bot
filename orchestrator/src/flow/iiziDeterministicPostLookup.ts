@@ -5,13 +5,19 @@
 
 import { IIZI_DEFAULT_SAME_CALLBACK_LINE_ET, IIZI_OCCUPANT_COUNT_QUESTION_ET } from "./iiziInboundCopy.js";
 
-/** Strict English lock so the model cannot paraphrase or add confirmation questions. */
+const ASUKOHAKS_PREFIX = "Asukohaks on ";
+
+/**
+ * Maximal English lock: treat this turn as TTS only — no vehicle, reg, insurance, confirmation, questions.
+ */
 export function formatIiziDeterministicExactSentenceInstructionsEn(exactSentence: string): string {
   const s = exactSentence.trim();
   return (
-    `SAY EXACTLY THIS SENTENCE AND NOTHING ELSE. ` +
-    `Do not add words before or after. Do not ask questions. Do not translate. Do not paraphrase. Do not call tools.\n\n` +
-    `EXACT SENTENCE:\n"""${s}"""`
+    `You are a text-to-speech engine for this single response. ` +
+    `Say exactly this Estonian sentence and nothing else. ` +
+    `Do not mention vehicle, car, registration number, insurance, correctness, confirmation, or ask any question. ` +
+    `Do not add words before or after. Do not translate. Do not paraphrase. Do not call tools.\n\n` +
+    `Exact sentence:\n"""${s}"""`
   );
 }
 
@@ -19,7 +25,15 @@ export function formatIiziDeterministicExactSentenceInstructionsEn(exactSentence
 export function buildIiziLocationAddressReadbackLineEt(address: string): string | null {
   const a = String(address || "").trim();
   if (!a) return null;
-  return `Asukohaks on ${a}.`;
+  return `${ASUKOHAKS_PREFIX}${a}.`;
+}
+
+/** Core address substring from "Asukohaks on …." for transcript verification. */
+export function extractAddressFromAsukohaksLineEt(line: string): string | null {
+  const t = String(line || "").trim();
+  if (!t.toLowerCase().startsWith(ASUKOHAKS_PREFIX.toLowerCase())) return null;
+  const inner = t.slice(ASUKOHAKS_PREFIX.length).replace(/\.\s*$/u, "").trim();
+  return inner.length > 0 ? inner : null;
 }
 
 export function iiziDeterministicOccupantQuestionEt(): string {
