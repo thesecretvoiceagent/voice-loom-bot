@@ -29,9 +29,11 @@ import {
   type IiziBrainRuntimeState,
 } from "../flow/iiziBrain.js";
 import {
-  buildIiziLocationAddressReadbackLineEt,
-  extractAddressFromAsukohaksLineEt,
-  formatIiziDeterministicExactSentenceInstructionsEn,
+  buildIiziScriptedPostLookupReadbackEt,
+  formatIiziScriptedRealtimeTtsInstructionsEn,
+  IIZI_SCRIPTED_OCCUPANT_COUNT_ET,
+  IIZI_SCRIPTED_CALLBACK_SAME_ET,
+  IIZI_SCRIPTED_FINAL_HANDOFF_ET,
 } from "../flow/iiziDeterministicPostLookup.js";
 import {
   IIZI_PASSENGER_OCCUPANT_KEYWORDS,
@@ -518,11 +520,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let iiziLastMatchedVehicle: Record<string, unknown> | null = null;
   let iiziBackendPostLookupReadbackComplete = true;
   let iiziBackendSameCallbackLineComplete = true;
-  let iiziLocationAddressReadbackSent = false;
-  let pendingIiziDeterministicExactSpeech: { reason: string; expectedText: string; sentAt: number } | null = null;
-  let iiziDeterministicLocationReadbackBreached = false;
-  type IiziDetSpeechKind = "location_address";
-  let iiziDetSpeechQueue: { kind: IiziDetSpeechKind; text: string }[] = [];
+  let iiziScriptedFlowQueue: { reason: string; text: string }[] = [];
+  let iiziScriptedPostLookupEntered = false;
+  let iiziScriptedHangupScheduled = false;
   let iiziDetFlushTimer: ReturnType<typeof setTimeout> | null = null;
   let iiziDetFlushReschedules = 0;
   let iiziOccupantPromptDeferred = false;
@@ -1353,69 +1353,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }, delayMs);
   };
 
-  const normIiziDetReadbackText = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/\s+/gu, " ")
-      .replace(/[\u00A0]+/g, " ")
-      .replace(/[.,;:!?]+/gu, " ")
-      .replace(/\s+/gu, " ")
-      .trim();
-
-  const transcriptContainsExpectedIiziAddress = (transcriptNorm: string, expectedLine: string): boolean => {
-    const core = extractAddressFromAsukohaksLineEt(expectedLine);
-    if (!core) return false;
-    const coreNorm = normIiziDetReadbackText(core);
-    if (coreNorm.length >= 4 && transcriptNorm.includes(coreNorm)) return true;
-    const firstCommaSeg = core.split(",")[0]?.trim() || core;
-    const segNorm = normIiziDetReadbackText(firstCommaSeg);
-    if (segNorm.length >= 3 && transcriptNorm.includes(segNorm)) return true;
-    const words = firstCommaSeg.split(/\s+/).filter(Boolean);
-    if (words.length >= 1) {
-      const w0 = normIiziDetReadbackText(words[0]);
-      if (w0.length >= 3 && transcriptNorm.includes(w0)) return true;
-    }
-    if (words.length >= 2) {
-      const pairNorm = normIiziDetReadbackText(`${words[0]} ${words[1]}`);
-      if (pairNorm.length >= 5 && transcriptNorm.includes(pairNorm)) return true;
-    }
-    return false;
-  };
-
-  const verifyIiziDeterministicLocationAddressFromTranscript = (assistantTranscript: string) => {
-    if (!useIiziDeterministicPostLookup || !pendingIiziDeterministicExactSpeech) return;
-    if (pendingIiziDeterministicExactSpeech.reason !== "iizi-deterministic-location-address") return;
-
-    const raw = assistantTranscript.trim();
-    const transcriptNorm = normIiziDetReadbackText(raw);
-    const expectedLine = pendingIiziDeterministicExactSpeech.expectedText;
-
-    if (!transcriptNorm.includes("asukohaks on")) {
-      console.error(
-        `[IIZI-Deterministic-Breach] location_address_readback_incomplete reason=transcript_mismatch detail=missing_asukohaks_on expected="${expectedLine.slice(0, 220)}" got="${raw.slice(0, 400)}" callId=${callId}`,
-      );
-      pendingIiziDeterministicExactSpeech = null;
-      iiziDeterministicLocationReadbackBreached = true;
-      return;
-    }
-
-    if (!transcriptContainsExpectedIiziAddress(transcriptNorm, expectedLine)) {
-      console.error(
-        `[IIZI-Deterministic-Breach] location_address_readback_incomplete reason=transcript_mismatch detail=address_not_in_transcript expected="${expectedLine.slice(0, 220)}" got="${raw.slice(0, 400)}" callId=${callId}`,
-      );
-      pendingIiziDeterministicExactSpeech = null;
-      iiziDeterministicLocationReadbackBreached = true;
-      return;
-    }
-
-    pendingIiziDeterministicExactSpeech = null;
-    iiziLocationAddressReadbackSent = true;
-    vehicleReadbackDone = true;
-    locationReadbackDone = true;
-    iiziBackendPostLookupReadbackComplete = true;
-    console.log(`[IIZI-Deterministic] location_address_readback_verified callId=${callId}`);
-  };
-
   const logIiziDeterministicPostLookupCheck = (source: string) => {
     if (!useIiziDeterministicPostLookup) return;
     const br = iiziBrainRef.current;
@@ -1426,7 +1363,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const hasAddr = Boolean(locationConfirmedValue?.address?.trim());
     if (intent === "non_roadside" || intent === "emergency_handoff") {
       console.log(
-        `[IIZI-Deterministic] post_lookup_check source=${source} ready=false reason=intent_${intent} hasVehicle=${hasVehicle} hasLocation=${hasLocation} hasForm=${hasForm} callId=${callId}`,
+        `[IIZI-ScriptedFlow] post_lookup_check source=${source} ready=false reason=intent_${intent} hasVehicle=${hasVehicle} hasLocation=${hasLocation} hasForm=${hasForm} callId=${callId}`,
       );
       return;
     }
@@ -1436,23 +1373,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       hasVehicle &&
       locationStatus === "confirmed" &&
       hasAddr &&
-      !iiziLocationAddressReadbackSent &&
-      !iiziDeterministicLocationReadbackBreached &&
-      !pendingIiziDeterministicExactSpeech &&
-      !iiziDetSpeechQueue.some((x) => x.kind === "location_address");
+      !iiziScriptedPostLookupEntered &&
+      iiziScriptedFlowQueue.length === 0 &&
+      !vehicleReadbackDone;
     console.log(
-      `[IIZI-Deterministic] post_lookup_check source=${source} ready=${ready} hasVehicle=${hasVehicle} hasLocation=${hasLocation} hasForm=${hasForm} callId=${callId}`,
+      `[IIZI-ScriptedFlow] post_lookup_check source=${source} ready=${ready} hasVehicle=${hasVehicle} hasLocation=${hasLocation} hasForm=${hasForm} callId=${callId}`,
     );
   };
 
   const flushIiziDeterministicSpeechQueueHead = () => {
     if (!useIiziDeterministicPostLookup || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-    if (iiziDetSpeechQueue.length === 0) return;
+    if (iiziScriptedFlowQueue.length === 0) return;
     if (activeResponseId || (callDirection === "inbound" && inboundAudioResponseId)) {
       iiziDetFlushReschedules += 1;
       if (iiziDetFlushReschedules > 50) {
         console.error(
-          `[IIZI-Deterministic] flush_abort reason=max_reschedule attempts=${iiziDetFlushReschedules} callId=${callId}`,
+          `[IIZI-ScriptedFlow] flush_abort reason=max_reschedule attempts=${iiziDetFlushReschedules} callId=${callId}`,
         );
         return;
       }
@@ -1463,28 +1399,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       iiziDetFlushReschedules += 1;
       if (iiziDetFlushReschedules > 50) {
         console.error(
-          `[IIZI-Deterministic] flush_abort reason=max_reschedule attempts=${iiziDetFlushReschedules} callId=${callId}`,
+          `[IIZI-ScriptedFlow] flush_abort reason=max_reschedule attempts=${iiziDetFlushReschedules} callId=${callId}`,
         );
         return;
       }
       scheduleDeterministicQueueFlush(220);
       return;
     }
-    const head = iiziDetSpeechQueue[0];
-    const reason = "iizi-deterministic-location-address";
-    const instructions = formatIiziDeterministicExactSentenceInstructionsEn(head.text);
-    const ok = sendResponseCreate(reason, {
+    const head = iiziScriptedFlowQueue[0];
+    const instructions = formatIiziScriptedRealtimeTtsInstructionsEn(head.text);
+    const ok = sendResponseCreate(head.reason, {
       modalities: ["text", "audio"],
       instructions,
     });
     if (!ok) {
-      console.warn(
-        `[IIZI-Deterministic] response_create_failed step=location_address reason=send_response_create_returned_false callId=${callId}`,
-      );
+      console.warn(`[IIZI-ScriptedFlow] response_create_failed reason=${head.reason} callId=${callId}`);
       iiziDetFlushReschedules += 1;
       if (iiziDetFlushReschedules > 50) {
         console.error(
-          `[IIZI-Deterministic] flush_abort reason=max_reschedule attempts=${iiziDetFlushReschedules} callId=${callId}`,
+          `[IIZI-ScriptedFlow] flush_abort reason=max_reschedule attempts=${iiziDetFlushReschedules} callId=${callId}`,
         );
         return;
       }
@@ -1492,17 +1425,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       return;
     }
     iiziDetFlushReschedules = 0;
-    iiziDetSpeechQueue.shift();
-    pendingIiziDeterministicExactSpeech = {
-      reason: "iizi-deterministic-location-address",
-      expectedText: head.text,
-      sentAt: Date.now(),
-    };
+    iiziScriptedFlowQueue.shift();
+    if (head.reason === "iizi-scripted-occupants") {
+      console.log(`[IIZI-ScriptedFlow] ask_occupants_sent callId=${callId}`);
+    } else if (head.reason === "iizi-scripted-callback-question") {
+      console.log(`[IIZI-ScriptedFlow] ask_callback_same_number_sent callId=${callId}`);
+    } else if (head.reason === "iizi-scripted-final") {
+      console.log(`[IIZI-ScriptedFlow] final_5_10_min_sent callId=${callId}`);
+    }
   };
 
   const logIiziDeterministicAssistantTranscriptBreach = (raw: string) => {
     if (!useIiziDeterministicPostLookup) return;
-    if (activeResponseReason === "iizi-deterministic-location-address") return;
+    if (activeResponseReason.startsWith("iizi-scripted-")) return;
     const t = raw.toLowerCase();
     const forbidden =
       t.includes("õige sõiduk") ||
@@ -1510,6 +1445,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       t.includes("kas see on õige");
     if (!forbidden) return;
     console.warn(`[IIZI-Deterministic-Breach] forbidden_vehicle_confirmation_spoken text="${raw.slice(0, 400)}" callId=${callId}`);
+  };
+
+  const advanceIiziScriptedFlowAfterPlayback = (completedReason: string) => {
+    if (!useIiziDeterministicPostLookup) return;
+    if (completedReason === "iizi-scripted-post-readback") {
+      vehicleReadbackDone = true;
+      locationReadbackDone = true;
+      iiziBackendPostLookupReadbackComplete = true;
+      incidentNeedsOccupantCount = true;
+      if (occupantCountStatus !== "confirmed") occupantCountStatus = "pending";
+      console.log(`[IIZI-ScriptedFlow] post_lookup_readback_sent callId=${callId}`);
+      iiziScriptedFlowQueue.push({ reason: "iizi-scripted-occupants", text: IIZI_SCRIPTED_OCCUPANT_COUNT_ET });
+      scheduleDeterministicQueueFlush(120);
+      return;
+    }
+    if (completedReason === "iizi-scripted-final") {
+      if (iiziScriptedHangupScheduled) return;
+      iiziScriptedHangupScheduled = true;
+      console.log(`[IIZI-ScriptedFlow] end_call_requested callId=${callId}`);
+      setTimeout(() => {
+        hangUpCall();
+      }, 4500);
+    }
   };
 
   const handleIiziDeterministicPlaybackDone = (_completedReason: string) => {
@@ -1520,11 +1478,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const runIiziDeterministicPostLookupIfReady = (source: string) => {
     if (!useIiziDeterministicPostLookup) return;
-    if (iiziDeterministicLocationReadbackBreached) return;
-    if (iiziLocationAddressReadbackSent) return;
-    if (iiziBackendPostLookupReadbackComplete) return;
-    if (pendingIiziDeterministicExactSpeech) return;
-    if (iiziDetSpeechQueue.some((x) => x.kind === "location_address")) return;
+    if (iiziScriptedPostLookupEntered) return;
+    if (iiziScriptedFlowQueue.length > 0) return;
+    if (vehicleReadbackDone) return;
     const br = iiziBrainRef.current;
     const intent = br.finalResolvedIntent;
     if (intent === "non_roadside" || intent === "emergency_handoff") return;
@@ -1533,14 +1489,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (locationStatus !== "confirmed" || !locationConfirmedValue?.address?.trim()) return;
 
     const addr = locationConfirmedValue.address.trim();
-    const exactLine = buildIiziLocationAddressReadbackLineEt(addr);
-    if (!exactLine) return;
+    const readback = buildIiziScriptedPostLookupReadbackEt(iiziLastMatchedVehicle, addr);
+    if (!readback) return;
+    if (iiziScriptedFlowQueue.some((x) => x.reason === "iizi-scripted-post-readback")) return;
 
-    const safeExact = exactLine.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-    console.log(
-      `[IIZI-Deterministic] location_address_readback_send address="${addr.slice(0, 180)}" exactText="${safeExact}" source=${source} callId=${callId}`,
-    );
-    iiziDetSpeechQueue.push({ kind: "location_address", text: exactLine });
+    console.log(`[IIZI-ScriptedFlow] post_lookup_ready source=${source} callId=${callId}`);
+    iiziScriptedPostLookupEntered = true;
+    iiziScriptedFlowQueue.push({ reason: "iizi-scripted-post-readback", text: readback });
     flushIiziDeterministicSpeechQueueHead();
   };
 
@@ -1938,7 +1893,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (responseHasAudio && !responseAudioDone) return;
     if (responsePlaybackMarkName) return;
 
-    if (useIiziDeterministicPostLookup && !iiziDeterministicLocationReadbackBreached) {
+    if (useIiziDeterministicPostLookup) {
+      advanceIiziScriptedFlowAfterPlayback(activeResponseReason);
       handleIiziDeterministicPlaybackDone(activeResponseReason);
     }
 
@@ -3357,7 +3313,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "response.audio_transcript.done": {
             const assistantTranscript = (event.transcript || "").toString();
             console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
-            verifyIiziDeterministicLocationAddressFromTranscript(assistantTranscript);
             logIiziDeterministicAssistantTranscriptBreach(assistantTranscript);
             transcriptLines.push(`[Agent]: ${assistantTranscript}`);
             if (
@@ -3815,9 +3770,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   emittedOccupantNudges.clear();
                   console.log(`[OccupantGate] confirmed count=${count} callId=${callId}`);
                   console.log(`[IIZI-Occupants] confirmed count=${count} callId=${callId}`);
-                  const hadDeferredCallbackSms = callbackSmsRequestedWhileBlocked;
-                  maybeNudgeDeferredCallbackSms("occupant_confirmed");
-                  if (!hadDeferredCallbackSms) emitIiziDefaultSameCallbackSystemFollowUp("occupant_confirmed");
+                  console.log(`[IIZI-ScriptedFlow] occupant_count_captured callId=${callId}`);
                   openaiWs!.send(JSON.stringify({
                     type: "conversation.item.create",
                     item: {
@@ -3826,7 +3779,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       output: JSON.stringify({ success: true }),
                     },
                   }));
-                  scheduleUserResponseCreate("tool-result", 50);
+                  if (useIiziDeterministicPostLookup) {
+                    iiziScriptedFlowQueue.push({
+                      reason: "iizi-scripted-callback-question",
+                      text: IIZI_SCRIPTED_CALLBACK_SAME_ET,
+                    });
+                    scheduleDeterministicQueueFlush(120);
+                  } else {
+                    const hadDeferredCallbackSms = callbackSmsRequestedWhileBlocked;
+                    maybeNudgeDeferredCallbackSms("occupant_confirmed");
+                    if (!hadDeferredCallbackSms) emitIiziDefaultSameCallbackSystemFollowUp("occupant_confirmed");
+                    scheduleUserResponseCreate("tool-result", 50);
+                  }
                 }
               }
             }
@@ -4065,6 +4029,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   callbackMode = "same_incoming_number";
                   callbackPending = false;
                   console.log(`[IIZI-Callback] same_incoming_number confirmed callId=${callId}`);
+                  console.log(`[IIZI-ScriptedFlow] callback_same_number_confirmed callId=${callId}`);
                   openaiWs!.send(JSON.stringify({
                     type: "conversation.item.create",
                     item: {
@@ -4073,7 +4038,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       output: JSON.stringify({ success: true }),
                     },
                   }));
-                  scheduleUserResponseCreate("tool-result", 50);
+                  if (useIiziDeterministicPostLookup) {
+                    iiziScriptedFlowQueue.push({
+                      reason: "iizi-scripted-final",
+                      text: IIZI_SCRIPTED_FINAL_HANDOFF_ET,
+                    });
+                    scheduleDeterministicQueueFlush(150);
+                  } else {
+                    scheduleUserResponseCreate("tool-result", 50);
+                  }
                 }
               }
             }
@@ -4437,12 +4410,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   callbackPending = false;
                   emittedCallbackPreferenceNudges.clear();
                   iiziLastMatchedVehicle = null;
-                  iiziLocationAddressReadbackSent = false;
-                  iiziDetSpeechQueue.length = 0;
+                  iiziScriptedFlowQueue.length = 0;
                   clearIiziDetFlushTimer();
                   iiziDetFlushReschedules = 0;
-                  pendingIiziDeterministicExactSpeech = null;
-                  iiziDeterministicLocationReadbackBreached = false;
+                  iiziScriptedPostLookupEntered = false;
+                  iiziScriptedHangupScheduled = false;
                   if (useIiziDeterministicPostLookup) {
                     iiziBackendPostLookupReadbackComplete = false;
                     iiziBackendSameCallbackLineComplete = false;
