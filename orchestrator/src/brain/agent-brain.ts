@@ -50,6 +50,10 @@ export type BrainRuntimeSnapshot = {
   callbackSmsTemplateName: string;
   greetingCompletedAt: number | null;
   userUtteranceCount: number;
+  /** IIZI combined inbound: backend-authored post-lookup speech path (media-stream). */
+  iiziDeterministicPostLookupEnabled: boolean;
+  iiziBackendPostLookupReadbackComplete: boolean;
+  iiziBackendSameCallbackLineComplete: boolean;
 };
 
 export type ToolValidationResult = {
@@ -257,6 +261,13 @@ export function validateIiziInboundToolCall(
     if (!ui.gates.vehicleReadback) {
       return deny("vehicle_readback_gate_disabled", "Vehicle readback confirmation disabled.", "Skip vehicle readback tool per agent settings.");
     }
+    if (snap.iiziDeterministicPostLookupEnabled && !snap.iiziBackendPostLookupReadbackComplete) {
+      return deny(
+        "backend_readback_pending",
+        "Server readback not finished.",
+        "Do not call this tool — the server speaks the vehicle/location summary first.",
+      );
+    }
     if (!snap.vehicleLookupPassed || snap.vehicleValidationStatus !== "valid") {
       return deny("vehicle_not_ready", "Vehicle pipeline not ready.", "Complete vehicle lookup with valid cover first; read details to caller, then confirm.");
     }
@@ -269,6 +280,13 @@ export function validateIiziInboundToolCall(
   if (fnName === "confirm_iizi_location_readback_complete") {
     if (!ui.gates.locationReadback) {
       return deny("location_readback_gate_disabled", "Location readback confirmation disabled.", "Skip location readback tool per agent settings.");
+    }
+    if (snap.iiziDeterministicPostLookupEnabled && !snap.iiziBackendPostLookupReadbackComplete) {
+      return deny(
+        "backend_readback_pending",
+        "Server readback not finished.",
+        "Do not call this tool — the server speaks the vehicle/location summary first.",
+      );
     }
     if (!snap.vehicleReadbackDone) {
       return deny("vehicle_readback_first", "Vehicle readback first.", "Call confirm_iizi_vehicle_readback_complete first.");
@@ -292,6 +310,13 @@ export function validateIiziInboundToolCall(
         "callback_confirmation_disabled",
         "Callback confirmation is disabled in brain settings.",
         "Do not finalize callback preference via tools until policy allows.",
+      );
+    }
+    if (snap.iiziDeterministicPostLookupEnabled && !snap.iiziBackendSameCallbackLineComplete) {
+      return deny(
+        "backend_callback_line_pending",
+        "Server callback line not finished.",
+        "Wait for the server-spoken same-number callback line before using this tool.",
       );
     }
     if (!iiziCallbackStepReady) {
