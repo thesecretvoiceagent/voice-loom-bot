@@ -42,6 +42,12 @@ import {
   IIZI_NON_ROADSIDE_HANDOFF_INSTRUCTION_ET,
   IIZI_OCCUPANT_COUNT_QUESTION_ET,
 } from "../flow/iiziInboundCopy.js";
+import {
+  buildIiziDeterministicVehicleLocationReadbackEt,
+  formatIiziDeterministicAssistantInstructionsEt,
+  iiziDeterministicOccupantQuestionEt,
+  iiziDeterministicSameCallbackLineEt,
+} from "../flow/iiziDeterministicPostLookup.js";
 import { fetchLatestEnabledBrainConfigRow } from "../agentBrainConfigRepo.js";
 import { recordIiziShadowTrace } from "../flow/trace.js";
 import type { AgentBrainConfig } from "../brain/agentBrainUiTypes.js";
@@ -508,6 +514,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let locationConfirmedFlag = false;
   let vehicleReadbackDone = false;
   let locationReadbackDone = false;
+  /** Backend-owned post–lookup speech (IIZI combined inbound only). */
+  let useIiziDeterministicPostLookup = false;
+  let iiziLastMatchedVehicle: Record<string, unknown> | null = null;
+  let iiziBackendPostLookupReadbackComplete = true;
+  let iiziBackendSameCallbackLineComplete = true;
+  type IiziDetSpeechKind = "readback" | "next_occupant" | "next_callback";
+  let iiziDetSpeechQueue: { kind: IiziDetSpeechKind; text: string }[] = [];
+  let iiziDetFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  let iiziDeterministicCheckTimer: ReturnType<typeof setTimeout> | null = null;
   let iiziOccupantPromptDeferred = false;
   type IiziCallbackMode =
     | "unset"
@@ -873,6 +888,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const tryIiziPostVehicleLocationReadbackContinuation = (source: string) => {
+    if (useIiziDeterministicPostLookup) return;
     if (!useCombinedRegLocationSms || callDirection !== "inbound") return;
     if (!vehicleReadbackDone || !locationReadbackDone) return;
     maybeEmitDeferredOccupantPrompt();
@@ -911,6 +927,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     useCombinedRegLocationSms,
     callDirection,
     iiziBrain: iiziBrainRef.current,
+    iiziDeterministicPostLookupEnabled: useIiziDeterministicPostLookup,
+    iiziBackendPostLookupReadbackComplete: !useIiziDeterministicPostLookup || iiziBackendPostLookupReadbackComplete,
+    iiziBackendSameCallbackLineComplete: !useIiziDeterministicPostLookup || iiziBackendSameCallbackLineComplete,
     vehicleLookupPassed,
     vehicleValidationStatus,
     locationConfirmedFlag,
@@ -1314,6 +1333,132 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.log(`[GreetingGate] initial response.create sent while initial mute active callId=${callId}`);
     }
     return true;
+  };
+
+  const clearIiziDetFlushTimer = () => {
+    if (iiziDetFlushTimer) {
+      clearTimeout(iiziDetFlushTimer);
+      iiziDetFlushTimer = null;
+    }
+  };
+
+  const scheduleDeterministicQueueFlush = (delayMs: number) => {
+    if (!useIiziDeterministicPostLookup) return;
+    clearIiziDetFlushTimer();
+    iiziDetFlushTimer = setTimeout(() => {
+      iiziDetFlushTimer = null;
+      flushIiziDeterministicSpeechQueueHead();
+    }, delayMs);
+  };
+
+  const flushIiziDeterministicSpeechQueueHead = () => {
+    if (!useIiziDeterministicPostLookup || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    if (iiziDetSpeechQueue.length === 0) return;
+    if (activeResponseId || (callDirection === "inbound" && inboundAudioResponseId)) {
+      scheduleDeterministicQueueFlush(200);
+      return;
+    }
+    if (greetingInProgress || assistantSpeaking || waitingForTwilioPlaybackMark) {
+      scheduleDeterministicQueueFlush(220);
+      return;
+    }
+    const head = iiziDetSpeechQueue[0];
+    const reason =
+      head.kind === "readback"
+        ? "iizi-deterministic-readback"
+        : head.kind === "next_occupant"
+          ? "iizi-deterministic-next-occupant"
+          : "iizi-deterministic-next-callback";
+    const instructions = formatIiziDeterministicAssistantInstructionsEt(head.text);
+    const ok = sendResponseCreate(reason, {
+      modalities: ["text", "audio"],
+      instructions,
+      temperature: 0.35,
+    });
+    if (!ok) {
+      scheduleDeterministicQueueFlush(260);
+      return;
+    }
+    iiziDetSpeechQueue.shift();
+    if (head.kind === "readback") {
+      vehicleReadbackDone = true;
+      locationReadbackDone = true;
+      iiziBackendPostLookupReadbackComplete = true;
+      console.log(`[IIZI-Deterministic] post_lookup_readback_done callId=${callId}`);
+    } else if (head.kind === "next_occupant") {
+      occupantCountStatus = "pending";
+      emittedOccupantNudges.add("occupant_prompt_sent");
+      iiziOccupantPromptDeferred = false;
+    } else if (head.kind === "next_callback") {
+      callbackConfirmed = true;
+      callbackPending = false;
+      callbackMode = "same_incoming_number";
+      iiziBackendSameCallbackLineComplete = true;
+    }
+  };
+
+  const enqueueDeterministicPostReadbackSteps = () => {
+    if (!useIiziDeterministicPostLookup) return;
+    if (!iiziBackendPostLookupReadbackComplete) return;
+    const occGateOn = iiziBrainRef.current.runtimeBrainUi.gates.occupantCount;
+    if (incidentNeedsOccupantCount && occGateOn && occupantCountStatus !== "confirmed") {
+      if (iiziDetSpeechQueue.some((x) => x.kind === "next_occupant")) return;
+      if (emittedOccupantNudges.has("occupant_prompt_sent")) return;
+      console.log(`[IIZI-Deterministic] next_step=ask_occupant_count callId=${callId}`);
+      iiziDetSpeechQueue.push({ kind: "next_occupant", text: iiziDeterministicOccupantQuestionEt() });
+    } else if (!callbackConfirmed && !callbackPending && !callbackSmsRequestedWhileBlocked) {
+      if (iiziDetSpeechQueue.some((x) => x.kind === "next_callback")) return;
+      if (iiziBackendSameCallbackLineComplete) return;
+      console.log(`[IIZI-Deterministic] next_step=confirm_same_callback_number callId=${callId}`);
+      iiziDetSpeechQueue.push({ kind: "next_callback", text: iiziDeterministicSameCallbackLineEt() });
+    }
+    flushIiziDeterministicSpeechQueueHead();
+  };
+
+  const handleIiziDeterministicPlaybackDone = (completedReason: string) => {
+    if (!useIiziDeterministicPostLookup) return;
+    if (completedReason === "iizi-deterministic-readback") {
+      enqueueDeterministicPostReadbackSteps();
+    }
+    const delay = Math.min(450, Math.max(90, liveTurnSettings.post_playback_cooldown_ms));
+    scheduleDeterministicQueueFlush(delay);
+  };
+
+  const runIiziDeterministicPostLookupIfReady = (source: string) => {
+    if (!useIiziDeterministicPostLookup) return;
+    if (iiziBackendPostLookupReadbackComplete) return;
+    const intent = iiziBrainRef.current.finalResolvedIntent;
+    if (intent === "non_roadside" || intent === "emergency_handoff") return;
+    if (!vehicleLookupPassed || vehicleValidationStatus !== "valid") return;
+    if (locationStatus !== "confirmed" || !locationConfirmedValue?.address?.trim()) return;
+    if (iiziDetSpeechQueue.some((x) => x.kind === "readback")) return;
+
+    const addr = locationConfirmedValue.address.trim();
+    const line = buildIiziDeterministicVehicleLocationReadbackEt({
+      vehicle: iiziLastMatchedVehicle,
+      address: addr,
+      coverageInvalid: false,
+    });
+    if (!line) return;
+
+    const vehicleLog = iiziLastMatchedVehicle
+      ? `${String(iiziLastMatchedVehicle.make || "").trim()} ${String(iiziLastMatchedVehicle.model || "").trim()} ${String(iiziLastMatchedVehicle.year_of_built || "").trim()}`.trim() ||
+        "(details)"
+      : "(none)";
+    console.log(
+      `[IIZI-Deterministic] post_lookup_readback_send source=${source} callId=${callId} vehicle="${vehicleLog}" address="${addr.slice(0, 120)}"`,
+    );
+    iiziDetSpeechQueue.push({ kind: "readback", text: line });
+    flushIiziDeterministicSpeechQueueHead();
+  };
+
+  const requestIiziDeterministicPostLookupCheck = (source: string) => {
+    if (!useIiziDeterministicPostLookup) return;
+    if (iiziDeterministicCheckTimer) clearTimeout(iiziDeterministicCheckTimer);
+    iiziDeterministicCheckTimer = setTimeout(() => {
+      iiziDeterministicCheckTimer = null;
+      runIiziDeterministicPostLookupIfReady(source);
+    }, 120);
   };
 
   const scheduleUserResponseCreate = (reason: string, delayMs: number, transcript?: string) => {
@@ -1777,6 +1922,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
 
     console.log(`[MediaStream] AI playback complete via ${source} (callId=${callId}, responseId=${completedResponseId})`);
+    const detReasonDone = lastResponseCreateReason;
+    if (useIiziDeterministicPostLookup && detReasonDone.startsWith("iizi-deterministic-")) {
+      handleIiziDeterministicPlaybackDone(detReasonDone);
+    }
   };
 
   // Connect to OpenAI Realtime API with agent-specific config
@@ -1834,6 +1983,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         if ((settings as any).use_combined_reg_location_sms === true) {
           useCombinedRegLocationSms = true;
           console.log(`[IIZI-CombinedSMS] enabled=true callId=${callId}`);
+          if (callDirection === "inbound") {
+            useIiziDeterministicPostLookup = true;
+            iiziBackendPostLookupReadbackComplete = false;
+            iiziBackendSameCallbackLineComplete = false;
+            console.log(`[IIZI-Deterministic] enabled=true mode=backend_owned_post_lookup callId=${callId}`);
+          }
         }
         if (settings.use_initial_greeting === false) {
           useInitialGreeting = false;
@@ -2229,7 +2384,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                   transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                    if (useCombinedRegLocationSms && vehicleValidationStatus !== "valid") {
+                    if (useIiziDeterministicPostLookup && vehicleLookupPassed && vehicleValidationStatus === "valid") {
+                      requestIiziDeterministicPostLookupCheck("location_confirmed");
+                    } else if (useCombinedRegLocationSms && vehicleValidationStatus !== "valid") {
                       combinedLocationReadbackQueued = true;
                     } else {
                       emitLocationConfirmedSystemEvent();
@@ -2290,6 +2447,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     callbackConfirmed = true;
                     callbackPending = false;
                     callbackMode = "form_callback_phone";
+                    if (useIiziDeterministicPostLookup) {
+                      iiziBackendSameCallbackLineComplete = true;
+                    }
                     console.log(`[IIZI-Callback] confirmed via form_callback_phone callId=${callId}`);
                   }
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
@@ -2307,12 +2467,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         content: [{ type: "input_text", text: sysMsg }],
                       },
                     }));
-                    scheduleUserResponseCreate("system-event", 50);
+                    if (!(useIiziDeterministicPostLookup && reg)) {
+                      scheduleUserResponseCreate("system-event", 50);
+                    }
 
                     if (reg) {
                       const lookup = await strictLookupVehicleBySubmittedReg(reg);
                       if (lookup.match) {
                         const v = lookup.vehicle as Record<string, unknown>;
+                        iiziLastMatchedVehicle = v;
                         const vehicleEvent =
                           `[SYSTEM EVENT: vehicle_lookup_result] ` +
                           `match=true submitted_reg="${lookup.submitted_reg}" reg_no="${String(v.reg_no || "")}" ` +
@@ -2332,6 +2495,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                             vehicleLookupPassed = false;
                             vehicleReadbackDone = false;
                             locationReadbackDone = false;
+                            iiziLastMatchedVehicle = null;
                             console.log(`[IIZI-CombinedSMS] vehicle invalid, blocking flow callId=${callId}`);
                           } else {
                             vehicleValidationStatus = "valid";
@@ -2352,7 +2516,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           })
                         );
                         console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=true (callId=${callId})`);
-                        scheduleUserResponseCreate("system-event", 50);
+                        if (!useIiziDeterministicPostLookup || lookup.coverage_invalid) {
+                          scheduleUserResponseCreate("system-event", 50);
+                        } else {
+                          requestIiziDeterministicPostLookupCheck("vehicle_lookup_injected");
+                        }
                         recordIiziShadowTrace({
                           callId,
                           agentId: resolvedAgentIdRef,
@@ -2383,11 +2551,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           locationStatus === "confirmed" &&
                           combinedLocationReadbackQueued
                         ) {
-                          const emitted = emitLocationConfirmedSystemEvent();
-                          if (emitted) combinedLocationReadbackQueued = false;
+                          combinedLocationReadbackQueued = false;
+                          if (useIiziDeterministicPostLookup) {
+                            requestIiziDeterministicPostLookupCheck("combined_queue_vehicle_then_location");
+                          } else {
+                            const emitted = emitLocationConfirmedSystemEvent();
+                            if (!emitted) combinedLocationReadbackQueued = true;
+                          }
                         }
                         maybeEmitDeferredOccupantPrompt();
                         maybeNudgeDeferredCallbackSms("vehicle_valid");
+                        if (useIiziDeterministicPostLookup && !lookup.coverage_invalid) {
+                          requestIiziDeterministicPostLookupCheck("form_vehicle_pipeline");
+                        }
                       } else {
                         const vehicleEvent =
                           `[SYSTEM EVENT: vehicle_lookup_result] match=false submitted_reg="${lookup.submitted_reg}". ` +
@@ -2578,7 +2754,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
 
       if (useCombinedRegLocationSms && callDirection === "inbound") {
-        fullInstructions += `\n\nIIZI COMBINED INBOUND — HARD ORDER (follow exactly; do not improvise):
+        if (useIiziDeterministicPostLookup) {
+          fullInstructions += `\n\nIIZI COMBINED INBOUND — SERVER-DRIVEN POST-LOOKUP (do not improvise these steps):
+- ${IIZI_FORBIDDEN_OFFICE_PHRASES_PROMPT_BLOCK}
+- NEVER claim or imply that an SMS was sent (e.g. do not say "saadan" / "saatsin" about the registration+location SMS) until the send_sms tool has returned success=true for that send.
+- Combined registration+location SMS: send at most once using the combined template when the script allows.
+- After roadside classification and successful combined flow, the SERVER composes and speaks the vehicle+insurance+location summary verbatim (you must not invent that paragraph; do not read registration numbers aloud from internal tags).
+- Do NOT call confirm_iizi_vehicle_readback_complete or confirm_iizi_location_readback_complete — the server marks readback complete; early tool calls will be rejected.
+- If occupant count is required, the SERVER may speak exactly: "${IIZI_OCCUPANT_COUNT_QUESTION_ET}" — then use confirm_occupant_count only after the caller answers.
+- Default callback is the same incoming CLI: the SERVER may speak exactly: "${IIZI_DEFAULT_SAME_CALLBACK_LINE_ET}" and finalize the same-number path — do NOT call confirm_iizi_callback_same_incoming_number until the server has spoken that line; do NOT send callback SMS unless the caller clearly wants a different number ("${CALLBACK_SMS_TEMPLATE_NAME}" only then).
+- Send template "${CALLBACK_SMS_TEMPLATE_NAME}" only if the caller explicitly wants a different callback number than the incoming CLI; SMS success does not finalize callback — wait for form callback_phone or confirm_iizi_callback_phone_verbal.
+- Do not jump to summary, handoff, or end_call until required gates in your instructions are satisfied (including callback preference finalized).`;
+        } else {
+          fullInstructions += `\n\nIIZI COMBINED INBOUND — HARD ORDER (follow exactly; do not improvise):
 - ${IIZI_FORBIDDEN_OFFICE_PHRASES_PROMPT_BLOCK}
 - NEVER claim or imply that an SMS was sent (e.g. do not say "saadan" / "saatsin" about the registration+location SMS) until the send_sms tool has returned success=true for that send.
 - Combined registration+location SMS: send at most once using the combined template when the script allows.
@@ -2589,6 +2777,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - Use confirm_occupant_count only after that question was asked and answered.
 - Callback: default is the same incoming phone number. Say once verbatim: "${IIZI_DEFAULT_SAME_CALLBACK_LINE_ET}" then call confirm_iizi_callback_same_incoming_number — do NOT send the callback SMS template. Send template "${CALLBACK_SMS_TEMPLATE_NAME}" only if the caller explicitly wants a different callback number than the incoming CLI; SMS success does not finalize callback — wait for form callback_phone or confirm_iizi_callback_phone_verbal.
 - Do not jump to summary, handoff, or end_call until required gates in your instructions are satisfied (including callback preference finalized).`;
+        }
       }
 
       // Inject SMS catalog so the AI knows which named SMSes are available, when to use them, and what they say.
@@ -3534,7 +3723,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   console.log(`[IIZI-Occupants] confirmed count=${count} callId=${callId}`);
                   const hadDeferredCallbackSms = callbackSmsRequestedWhileBlocked;
                   maybeNudgeDeferredCallbackSms("occupant_confirmed");
-                  if (!hadDeferredCallbackSms) emitIiziDefaultSameCallbackSystemFollowUp("occupant_confirmed");
+                  if (!hadDeferredCallbackSms) {
+                    if (useIiziDeterministicPostLookup) {
+                      if (!iiziDetSpeechQueue.some((x) => x.kind === "next_callback") && !iiziBackendSameCallbackLineComplete) {
+                        console.log(`[IIZI-Deterministic] next_step=confirm_same_callback_number callId=${callId}`);
+                        iiziDetSpeechQueue.push({ kind: "next_callback", text: iiziDeterministicSameCallbackLineEt() });
+                        flushIiziDeterministicSpeechQueueHead();
+                      }
+                    } else {
+                      emitIiziDefaultSameCallbackSystemFollowUp("occupant_confirmed");
+                    }
+                  }
                   openaiWs!.send(JSON.stringify({
                     type: "conversation.item.create",
                     item: {
@@ -3558,6 +3757,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     output: JSON.stringify({ success: false, error: "not_iizi_combined_inbound" }),
                   },
                 }));
+                scheduleUserResponseCreate("tool-result", 50);
+              } else if (useIiziDeterministicPostLookup && !iiziBackendPostLookupReadbackComplete) {
+                console.log(
+                  `[IIZI-Deterministic] ignored_model_vehicle_readback_complete reason=backend_readback_not_sent callId=${callId}`,
+                );
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "backend_readback_pending",
+                        message: "Vehicle/location readback is driven by the server; wait for the spoken summary.",
+                      }),
+                    },
+                  }),
+                );
                 scheduleUserResponseCreate("tool-result", 50);
               } else {
                 const brainV = rejectToolIfBrainBlocks("confirm_iizi_vehicle_readback_complete", {});
@@ -3645,6 +3863,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   },
                 }));
                 scheduleUserResponseCreate("tool-result", 50);
+              } else if (useIiziDeterministicPostLookup && !iiziBackendPostLookupReadbackComplete) {
+                console.log(
+                  `[IIZI-Deterministic] ignored_model_location_readback_complete reason=backend_readback_not_sent callId=${callId}`,
+                );
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "backend_readback_pending",
+                        message: "Vehicle/location readback is driven by the server; wait for the spoken summary.",
+                      }),
+                    },
+                  }),
+                );
+                scheduleUserResponseCreate("tool-result", 50);
               } else {
                 const brainLoc = rejectToolIfBrainBlocks("confirm_iizi_location_readback_complete", {});
                 if (brainLoc) {
@@ -3729,6 +3966,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     output: JSON.stringify({ success: false, error: "not_iizi_combined_inbound" }),
                   },
                 }));
+                scheduleUserResponseCreate("tool-result", 50);
+              } else if (useIiziDeterministicPostLookup && !iiziBackendSameCallbackLineComplete) {
+                console.log(
+                  `[IIZI-Deterministic] ignored_model_callback_confirm reason=backend_callback_line_not_sent callId=${callId}`,
+                );
+                openaiWs!.send(
+                  JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                      type: "function_call_output",
+                      call_id: event.call_id,
+                      output: JSON.stringify({
+                        success: false,
+                        error: "backend_callback_line_pending",
+                        message: "Callback same-number confirmation is driven by the server after the spoken line.",
+                      }),
+                    },
+                  }),
+                );
                 scheduleUserResponseCreate("tool-result", 50);
               } else {
                 const brainCbSame = rejectToolIfBrainBlocks("confirm_iizi_callback_same_incoming_number", {});
@@ -4153,6 +4409,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   callbackSmsSent = false;
                   callbackPending = false;
                   emittedCallbackPreferenceNudges.clear();
+                  iiziLastMatchedVehicle = null;
+                  iiziDetSpeechQueue.length = 0;
+                  clearIiziDetFlushTimer();
+                  if (iiziDeterministicCheckTimer) clearTimeout(iiziDeterministicCheckTimer);
+                  iiziDeterministicCheckTimer = null;
+                  if (useIiziDeterministicPostLookup) {
+                    iiziBackendPostLookupReadbackComplete = false;
+                    iiziBackendSameCallbackLineComplete = false;
+                  } else {
+                    iiziBackendPostLookupReadbackComplete = true;
+                    iiziBackendSameCallbackLineComplete = true;
+                  }
                 }
                 if (activeResponseId && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                   console.warn(
