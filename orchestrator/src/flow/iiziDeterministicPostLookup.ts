@@ -29,3 +29,15 @@ export function iiziDeterministicOccupantQuestionEt(): string {
 export function iiziDeterministicSameCallbackLineEt(): string {
   return IIZI_DEFAULT_SAME_CALLBACK_LINE_ET;
 }
+
+export function extractAddressFromAsukohaksLineEt(line: string): string | null {
+  const normalized = String(line || "").trim();
+  const match = normalized.match(/asukohaks\s+on\s+(.+?)[.!?]*$/i);
+  if (!match?.[1]) return null;
+
+  const address = match[1]
+    .replace(/[.!?]+$/g, "")
+    .trim();
+
+  return address.length > 0 ? address : null;
+}
