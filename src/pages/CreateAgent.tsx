@@ -83,8 +83,8 @@ const voices = [
 ];
 
 const phoneNumbers = [
-  { id: "1", label: "Mobile EST", number: "+372 56101535" },
-  { id: "2", label: "Mobile EST 2", number: "+372 56101547" },
+  { id: "1", label: "Mobile EST (IIZI)", number: "+372 56101535" },
+  { id: "2", label: "Mobile EST 2 (Themis)", number: "+372 56101547" },
 ];
 
 const weekDays = [

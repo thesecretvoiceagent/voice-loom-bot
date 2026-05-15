@@ -58,14 +58,18 @@ serve(async (req) => {
       );
 
       if (matchingByPhone.length > 0) {
-        // Prefer same direction/type when provided, then newest updated agent.
+        // Prefer same direction/type when provided, then explicit tenant routing flags.
         // This mirrors outbound behavior where the UI passes an explicit current
         // agent_id. Without ordering, inbound calls can bind to an older duplicate
         // active agent on the same Twilio number and run stale voice settings.
         const typed = dir ? matchingByPhone.find((a: any) => a.type === dir) : null;
-        const chosen = typed || matchingByPhone[0];
+        const themisMode = matchingByPhone.find((a: any) => a.settings?.themis_mode === true);
+        const nonIiziCombined = matchingByPhone.find(
+          (a: any) => a.settings?.use_combined_reg_location_sms !== true,
+        );
+        const chosen = typed || themisMode || nonIiziCombined || matchingByPhone[0];
         console.log(
-          `Agent matched by phone digits: ${phone_number} (digits=${targetDigits}) type=${dir || "any"} → ${chosen.name}`
+          `Agent matched by phone digits: ${phone_number} (digits=${targetDigits}) type=${dir || "any"} → ${chosen.name} themis_mode=${chosen.settings?.themis_mode === true} iizi_combined=${chosen.settings?.use_combined_reg_location_sms === true}`
         );
         return new Response(JSON.stringify({ agent: chosen }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },

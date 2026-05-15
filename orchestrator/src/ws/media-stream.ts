@@ -2085,6 +2085,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           useCombinedRegLocationSms = true;
           console.log(`[IIZI-CombinedSMS] enabled=true callId=${callId}`);
         }
+        if ((settings as any).themis_mode === true) {
+          console.log(
+            `[Themis] themis_mode=true agent="${loadedAgentName}" agentId=${(agentConfig as any).id || agentId || "?"} phone=${agentConfig.phone_number || calledNumber || "?"} callId=${callId}`,
+          );
+        }
         useIiziDeterministicPostLookup = useCombinedRegLocationSms && callDirection === "inbound";
         if (!useIiziDeterministicPostLookup) {
           iiziBackendPostLookupReadbackComplete = true;

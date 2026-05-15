@@ -7,15 +7,17 @@ import { Phone, Pencil, AlertTriangle, ShoppingCart } from "lucide-react";
 const phoneNumbers = [
   {
     number: "+372 56101535",
-    friendlyName: "Mobile EST",
+    friendlyName: "Mobile EST (IIZI)",
     webhooks: true,
     iei: true,
+    themis: false,
   },
   {
     number: "+372 56101547",
-    friendlyName: "Mobile EST 2",
+    friendlyName: "Mobile EST 2 (Themis)",
     webhooks: true,
-    iei: true,
+    iei: false,
+    themis: true,
   },
 ];
 
@@ -69,7 +71,12 @@ export default function TwilioSettings() {
                         )}
                         {phone.iei && (
                           <Badge className="bg-destructive/10 text-destructive border-destructive/30 hover:bg-destructive/20">
-                            IEI
+                            IIZI
+                          </Badge>
+                        )}
+                        {phone.themis && (
+                          <Badge className="bg-primary/10 text-primary border-primary/30 hover:bg-primary/20">
+                            Themis
                           </Badge>
                         )}
                       </div>
