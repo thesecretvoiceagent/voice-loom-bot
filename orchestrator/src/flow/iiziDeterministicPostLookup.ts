@@ -5,34 +5,21 @@
 
 import { IIZI_DEFAULT_SAME_CALLBACK_LINE_ET, IIZI_OCCUPANT_COUNT_QUESTION_ET } from "./iiziInboundCopy.js";
 
-export function formatIiziDeterministicAssistantInstructionsEt(verbatim: string): string {
-  const v = verbatim.trim();
+/** Strict English lock so the model cannot paraphrase or add confirmation questions. */
+export function formatIiziDeterministicExactSentenceInstructionsEn(exactSentence: string): string {
+  const s = exactSentence.trim();
   return (
-    `Ütle täpselt järgmine lause, ilma midagi lisamata — sõna-sõnalt, eesti keeles:\n"""\n${v}\n"""\n` +
-    `Mitte tõlgi. Mitte ümber sõnasta. Mitte lisa sõnu enne ega pärast. Ära küsi küsimusi. Ära kasuta tööriistu.`
+    `SAY EXACTLY THIS SENTENCE AND NOTHING ELSE. ` +
+    `Do not add words before or after. Do not ask questions. Do not translate. Do not paraphrase. Do not call tools.\n\n` +
+    `EXACT SENTENCE:\n"""${s}"""`
   );
 }
 
-/** Single spoken line: vehicle + insurance summary + address. Never includes registration number. */
-export function buildIiziDeterministicVehicleLocationReadbackEt(opts: {
-  vehicle: Record<string, unknown> | null;
-  address: string;
-  coverageInvalid: boolean;
-}): string | null {
-  if (opts.coverageInvalid) return null;
-  const addr = String(opts.address || "").trim();
-  if (!addr) return null;
-
-  const make = String(opts.vehicle?.make ?? "").trim();
-  const model = String(opts.vehicle?.model ?? "").trim();
-  const year = String(opts.vehicle?.year_of_built ?? "").trim();
-
-  const vehicleDesc = [make, model, year].filter(Boolean).join(" ").trim();
-
-  if (vehicleDesc) {
-    return `Leidsin sõiduki: ${vehicleDesc}, kindlustus on aktiivne. Asukoht on ${addr}.`;
-  }
-  return `Leidsin sõiduki andmed, kindlustus on aktiivne. Asukoht on ${addr}.`;
+/** Single deterministic location line (SMS-confirmed address only). */
+export function buildIiziLocationAddressReadbackLineEt(address: string): string | null {
+  const a = String(address || "").trim();
+  if (!a) return null;
+  return `Asukohaks on ${a}.`;
 }
 
 export function iiziDeterministicOccupantQuestionEt(): string {
