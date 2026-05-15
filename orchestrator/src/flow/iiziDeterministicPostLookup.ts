@@ -29,6 +29,38 @@ export function formatIiziScriptedRealtimeTtsInstructionsEn(estonianLine: string
   );
 }
 
+/** Normalize assistant transcript vs expected scripted line for loose ASR-safe compare. */
+export function normalizeIiziScriptedSpeechForCompare(s: string): string {
+  return String(s || "")
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/\s+/gu, " ")
+    .replace(/["""„"''`´]/gu, "")
+    .replace(/[.!?,:;]+$/gu, "")
+    .trim();
+}
+
+/**
+ * True if the spoken transcript materially matches the scripted Estonian line
+ * (substring containment or ordered significant-token coverage for long readbacks).
+ */
+export function materiallyMatchesIiziScriptedSpeech(expected: string, actual: string): boolean {
+  const e = normalizeIiziScriptedSpeechForCompare(expected);
+  const a = normalizeIiziScriptedSpeechForCompare(actual);
+  if (!e || !a) return false;
+  if (a.includes(e)) return true;
+  if (e.length >= 24 && a.length >= 12 && e.includes(a)) return true;
+  const eWords = e.split(" ").filter((w) => w.length > 1);
+  if (eWords.length === 0) return false;
+  let searchFrom = 0;
+  for (const w of eWords) {
+    const pos = a.indexOf(w, searchFrom);
+    if (pos === -1) return false;
+    searchFrom = pos + w.length;
+  }
+  return true;
+}
+
 /**
  * One natural post-lookup summary line (no registration number aloud).
  */
