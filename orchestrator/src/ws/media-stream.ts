@@ -1414,9 +1414,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const ok = sendResponseCreate(reason, {
       modalities: ["text", "audio"],
       instructions,
-      temperature: 0.35,
     });
     if (!ok) {
+      const step = head.kind === "readback" ? "readback" : head.kind === "next_occupant" ? "next_occupant" : "next_callback";
+      console.warn(`[IIZI-Deterministic] response_create_failed step=${step} reason=send_response_create_returned_false callId=${callId}`);
       iiziDetFlushReschedules += 1;
       if (iiziDetFlushReschedules > 50) {
         console.error(
