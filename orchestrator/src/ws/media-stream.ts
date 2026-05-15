@@ -2474,21 +2474,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                    const fieldParts: string[] = [];
-                    if (reg) fieldParts.push(`reg="${reg}"`);
-                    if (phone) fieldParts.push(`callback_phone="${phone}"`);
-                    const fields = fieldParts.join(" ");
-                    const sysMsg = `[SYSTEM EVENT: form_submitted] ${fields}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just submitted the form via the SMS link. Read the values back to them naturally in the same language the call is being conducted in and ask for confirmation. Then continue the conversation using these confirmed values.`;
-                    openaiWs.send(JSON.stringify({
-                      type: "conversation.item.create",
-                      item: {
-                        type: "message",
-                        role: "system",
-                        content: [{ type: "input_text", text: sysMsg }],
-                      },
-                    }));
-                    if (!(useIiziDeterministicPostLookup && reg)) {
-                      scheduleUserResponseCreate("system-event", 50);
+                    if (useIiziDeterministicPostLookup && reg.trim()) {
+                      console.log(
+                        `[IIZI-Deterministic] suppress_openai_form_submitted_event reason=backend_owned_post_lookup callId=${callId}`,
+                      );
+                    } else {
+                      const fieldParts: string[] = [];
+                      if (reg) fieldParts.push(`reg="${reg}"`);
+                      if (phone) fieldParts.push(`callback_phone="${phone}"`);
+                      const fields = fieldParts.join(" ");
+                      const sysMsg = `[SYSTEM EVENT: form_submitted] ${fields}. Internal note only — do NOT read this tag, the brackets, or the field names aloud. The customer just submitted the form via the SMS link. Read the values back to them naturally in the same language the call is being conducted in and ask for confirmation. Then continue the conversation using these confirmed values.`;
+                      openaiWs.send(JSON.stringify({
+                        type: "conversation.item.create",
+                        item: {
+                          type: "message",
+                          role: "system",
+                          content: [{ type: "input_text", text: sysMsg }],
+                        },
+                      }));
+                      if (!(useIiziDeterministicPostLookup && reg)) {
+                        scheduleUserResponseCreate("system-event", 50);
+                      }
                     }
 
                     if (reg) {
@@ -2525,17 +2531,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                             console.log(`[IIZI-CombinedSMS] vehicle valid, continuing callId=${callId}`);
                           }
                         }
-                        openaiWs.send(
-                          JSON.stringify({
-                            type: "conversation.item.create",
-                            item: {
-                              type: "message",
-                              role: "system",
-                              content: [{ type: "input_text", text: vehicleEvent }],
-                            },
-                          })
-                        );
-                        console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=true (callId=${callId})`);
+                        const suppressVehicleOpenAi =
+                          useIiziDeterministicPostLookup && !lookup.coverage_invalid;
+                        if (!suppressVehicleOpenAi) {
+                          openaiWs.send(
+                            JSON.stringify({
+                              type: "conversation.item.create",
+                              item: {
+                                type: "message",
+                                role: "system",
+                                content: [{ type: "input_text", text: vehicleEvent }],
+                              },
+                            }),
+                          );
+                          console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=true (callId=${callId})`);
+                        } else {
+                          console.log(
+                            `[IIZI-Deterministic] suppress_openai_vehicle_lookup_event reason=backend_owned_post_lookup callId=${callId}`,
+                          );
+                        }
                         if (!useIiziDeterministicPostLookup || lookup.coverage_invalid) {
                           scheduleUserResponseCreate("system-event", 50);
                         }
