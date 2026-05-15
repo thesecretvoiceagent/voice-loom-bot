@@ -522,7 +522,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   type IiziDetSpeechKind = "readback" | "next_occupant" | "next_callback";
   let iiziDetSpeechQueue: { kind: IiziDetSpeechKind; text: string }[] = [];
   let iiziDetFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  let iiziDeterministicCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  let iiziDetFlushReschedules = 0;
   let iiziOccupantPromptDeferred = false;
   type IiziCallbackMode =
     | "unset"
@@ -1351,14 +1351,55 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }, delayMs);
   };
 
+  const logIiziDeterministicPostLookupCheck = (source: string) => {
+    if (!useIiziDeterministicPostLookup) return;
+    const br = iiziBrainRef.current;
+    const intent = br.finalResolvedIntent;
+    const hasForm = br.formSeenAfterSms;
+    const hasLocation = br.locationSeenAfterSms;
+    const hasVehicle = vehicleLookupPassed && vehicleValidationStatus === "valid";
+    const hasAddr = Boolean(locationConfirmedValue?.address?.trim());
+    if (intent === "non_roadside" || intent === "emergency_handoff") {
+      console.log(
+        `[IIZI-Deterministic] post_lookup_check source=${source} ready=false reason=intent_${intent} hasVehicle=${hasVehicle} hasLocation=${hasLocation} hasForm=${hasForm} callId=${callId}`,
+      );
+      return;
+    }
+    const ready =
+      hasForm &&
+      hasLocation &&
+      hasVehicle &&
+      locationStatus === "confirmed" &&
+      hasAddr &&
+      !iiziBackendPostLookupReadbackComplete &&
+      !iiziDetSpeechQueue.some((x) => x.kind === "readback");
+    console.log(
+      `[IIZI-Deterministic] post_lookup_check source=${source} ready=${ready} hasVehicle=${hasVehicle} hasLocation=${hasLocation} hasForm=${hasForm} callId=${callId}`,
+    );
+  };
+
   const flushIiziDeterministicSpeechQueueHead = () => {
     if (!useIiziDeterministicPostLookup || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
     if (iiziDetSpeechQueue.length === 0) return;
     if (activeResponseId || (callDirection === "inbound" && inboundAudioResponseId)) {
+      iiziDetFlushReschedules += 1;
+      if (iiziDetFlushReschedules > 50) {
+        console.error(
+          `[IIZI-Deterministic] flush_abort reason=max_reschedule attempts=${iiziDetFlushReschedules} callId=${callId}`,
+        );
+        return;
+      }
       scheduleDeterministicQueueFlush(200);
       return;
     }
     if (greetingInProgress || assistantSpeaking || waitingForTwilioPlaybackMark) {
+      iiziDetFlushReschedules += 1;
+      if (iiziDetFlushReschedules > 50) {
+        console.error(
+          `[IIZI-Deterministic] flush_abort reason=max_reschedule attempts=${iiziDetFlushReschedules} callId=${callId}`,
+        );
+        return;
+      }
       scheduleDeterministicQueueFlush(220);
       return;
     }
@@ -1376,9 +1417,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       temperature: 0.35,
     });
     if (!ok) {
+      iiziDetFlushReschedules += 1;
+      if (iiziDetFlushReschedules > 50) {
+        console.error(
+          `[IIZI-Deterministic] flush_abort reason=max_reschedule attempts=${iiziDetFlushReschedules} callId=${callId}`,
+        );
+        return;
+      }
       scheduleDeterministicQueueFlush(260);
       return;
     }
+    iiziDetFlushReschedules = 0;
     iiziDetSpeechQueue.shift();
     if (head.kind === "readback") {
       vehicleReadbackDone = true;
@@ -1427,8 +1476,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const runIiziDeterministicPostLookupIfReady = (source: string) => {
     if (!useIiziDeterministicPostLookup) return;
     if (iiziBackendPostLookupReadbackComplete) return;
-    const intent = iiziBrainRef.current.finalResolvedIntent;
+    const br = iiziBrainRef.current;
+    const intent = br.finalResolvedIntent;
     if (intent === "non_roadside" || intent === "emergency_handoff") return;
+    if (!br.formSeenAfterSms || !br.locationSeenAfterSms) return;
     if (!vehicleLookupPassed || vehicleValidationStatus !== "valid") return;
     if (locationStatus !== "confirmed" || !locationConfirmedValue?.address?.trim()) return;
     if (iiziDetSpeechQueue.some((x) => x.kind === "readback")) return;
@@ -1446,7 +1497,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         "(details)"
       : "(none)";
     console.log(
-      `[IIZI-Deterministic] post_lookup_readback_send source=${source} callId=${callId} vehicle="${vehicleLog}" address="${addr.slice(0, 120)}"`,
+      `[IIZI-Deterministic] post_lookup_readback_send source=${source} vehicle="${vehicleLog}" address="${addr.slice(0, 120)}" callId=${callId}`,
     );
     iiziDetSpeechQueue.push({ kind: "readback", text: line });
     flushIiziDeterministicSpeechQueueHead();
@@ -1454,11 +1505,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const requestIiziDeterministicPostLookupCheck = (source: string) => {
     if (!useIiziDeterministicPostLookup) return;
-    if (iiziDeterministicCheckTimer) clearTimeout(iiziDeterministicCheckTimer);
-    iiziDeterministicCheckTimer = setTimeout(() => {
-      iiziDeterministicCheckTimer = null;
-      runIiziDeterministicPostLookupIfReady(source);
-    }, 120);
+    logIiziDeterministicPostLookupCheck(source);
+    runIiziDeterministicPostLookupIfReady(source);
   };
 
   const scheduleUserResponseCreate = (reason: string, delayMs: number, transcript?: string) => {
@@ -2383,14 +2431,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     setLocationStatus("failed", "location_confirmed_realtime_missing_payload", null);
                   }
                   transcriptLines.push(`[Location confirmed]: ${addr} (${row.location_lat},${row.location_lon})`);
+                  if (useCombinedRegLocationSms && callDirection === "inbound") {
+                    try {
+                      ingestIiziBrainFlow(iiziBrainRef.current, "location_confirmed");
+                      touchIiziBrainLog("location_confirmed");
+                    } catch (err) {
+                      console.error(`[IIZI-Brain] location_flow_failed callId=${callId}`, err);
+                    }
+                  }
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                    if (useIiziDeterministicPostLookup && vehicleLookupPassed && vehicleValidationStatus === "valid") {
-                      requestIiziDeterministicPostLookupCheck("location_confirmed");
+                    if (useIiziDeterministicPostLookup) {
+                      /* SMS address is authoritative; backend readback speaks it — no separate model location line */
                     } else if (useCombinedRegLocationSms && vehicleValidationStatus !== "valid") {
                       combinedLocationReadbackQueued = true;
                     } else {
                       emitLocationConfirmedSystemEvent();
                     }
+                  }
+                  if (useIiziDeterministicPostLookup) {
+                    requestIiziDeterministicPostLookupCheck("location_confirmed");
                   }
                   maybeNudgeDeferredCallbackSms("location_confirmed");
                   maybeEmitDeferredOccupantPrompt();
@@ -2407,14 +2466,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     },
                     stateRef: iiziShadowStateRef,
                   });
-                  if (useCombinedRegLocationSms && callDirection === "inbound") {
-                    try {
-                      ingestIiziBrainFlow(iiziBrainRef.current, "location_confirmed");
-                      touchIiziBrainLog("location_confirmed");
-                    } catch (err) {
-                      console.error(`[IIZI-Brain] location_flow_failed callId=${callId}`, err);
-                    }
-                  }
                 }
 
                 // 2. Google Form fallback submission (registration number / callback phone)
@@ -2518,8 +2569,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=true (callId=${callId})`);
                         if (!useIiziDeterministicPostLookup || lookup.coverage_invalid) {
                           scheduleUserResponseCreate("system-event", 50);
-                        } else {
-                          requestIiziDeterministicPostLookupCheck("vehicle_lookup_injected");
                         }
                         recordIiziShadowTrace({
                           callId,
@@ -2552,9 +2601,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           combinedLocationReadbackQueued
                         ) {
                           combinedLocationReadbackQueued = false;
-                          if (useIiziDeterministicPostLookup) {
-                            requestIiziDeterministicPostLookupCheck("combined_queue_vehicle_then_location");
-                          } else {
+                          if (!useIiziDeterministicPostLookup) {
                             const emitted = emitLocationConfirmedSystemEvent();
                             if (!emitted) combinedLocationReadbackQueued = true;
                           }
@@ -2562,7 +2609,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         maybeEmitDeferredOccupantPrompt();
                         maybeNudgeDeferredCallbackSms("vehicle_valid");
                         if (useIiziDeterministicPostLookup && !lookup.coverage_invalid) {
-                          requestIiziDeterministicPostLookupCheck("form_vehicle_pipeline");
+                          requestIiziDeterministicPostLookupCheck("vehicle_lookup_result");
                         }
                       } else {
                         const vehicleEvent =
@@ -2617,6 +2664,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         }
                       }
                     }
+                  }
+                  if (useIiziDeterministicPostLookup) {
+                    requestIiziDeterministicPostLookupCheck("form_submitted");
                   }
                 }
               },
