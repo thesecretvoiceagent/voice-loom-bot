@@ -431,6 +431,13 @@ function buildGaAudioOutput(voice: string, speed: number) {
   };
 }
 
+const THEMIS_DEBT_GREETING_TERMS = ["võlg", "võlgnevus", "jääk", "nõue", "euro"] as const;
+
+function greetingMayDiscloseDebt(greetingText: string): boolean {
+  const lower = greetingText.toLowerCase();
+  return THEMIS_DEBT_GREETING_TERMS.some((term) => lower.includes(term));
+}
+
 function buildGaAudioInput(opts: {
   turnDetection?: Record<string, unknown> | null;
   transcription?: { model: string; language: string; prompt: string };
@@ -536,7 +543,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let ignoreAudioUntilNextResponse = false;
   let sessionConfigured = false;
   let pendingInitialResponse = false;
-  let initialResponseFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let realtimeSessionUpdateFailed = false;
   let inboundAudioCooldownUntil = 0;
   let turnDetectionEnableTimer: ReturnType<typeof setTimeout> | null = null;
   let lastAssistantTranscript = "";
@@ -1480,7 +1487,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     let voiceSpeed = 1.0;
     let agentConfig = null;
     let agentTools: string[] = [];
-    let agentTemperature = 0.6;
 
     if (agentId && agentId !== "default") {
       agentConfig = await fetchAgentConfig(agentId);
@@ -1510,9 +1516,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         iiziBrainRef.current.runtimeBrainUi = resolveRuntimeBrainUiFromSettings(settings);
         refreshIiziBrainMergedIntent(iiziBrainRef.current);
         maxCallDurationMinutes = (settings.max_call_duration as number) || 0;
-        if (typeof settings.temperature === "number") {
-          agentTemperature = settings.temperature;
-        }
         voiceSpeed = clampVoiceSpeed((settings as { voice_speed?: unknown }).voice_speed);
         // Per-response token cap for normal turns (greeting still uses INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS)
         const rawCap = (settings as any).response_token_cap;
@@ -2146,6 +2149,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
     sessionConfigured = false;
     pendingInitialResponse = false;
+    realtimeSessionUpdateFailed = false;
     resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
@@ -2154,10 +2158,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     repeatedAssistantTranscriptCount = 0;
     pendingRecoveryCooldownMs = 0;
     clearTurnDetectionEnableTimer();
-    if (initialResponseFallbackTimer) {
-      clearTimeout(initialResponseFallbackTimer);
-      initialResponseFallbackTimer = null;
-    }
 
     openaiWs = new WebSocket(url, {
       headers: {
@@ -2166,15 +2166,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     });
 
     const maybeStartInitialResponse = () => {
+      if (realtimeSessionUpdateFailed) {
+        console.warn(`[RealtimeGA] skipping initial response.create — session.update failed (callId=${callId})`);
+        return;
+      }
       if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !pendingInitialResponse) {
         return;
       }
 
       pendingInitialResponse = false;
-      if (initialResponseFallbackTimer) {
-        clearTimeout(initialResponseFallbackTimer);
-        initialResponseFallbackTimer = null;
-      }
 
       const hasGreetingText = Boolean((greeting || "").trim());
       if (!useInitialGreeting || !hasGreetingText) {
@@ -2192,19 +2192,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }
 
       console.log(`[MediaStream] Triggering initial response (callId=${callId}), greeting="${greeting || "(none)"}"`);
+      if (greetingMayDiscloseDebt(greeting || "")) {
+        console.warn(`[ThemisSafety] initial_greeting_may_disclose_debt callId=${callId}`);
+      }
 
-      const responseCreate: any = {
-        type: "response.create",
-        response: {
-          // Force a low temperature for the greeting turn ONLY so the model
-          // says it verbatim instead of paraphrasing/translating it.
-          temperature: 0.6,
-        },
-      };
+      const greetingResponse: Record<string, unknown> = {};
       if (greeting) {
         // Strict, unambiguous instructions. Past versions said "in the original language"
         // which the model interpreted loosely and would translate Estonian → English.
-        responseCreate.response.instructions =
+        greetingResponse.instructions =
           `Your one and ONLY job for this turn is to read the following greeting OUT LOUD, ` +
           `WORD-FOR-WORD, in the EXACT SAME LANGUAGE it is written in. ` +
           `Do NOT translate it. Do NOT paraphrase it. Do NOT add anything before or after it. ` +
@@ -2212,7 +2208,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           `If the greeting is in Estonian, you MUST speak Estonian. If in Finnish, Finnish. If in English, English. ` +
           `\n\nGREETING TO SAY VERBATIM:\n"""\n${greeting}\n"""`;
       }
-      sendResponseCreate("initial-greeting", responseCreate.response);
+      sendResponseCreate("initial-greeting", Object.keys(greetingResponse).length > 0 ? greetingResponse : undefined);
 
       // Treat the initial response as speaking immediately so anti-barge-in stays active until playback is confirmed done.
       aiIsSpeaking = true;
@@ -2452,10 +2448,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
       }
 
-      // Clamp temperature to OpenAI Realtime's valid range [0.6, 1.2] — values outside
-      // this range can cause the model to emit malformed audio (heard as static/clicks).
-      const rawTemp = agentConfig ? agentTemperature : 0.6;
-      const sessionTemperature = Math.min(1.2, Math.max(0.6, rawTemp));
       greetingTokenLimitRaised = Boolean(greeting);
 
       const gaTranscription = {
@@ -2470,7 +2462,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         session: {
           type: "realtime",
           instructions: fullInstructions,
-          temperature: sessionTemperature,
           output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
           max_output_tokens: greetingTokenLimitRaised
             ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS
@@ -2507,17 +2498,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         tools_count: tools.length,
       };
       console.log(`[GreetingGate] initial turn_detection=null toolsWithheld=true callId=${callId}`);
+      console.log(`[RealtimeGA] temperature_omitted model=${config.openai.realtimeModel} callId=${callId}`);
       console.log(`[Diag-OpenAI-Config] callId=${callId} ${JSON.stringify(lastSessionConfigSent)}`);
       openaiWs!.send(JSON.stringify(sessionUpdate));
-
-      initialResponseFallbackTimer = setTimeout(() => {
-        if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !pendingInitialResponse) {
-          return;
-        }
-        console.warn(`[MediaStream] session.updated not received in time, using fallback start (callId=${callId})`);
-        sessionConfigured = true;
-        maybeStartInitialResponse();
-      }, 500);
     });
 
     openaiWs.on("message", async (data) => {
@@ -4108,6 +4091,24 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               `[Diag] OpenAI error #${responseErrorCount} code=${errCode} message=${errMessage} (callId=${callId}):`,
               JSON.stringify(errPayload)
             );
+            if (!sessionConfigured && !realtimeSessionUpdateFailed) {
+              const isSessionUpdateFailure =
+                errCode === "invalid_request_error" ||
+                /unknown parameter.*['\"]session\./i.test(errMessage);
+              if (isSessionUpdateFailure) {
+                realtimeSessionUpdateFailed = true;
+                pendingInitialResponse = false;
+                console.error(
+                  `[RealtimeGA] session.update failed — aborting, will not send response.create code=${errCode} (callId=${callId})`
+                );
+                transcriptLines.push(`[System]: OpenAI Realtime session configuration failed (${errCode})`);
+                try {
+                  if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
+                } catch {}
+                hangUpCall();
+                finalizeCall();
+              }
+            }
             break;
           }
 
@@ -4120,10 +4121,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     });
 
     openaiWs.on("close", (code, reason) => {
-      if (initialResponseFallbackTimer) {
-        clearTimeout(initialResponseFallbackTimer);
-        initialResponseFallbackTimer = null;
-      }
       clearMarkFallback();
       clearTurnDetectionEnableTimer();
       clearPendingUserResponseTimer();
