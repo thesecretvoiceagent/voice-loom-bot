@@ -1230,10 +1230,71 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   };
 
+  const isRuntimeCommittedTranscriptReason = (reason: string) =>
+    runtimeOwnsPostGreetingResponses() &&
+    (reason === "transcript-ready" || reason === "transcript-fallback-committed-audio");
+
+  const scheduleTranscriptReadyResponse = (
+    itemId: string,
+    reason: "transcript-ready" | "transcript-fallback-committed-audio",
+    attempt = 1
+  ): boolean => {
+    const turn = pendingCommittedUserTurns.get(itemId);
+    if (!turn) return false;
+    if (responseCreateSentForItemIds.has(itemId)) {
+      console.log(
+        `[TurnGate] response_create_deduped itemId=${itemId} existingResponseId=${activeResponseId || "none"} callId=${callId}`
+      );
+      return false;
+    }
+
+    const cooldownLeftMs = Math.max(0, inboundAudioCooldownUntil - Date.now());
+    const blockReason = getCallerAudioBlockReason(true, { transcriptReadyItemId: itemId });
+    if (blockReason || activeResponseId || greetingInProgress || cooldownLeftMs > 0) {
+      if (attempt <= 40) {
+        const waitMs = Math.max(
+          80,
+          Math.min(200, cooldownLeftMs || (blockReason === "caller_still_speaking" ? 120 : 150))
+        );
+        console.log(
+          `[TurnGate] response_create_retry_scheduled reason=${reason} attempt=${attempt} waitMs=${waitMs} block=${blockReason || "none"} itemId=${itemId} callId=${callId}`
+        );
+        setTimeout(() => scheduleTranscriptReadyResponse(itemId, reason, attempt + 1), waitMs);
+        return true;
+      }
+      console.error(
+        `[TurnGate] response_create_gave_up reason=${reason} itemId=${itemId} block=${blockReason || "none"} attempts=${attempt} callId=${callId}`
+      );
+      return false;
+    }
+
+    if (
+      sendResponseCreate(
+        reason,
+        { output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES] },
+        { committedItemId: itemId }
+      )
+    ) {
+      turn.responseScheduled = true;
+      console.log(`[Diag] response.create sent reason=${reason} itemId=${itemId} callId=${callId}`);
+      return true;
+    }
+
+    if (attempt <= 40) {
+      const waitMs = 100;
+      console.log(
+        `[TurnGate] response_create_retry_scheduled reason=${reason} attempt=${attempt} waitMs=${waitMs} block=send_failed itemId=${itemId} callId=${callId}`
+      );
+      setTimeout(() => scheduleTranscriptReadyResponse(itemId, reason, attempt + 1), waitMs);
+      return true;
+    }
+    return false;
+  };
+
   const scheduleResponseForCommittedTurn = (
     itemId: string,
     reason: "transcript-ready" | "transcript-fallback-committed-audio",
-    transcript?: string
+    _transcript?: string
   ): boolean => {
     if (!runtimeOwnsPostGreetingResponses() || itemId === "none") return false;
     const turn = pendingCommittedUserTurns.get(itemId);
@@ -1247,16 +1308,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       );
       return false;
     }
-    turn.responseScheduled = true;
     if (reason === "transcript-ready") turn.transcriptReceived = true;
     clearPendingCommittedTurnFallback(itemId);
-    if (
-      sendResponseCreate(reason, { output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES] })
-    ) {
-      return true;
+
+    const msSinceCallerAudio =
+      lastAcceptedCallerAudioAt > 0 ? Date.now() - lastAcceptedCallerAudioAt : Number.POSITIVE_INFINITY;
+    if (msSinceCallerAudio < liveTurnSettings.silence_duration_ms) {
+      console.log(
+        `[TurnGate] transcript_ready_response_allowed despite_recent_caller_audio=true itemId=${itemId} msSinceAudio=${msSinceCallerAudio} callId=${callId}`
+      );
     }
-    scheduleUserResponseCreate(reason, 80, transcript);
-    return true;
+
+    return scheduleTranscriptReadyResponse(itemId, reason, 1);
   };
 
   const registerPendingCommittedTurn = (itemId: string, framesAtCommit: number) => {
@@ -1309,13 +1372,29 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return !responseCreateSentForItemIds.has(lastCommittedUserItemId);
   };
 
-  const getCallerAudioBlockReason = (includeCallerSpeech = false): string | null => {
+  const getCallerAudioBlockReason = (
+    includeCallerSpeech = false,
+    opts?: { transcriptReadyItemId?: string | null }
+  ): string | null => {
+    const transcriptItemId = opts?.transcriptReadyItemId || null;
+    const trustVadTurnEnd =
+      Boolean(transcriptItemId) &&
+      runtimeOwnsPostGreetingResponses() &&
+      pendingCommittedUserTurns.has(transcriptItemId);
+
     if (includeCallerSpeech) {
       if (callerSpeechActive) return "caller_still_speaking";
-      if (lastAcceptedCallerAudioAt > 0) {
+      if (!trustVadTurnEnd && lastAcceptedCallerAudioAt > 0) {
         const msSinceLastCallerAudio = Date.now() - lastAcceptedCallerAudioAt;
         if (msSinceLastCallerAudio < liveTurnSettings.silence_duration_ms) {
           return "caller_still_speaking";
+        }
+      } else if (trustVadTurnEnd && lastAcceptedCallerAudioAt > 0) {
+        const msSinceLastCallerAudio = Date.now() - lastAcceptedCallerAudioAt;
+        if (msSinceLastCallerAudio < liveTurnSettings.silence_duration_ms) {
+          console.log(
+            `[TurnGate] transcript_ready_response_allowed despite_recent_caller_audio=true itemId=${transcriptItemId} callId=${callId}`
+          );
         }
       }
     }
@@ -1392,8 +1471,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }, timeoutMs);
   };
 
-  const sendResponseCreate = (reason: string, response?: Record<string, unknown>) => {
-    const blockReason = isUserTurnReason(reason) ? getCallerAudioBlockReason(true) : null;
+  const sendResponseCreate = (
+    reason: string,
+    response?: Record<string, unknown>,
+    opts?: { committedItemId?: string | null }
+  ) => {
+    const committedItemId = opts?.committedItemId ?? lastCommittedUserItemId;
+    const blockReason = isUserTurnReason(reason)
+      ? getCallerAudioBlockReason(true, {
+          transcriptReadyItemId: isRuntimeCommittedTranscriptReason(reason) ? committedItemId : null,
+        })
+      : null;
     if (blockReason) {
       console.log(`[TurnGate] blocked response.create reason=${blockReason} source=${reason} callId=${callId}`);
       return false;
@@ -1402,11 +1490,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       isUserTurnReason(reason) &&
       !reason.startsWith("system-event") &&
       reason !== "tool-result" &&
-      lastCommittedUserItemId &&
-      responseCreateSentForItemIds.has(lastCommittedUserItemId)
+      committedItemId &&
+      responseCreateSentForItemIds.has(committedItemId)
     ) {
       console.log(
-        `[TurnGate] response_create_deduped itemId=${lastCommittedUserItemId} existingResponseId=${activeResponseId || "none"} callId=${callId}`
+        `[TurnGate] response_create_deduped itemId=${committedItemId} existingResponseId=${activeResponseId || "none"} callId=${callId}`
       );
       return false;
     }
@@ -1421,10 +1509,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseCreateSentCount += 1;
     if (reason !== "initial-greeting") userResponseCreateSentCount += 1;
     lastResponseCreateReason = reason;
-    if (lastCommittedUserItemId) {
-      responseCreateSentForItemIds.add(lastCommittedUserItemId);
+    if (committedItemId) {
+      responseCreateSentForItemIds.add(committedItemId);
+      const turn = pendingCommittedUserTurns.get(committedItemId);
+      if (turn) turn.responseScheduled = true;
     }
-    console.log(`[Diag] response.create sent #${responseCreateSentCount} reason=${reason} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`);
+    console.log(
+      `[Diag] response.create sent #${responseCreateSentCount} reason=${reason} itemId=${committedItemId || "none"} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`
+    );
     openaiWs.send(JSON.stringify(response ? { type: "response.create", response } : { type: "response.create" }));
     return true;
   };
@@ -1463,7 +1555,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
       const finalReason = pendingUserResponseReason || reason;
       const cooldownLeftMs = Math.max(0, inboundAudioCooldownUntil - Date.now());
-      const blockReason = isUserTurnReason(finalReason) ? getCallerAudioBlockReason(true) : null;
+      const blockReason = isUserTurnReason(finalReason)
+        ? getCallerAudioBlockReason(true, {
+            transcriptReadyItemId: isRuntimeCommittedTranscriptReason(finalReason)
+              ? lastCommittedUserItemId
+              : null,
+          })
+        : null;
       if (
         isUserTurnReason(finalReason) &&
         !(pendingUserResponseTranscript || "").trim() &&
