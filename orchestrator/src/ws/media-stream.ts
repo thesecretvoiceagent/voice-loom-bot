@@ -731,7 +731,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let initialGreetingResponseFinished = false;
   let inputFramesSinceLastCommit = 0;
   let lastCommittedUserItemId: string | null = null;
+  let framesForPendingCommit = 0;
   const responseCreateSentForItemIds = new Set<string>();
+  type PendingCommittedUserTurn = {
+    itemId: string;
+    committedAt: number;
+    framesAtCommit: number;
+    transcriptReceived: boolean;
+    responseScheduled: boolean;
+    fallbackTimer: ReturnType<typeof setTimeout> | null;
+  };
+  const pendingCommittedUserTurns = new Map<string, PendingCommittedUserTurn>();
   let roadsideContextActive = false;
   const emittedOccupantNudges = new Set<string>();
   const emittedCallbackPreferenceNudges = new Set<string>();
@@ -769,6 +779,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const iiziCombinedInbound = () => useCombinedRegLocationSms && callDirection === "inbound";
+  /** Themis / prompt-led outbound: runtime schedules response.create (not OpenAI VAD auto). */
+  const runtimeOwnsPostGreetingResponses = () =>
+    initialGreetingResponseFinished && callDirection === "outbound" && !iiziCombinedInbound();
   /** Strict lookup success + location_confirmed=true */
   const iiziBackendReadyForReadbacks = () => vehicleLookupPassed && locationConfirmedFlag;
   const iiziCanAskOccupantQuestion = () =>
@@ -1209,8 +1222,77 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     pendingUserResponseAttempts = 0;
   };
 
+  const clearPendingCommittedTurnFallback = (itemId: string) => {
+    const turn = pendingCommittedUserTurns.get(itemId);
+    if (turn?.fallbackTimer) {
+      clearTimeout(turn.fallbackTimer);
+      turn.fallbackTimer = null;
+    }
+  };
+
+  const scheduleResponseForCommittedTurn = (
+    itemId: string,
+    reason: "transcript-ready" | "transcript-fallback-committed-audio",
+    transcript?: string
+  ): boolean => {
+    if (!runtimeOwnsPostGreetingResponses() || itemId === "none") return false;
+    const turn = pendingCommittedUserTurns.get(itemId);
+    if (!turn) {
+      console.warn(`[TurnGate] schedule skipped reason=no_pending_turn itemId=${itemId} source=${reason} callId=${callId}`);
+      return false;
+    }
+    if (turn.responseScheduled || responseCreateSentForItemIds.has(itemId)) {
+      console.log(
+        `[TurnGate] response_create_deduped itemId=${itemId} existingResponseId=${activeResponseId || "none"} callId=${callId}`
+      );
+      return false;
+    }
+    turn.responseScheduled = true;
+    if (reason === "transcript-ready") turn.transcriptReceived = true;
+    clearPendingCommittedTurnFallback(itemId);
+    if (
+      sendResponseCreate(reason, { output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES] })
+    ) {
+      return true;
+    }
+    return scheduleUserResponseCreate(reason, 80, transcript);
+  };
+
+  const registerPendingCommittedTurn = (itemId: string, framesAtCommit: number) => {
+    clearPendingCommittedTurnFallback(itemId);
+    const turn: PendingCommittedUserTurn = {
+      itemId,
+      committedAt: Date.now(),
+      framesAtCommit,
+      transcriptReceived: false,
+      responseScheduled: false,
+      fallbackTimer: null,
+    };
+    pendingCommittedUserTurns.set(itemId, turn);
+    console.log(
+      `[TurnGate] pending_user_audio_turn itemId=${itemId} transcript_len=0 frames=${framesAtCommit} callId=${callId}`
+    );
+    const fallbackMs = liveTurnSettings.inbound_transcript_fallback_ms;
+    turn.fallbackTimer = setTimeout(() => {
+      turn.fallbackTimer = null;
+      if (turn.responseScheduled || responseCreateSentForItemIds.has(itemId)) return;
+      if (turn.framesAtCommit < MIN_INPUT_FRAMES_BEFORE_COMMIT) {
+        console.log(
+          `[TurnGate] transcript-fallback skipped reason=too_few_frames frames=${turn.framesAtCommit} itemId=${itemId} callId=${callId}`
+        );
+        return;
+      }
+      console.log(
+        `[TurnGate] transcript-fallback firing itemId=${itemId} timeoutMs=${fallbackMs} frames=${turn.framesAtCommit} callId=${callId}`
+      );
+      scheduleResponseForCommittedTurn(itemId, "transcript-fallback-committed-audio");
+    }, fallbackMs);
+  };
+
   const shouldManuallyScheduleResponse = (reason: string) => {
     if (reason.startsWith("system-event") || reason === "tool-result") return true;
+    if (reason === "transcript-ready" || reason === "transcript-fallback-committed-audio") return true;
+    if (runtimeOwnsPostGreetingResponses()) return false;
     if (!vadServerCreateResponseEnabled) return true;
     if (reason.includes("user-transcript") || reason.includes("inbound-transcript")) return false;
     if (reason.includes("speech") || reason.includes("audio-commit") || reason.includes("watchdog")) {
@@ -1256,6 +1338,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const isUserTurnReason = (reason: string) =>
     reason.includes("user") ||
+    reason.includes("transcript") ||
     reason.includes("inbound") ||
     reason.includes("watchdog") ||
     reason.includes("speech") ||
@@ -1278,7 +1361,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       clearStalePendingUserTurn("too_few_frames");
       return false;
     }
-    console.warn(`[Diag] input_audio_buffer.commit sent reason=${reason} frames=${inputFramesSinceLastCommit} (callId=${callId})`);
+    framesForPendingCommit = inputFramesSinceLastCommit;
+    console.warn(`[Diag] input_audio_buffer.commit sent reason=${reason} frames=${framesForPendingCommit} (callId=${callId})`);
     openaiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
     inputFramesSinceLastCommit = 0;
     if (shouldManuallyScheduleResponse(reason)) {
@@ -1598,12 +1682,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // BEFORE enabling VAD, so it doesn't immediately fire a false speech_started.
     openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
     inputFramesSinceLastCommit = 0;
+    const vadAutoCreateResponse = iiziCombinedInbound();
     const turnDetection = {
       type: "server_vad",
       threshold: liveTurnSettings.vad_threshold,
       prefix_padding_ms: liveTurnSettings.prefix_padding_ms,
       silence_duration_ms: liveTurnSettings.silence_duration_ms,
-      create_response: true,
+      create_response: vadAutoCreateResponse,
       interrupt_response: liveTurnSettings.interrupt_response,
     };
     const patchFields: Record<string, unknown> = {
@@ -1624,7 +1709,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(
       `[Diag-OpenAI-Config] callId=${callId} direction=${callDirection} session.update patch=${JSON.stringify({ turn_detection: turnDetection, tools_count: Array.isArray(patchFields.tools) ? patchFields.tools.length : 0 })}`
     );
-    vadServerCreateResponseEnabled = true;
+    vadServerCreateResponseEnabled = vadAutoCreateResponse;
+    console.log(
+      `[TurnGate] VAD create_response=${vadAutoCreateResponse} runtimeOwned=${runtimeOwnsPostGreetingResponses()} callId=${callId}`
+    );
     sendGaSessionUpdate("post-greeting-vad-tools", patchFields);
   };
 
@@ -2413,6 +2501,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     inputFramesSinceLastCommit = 0;
     lastCommittedUserItemId = null;
     responseCreateSentForItemIds.clear();
+    pendingCommittedUserTurns.clear();
+    framesForPendingCommit = 0;
     hasPostGreetingSpeechStarted = false;
     hasCommittedUserAudio = false;
     userAudioTurnCount = 0;
@@ -2831,6 +2921,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               resolvedResponseReason = "inbound-auto-vad";
             }
             activeResponseReason = resolvedResponseReason;
+            const runtimeUnexpectedAuto =
+              runtimeOwnsPostGreetingResponses() &&
+              (resolvedResponseReason === "(none)" ||
+                resolvedResponseReason === "vad-auto-response" ||
+                resolvedResponseReason === "speech-stopped" ||
+                resolvedResponseReason === "committed-user-audio");
+            if (runtimeUnexpectedAuto) {
+              console.warn(
+                `[TurnGate] unexpected_auto_response_created responseId=${activeResponseId || "none"} itemId=${lastCommittedUserItemId || "none"} reason=${resolvedResponseReason} callId=${callId}`
+              );
+            }
             if (activeResponseReason !== "initial-greeting") userResponseCreatedCount += 1;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
@@ -3065,8 +3166,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               clearStalePendingUserTurn("empty_transcript", transcriptItemId);
               break;
             }
+            const pendingTurn = pendingCommittedUserTurns.get(transcriptItemId);
+            const framesForLog = pendingTurn?.framesAtCommit ?? inputFramesSinceLastCommit;
             console.log(
-              `[TurnGate] valid_user_turn itemId=${transcriptItemId} transcript_len=${transcriptTextAll.length} frames=${inputFramesSinceLastCommit} callId=${callId}`
+              `[TurnGate] valid_user_turn itemId=${transcriptItemId} transcript_len=${transcriptTextAll.length} frames=${framesForLog} callId=${callId}`
             );
             if (typeof event.transcript === "string" && event.transcript.trim().length > 0) {
               userUtteranceCount += 1;
@@ -3145,6 +3248,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(
                 `[Diag-InboundTurn] fallback scheduled seq=${fallbackSeq} timeoutMs=${liveTurnSettings.inbound_transcript_fallback_ms} text="${transcriptText.slice(0, 160)}" (callId=${callId})`
               );
+            } else if (runtimeOwnsPostGreetingResponses()) {
+              scheduleResponseForCommittedTurn(transcriptItemId, "transcript-ready", event.transcript);
             } else if (
               !responseCreateSentForItemIds.has(transcriptItemId) &&
               shouldManuallyScheduleResponse("user-transcript")
@@ -4407,9 +4512,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             const committedItemId = (event as { item_id?: string }).item_id || null;
             if (committedItemId) {
               lastCommittedUserItemId = committedItemId;
-              if (vadServerCreateResponseEnabled) {
-                responseCreateSentForItemIds.add(committedItemId);
-              }
             }
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${committedItemId || "?"} (callId=${callId})`);
             if (initialGreetingResponseFinished && committedItemId) {
@@ -4417,13 +4519,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               userAudioTurnCount += 1;
               logUserAudioActivity("committed", 0);
             }
-            if (callDirection !== "inbound" && committedItemId) {
+            if (runtimeOwnsPostGreetingResponses() && committedItemId) {
+              registerPendingCommittedTurn(committedItemId, framesForPendingCommit);
+            } else if (callDirection !== "inbound" && committedItemId && !vadServerCreateResponseEnabled) {
               console.log(
-                `[TurnGate] pending_user_audio_turn itemId=${committedItemId} transcript_len=0 frames=${inputFramesSinceLastCommit} callId=${callId}`
+                `[TurnGate] pending_user_audio_turn itemId=${committedItemId} transcript_len=0 frames=${framesForPendingCommit} callId=${callId}`
               );
-              if (!vadServerCreateResponseEnabled) {
-                scheduleUserResponseCreate("audio-commit", 1200);
-              }
+              scheduleUserResponseCreate("audio-commit", 1200);
+            } else if (vadServerCreateResponseEnabled && committedItemId) {
+              responseCreateSentForItemIds.add(committedItemId);
             }
             break;
           }
@@ -4556,6 +4660,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (callDurationTimer) clearTimeout(callDurationTimer);
     pendingEndCall = null;
     clearEndCallHangupTimer();
+    for (const turn of pendingCommittedUserTurns.values()) {
+      if (turn.fallbackTimer) clearTimeout(turn.fallbackTimer);
+    }
+    pendingCommittedUserTurns.clear();
     clearTurnDetectionEnableTimer();
     clearPendingUserResponseTimer();
     clearInboundTranscriptFallbackTimer();
