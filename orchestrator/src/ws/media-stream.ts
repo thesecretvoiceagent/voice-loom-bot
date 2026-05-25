@@ -445,6 +445,20 @@ function buildGaAudioOutput(voice: string, speed: number) {
 
 const THEMIS_DEBT_GREETING_TERMS = ["võlg", "võlgnevus", "jääk", "nõue", "euro"] as const;
 
+const WRONG_PERSON_END_CALL_MARKERS = [
+  "vale isik",
+  "vale inimene",
+  "wrong person",
+  "ei ole õige inimene",
+  "not the person",
+  "kolmas isik",
+] as const;
+
+function isWrongPersonEndCallContext(text: string): boolean {
+  const lower = text.toLowerCase();
+  return WRONG_PERSON_END_CALL_MARKERS.some((marker) => lower.includes(marker));
+}
+
 function greetingMayDiscloseDebt(greetingText: string): boolean {
   const lower = greetingText.toLowerCase();
   return THEMIS_DEBT_GREETING_TERMS.some((term) => lower.includes(term));
@@ -602,6 +616,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   // 2. We require a minimum elapsed time since greeting completion.
   let greetingCompletedAt: number | null = null;
   let userUtteranceCount = 0;
+  let hasPostGreetingSpeechStarted = false;
+  let hasCommittedUserAudio = false;
+  let userAudioTurnCount = 0;
   const MIN_MS_AFTER_GREETING_BEFORE_END_CALL = 12_000;
   let responsePlaybackMarkName: string | null = null;
   let responseHasAudio = false;
@@ -1106,6 +1123,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const assistantPlaybackProtected = () =>
     Boolean(activeResponseId) || aiIsSpeaking || Boolean(responsePlaybackMarkName);
 
+  const hasUserAudioActivity = () =>
+    hasPostGreetingSpeechStarted || hasCommittedUserAudio || userAudioTurnCount > 0;
+
+  const logUserAudioActivity = (source: string, transcriptLen = 0) => {
+    console.log(
+      `[TurnGate] user_audio_activity speechStarted=${hasPostGreetingSpeechStarted} committed=${hasCommittedUserAudio} transcriptLen=${transcriptLen} userAudioTurnCount=${userAudioTurnCount} source=${source} callId=${callId}`
+    );
+  };
+
   const clearStalePendingUserTurn = (reason: string, itemId?: string | null) => {
     if (!pendingUserResponseReason && !pendingUserResponseTimer) return;
     console.log(
@@ -1588,7 +1614,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       greetingInProgress = false;
       initialGreetingResponseFinished = true;
       if (lastResponseCreateReason === "initial-greeting") {
-        lastResponseCreateReason = "(greeting-done)";
+        lastResponseCreateReason = "(none)";
       }
       greetingCompletedAt = Date.now();
       if (useCombinedRegLocationSms && callDirection === "inbound") {
@@ -2296,6 +2322,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     inputFramesSinceLastCommit = 0;
     lastCommittedUserItemId = null;
     responseCreateSentForItemIds.clear();
+    hasPostGreetingSpeechStarted = false;
+    hasCommittedUserAudio = false;
+    userAudioTurnCount = 0;
     resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
@@ -2693,8 +2722,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               responseCreateSentForItemIds.add(lastCommittedUserItemId);
             }
             let resolvedResponseReason = lastResponseCreateReason;
-            if (initialGreetingResponseFinished && resolvedResponseReason === "initial-greeting") {
-              resolvedResponseReason = pendingUserResponseReason || "vad-auto-response";
+            if (
+              initialGreetingResponseFinished &&
+              (resolvedResponseReason === "initial-greeting" || resolvedResponseReason === "(greeting-done)")
+            ) {
+              resolvedResponseReason =
+                pendingUserResponseReason ||
+                (hasCommittedUserAudio
+                  ? "committed-user-audio"
+                  : hasPostGreetingSpeechStarted
+                    ? "vad-auto-response"
+                    : "speech-stopped");
             }
             if (callDirection === "inbound" && !greetingInProgress && resolvedResponseReason === "initial-greeting") {
               resolvedResponseReason = "inbound-auto-vad";
@@ -2939,6 +2977,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             );
             if (typeof event.transcript === "string" && event.transcript.trim().length > 0) {
               userUtteranceCount += 1;
+              logUserAudioActivity("transcript", transcriptTextAll.length);
               const callerSpeechLower = event.transcript.toLowerCase();
               const matchedRoadsideTrigger = OCCUPANT_REQUIRED_ROADSIDE_TRIGGERS.find((kw) =>
                 callerSpeechLower.includes(kw)
@@ -3116,13 +3155,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
 
               // Guardrail: refuse end_call if it fires too soon after greeting or before
-              // any real user utterance. This stops the bot from "hanging up randomly"
-              // right after the greeting (e.g. when whisper STT mangles the first reply).
+              // any real user activity. Privacy-safe wrong-person hangups may proceed after
+              // greeting even when the transcript callback has not arrived yet.
+              const endCallContextText = `${reason} ${typeof event.arguments === "string" ? event.arguments : ""}`;
+              const wrongPersonEnd = isWrongPersonEndCallContext(endCallContextText);
               const msSinceGreeting = greetingCompletedAt ? Date.now() - greetingCompletedAt : 0;
-              const tooEarly = !greetingCompletedAt || msSinceGreeting < MIN_MS_AFTER_GREETING_BEFORE_END_CALL;
-              const noUserSpeech = userUtteranceCount === 0;
-              if (tooEarly || noUserSpeech) {
-                console.warn(`[MediaStream] end_call BLOCKED — tooEarly=${tooEarly} (msSinceGreeting=${msSinceGreeting}) noUserSpeech=${noUserSpeech} userUtterances=${userUtteranceCount} reason="${reason}" (callId=${callId})`);
+              const tooEarly =
+                !greetingCompletedAt ||
+                (msSinceGreeting < MIN_MS_AFTER_GREETING_BEFORE_END_CALL && !wrongPersonEnd);
+              const noUserSpeech = userUtteranceCount === 0 && !hasUserAudioActivity();
+              const allowWrongPersonDespiteNoTranscript =
+                wrongPersonEnd && Boolean(greetingCompletedAt) && !tooEarly;
+              if ((tooEarly || noUserSpeech) && !allowWrongPersonDespiteNoTranscript) {
+                console.warn(
+                  `[EndCallGuard] blocked reason="${reason}" tooEarly=${tooEarly} noUserSpeech=${noUserSpeech} userAudioTurnCount=${userAudioTurnCount} userUtterances=${userUtteranceCount} msSinceGreeting=${msSinceGreeting} (callId=${callId})`
+                );
                 openaiWs!.send(JSON.stringify({
                   type: "conversation.item.create",
                   item: {
@@ -3137,6 +3184,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 }));
                 scheduleUserResponseCreate("tool-result", 50);
                 break;
+              }
+
+              if (allowWrongPersonDespiteNoTranscript && userUtteranceCount === 0) {
+                console.log(
+                  `[EndCallGuard] allow_wrong_person_end_call despite_no_transcript=true reason="${reason}" callId=${callId}`
+                );
               }
 
               console.log(`[MediaStream] END CALL requested: ${reason} (callId=${callId})`);
@@ -4209,6 +4262,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           case "input_audio_buffer.speech_started":
             speechStartedCount += 1;
             callerSpeechActive = true;
+            if (initialGreetingResponseFinished && !greetingInProgress) {
+              hasPostGreetingSpeechStarted = true;
+              logUserAudioActivity("speech_started");
+            }
             console.log(`[Diag] speech_started #${speechStartedCount} (callId=${callId}) state{greeting=${greetingInProgress},aiSpeaking=${aiIsSpeaking},antiBargein=${antiBargeinEnabled}}`);
             const speechStartBlockReason = getCallerAudioBlockReason();
             if (speechStartBlockReason) {
@@ -4248,9 +4305,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
             }
             console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${committedItemId || "?"} (callId=${callId})`);
+            if (initialGreetingResponseFinished && committedItemId) {
+              hasCommittedUserAudio = true;
+              userAudioTurnCount += 1;
+              logUserAudioActivity("committed", 0);
+            }
             if (callDirection !== "inbound" && committedItemId) {
               console.log(
-                `[TurnGate] valid_user_turn itemId=${committedItemId} transcript_len=0 frames=0 callId=${callId}`
+                `[TurnGate] pending_user_audio_turn itemId=${committedItemId} transcript_len=0 frames=${inputFramesSinceLastCommit} callId=${callId}`
               );
               if (!vadServerCreateResponseEnabled) {
                 scheduleUserResponseCreate("audio-commit", 1200);
