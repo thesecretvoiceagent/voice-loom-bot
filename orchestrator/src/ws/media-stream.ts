@@ -459,6 +459,23 @@ function isWrongPersonEndCallContext(text: string): boolean {
   return WRONG_PERSON_END_CALL_MARKERS.some((marker) => lower.includes(marker));
 }
 
+function resolveEndCallCloseText(context: string): string {
+  const lower = context.toLowerCase();
+  if (lower.includes("juba maksnud") || lower.includes("already paid")) {
+    return "Selge. Panen selle info kirja. Head päeva!";
+  }
+  if (
+    isWrongPersonEndCallContext(context) ||
+    lower.includes("vale number") ||
+    lower.includes("wrong number") ||
+    lower.includes("ei räägi") ||
+    lower.includes("not the person")
+  ) {
+    return "Selge, vabandan tülitamast. Head päeva!";
+  }
+  return "Selge. Head päeva!";
+}
+
 function greetingMayDiscloseDebt(greetingText: string): boolean {
   const lower = greetingText.toLowerCase();
   return THEMIS_DEBT_GREETING_TERMS.some((term) => lower.includes(term));
@@ -619,6 +636,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let hasPostGreetingSpeechStarted = false;
   let hasCommittedUserAudio = false;
   let userAudioTurnCount = 0;
+  let pendingEndCall: {
+    reason: string;
+    closeText: string;
+    closeSpeechRequired: boolean;
+    closeResponseSent: boolean;
+  } | null = null;
+  let endCallHangupTimer: ReturnType<typeof setTimeout> | null = null;
   const MIN_MS_AFTER_GREETING_BEFORE_END_CALL = 12_000;
   let responsePlaybackMarkName: string | null = null;
   let responseHasAudio = false;
@@ -1114,6 +1138,48 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   };
 
+  const clearEndCallHangupTimer = () => {
+    if (endCallHangupTimer) {
+      clearTimeout(endCallHangupTimer);
+      endCallHangupTimer = null;
+    }
+  };
+
+  const currentResponseHasAssistantAudio = () =>
+    responseHasAudio || activeResponseTwilioChunks > 0 || activeResponseTwilioBytes > 0;
+
+  const completePendingEndCallHangup = (source: string) => {
+    if (!pendingEndCall) return;
+    console.log(`[EndCall] close_playback_done_hanging_up source=${source} callId=${callId}`);
+    pendingEndCall = null;
+    clearEndCallHangupTimer();
+    hangUpCall();
+  };
+
+  const speakEndCallClose = (): boolean => {
+    if (!pendingEndCall?.closeSpeechRequired || pendingEndCall.closeResponseSent) return false;
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return false;
+    const text = pendingEndCall.closeText;
+    console.log(`[EndCall] speaking_close_before_hangup text="${text}" callId=${callId}`);
+    pendingEndCall.closeResponseSent = true;
+    const sent = sendResponseCreate("end-call-close", {
+      instructions:
+        `Your ONLY task is to say the following OUT LOUD, WORD-FOR-WORD in Estonian. ` +
+        `Do not add, remove, or change any words:\n"""\n${text}\n"""`,
+      output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
+    });
+    if (!sent) {
+      pendingEndCall.closeResponseSent = false;
+      return false;
+    }
+    clearEndCallHangupTimer();
+    endCallHangupTimer = setTimeout(() => {
+      console.warn(`[EndCall] close speech fallback timeout — hanging up (callId=${callId})`);
+      completePendingEndCallHangup("close-speak-fallback-timeout");
+    }, 12_000);
+    return true;
+  };
+
   const strictTurnGateEnabled = () =>
     callDirection === "inbound" && (antiBargeinEnabled || liveTurnSettings.interrupt_response === false);
 
@@ -1600,6 +1666,31 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
+
+    if (pendingEndCall) {
+      if (pendingEndCall.closeSpeechRequired && !pendingEndCall.closeResponseSent) {
+        if (!speakEndCallClose()) {
+          endCallHangupTimer = setTimeout(
+            () => completePendingEndCallHangup("close-speak-send-failed"),
+            1500
+          );
+        }
+        startInboundAudioCooldown(recoveryCooldownMs, source);
+        return;
+      }
+      if (!pendingEndCall.closeSpeechRequired) {
+        console.log(`[EndCall] hanging_up_after_existing_audio callId=${callId}`);
+        startInboundAudioCooldown(recoveryCooldownMs, source);
+        completePendingEndCallHangup(source);
+        return;
+      }
+      if (pendingEndCall.closeSpeechRequired && pendingEndCall.closeResponseSent) {
+        startInboundAudioCooldown(recoveryCooldownMs, source);
+        completePendingEndCallHangup(source);
+        return;
+      }
+    }
+
     startInboundAudioCooldown(recoveryCooldownMs, source);
     if (!greetingInProgress && pendingUserResponseReason) {
       if (hasValidPendingUserTurn() && !activeResponseId) {
@@ -2325,6 +2416,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     hasPostGreetingSpeechStarted = false;
     hasCommittedUserAudio = false;
     userAudioTurnCount = 0;
+    pendingEndCall = null;
+    clearEndCallHangupTimer();
     resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
@@ -3192,24 +3285,38 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 );
               }
 
-              console.log(`[MediaStream] END CALL requested: ${reason} (callId=${callId})`);
+              const currentHasAudio = currentResponseHasAssistantAudio();
+              const closeText = resolveEndCallCloseText(endCallContextText);
+              const willSpeakClose = !currentHasAudio;
+              console.log(
+                `[EndCall] requested reason="${reason}" hasAudio=${currentHasAudio} willSpeakClose=${willSpeakClose} callId=${callId}`
+              );
               transcriptLines.push(`[System]: Call ended — ${reason}`);
 
-              const toolResult = {
-                type: "conversation.item.create",
-                item: {
-                  type: "function_call_output",
-                  call_id: event.call_id,
-                  output: JSON.stringify({ success: true, message: "Call will end after your goodbye message." }),
-                },
+              pendingEndCall = {
+                reason,
+                closeText,
+                closeSpeechRequired: willSpeakClose,
+                closeResponseSent: false,
               };
-              openaiWs!.send(JSON.stringify(toolResult));
-              scheduleUserResponseCreate("tool-result", 50);
+              clearEndCallHangupTimer();
 
-              setTimeout(() => {
-                console.log(`[MediaStream] Hanging up via Twilio (callId=${callId})`);
-                hangUpCall();
-              }, 8000); // Give more time for goodbye message to complete
+              openaiWs!.send(
+                JSON.stringify({
+                  type: "conversation.item.create",
+                  item: {
+                    type: "function_call_output",
+                    call_id: event.call_id,
+                    output: JSON.stringify({
+                      success: true,
+                      message: willSpeakClose
+                        ? "Call will end after the mandatory goodbye line is spoken."
+                        : "Call will end after current assistant audio finishes playing.",
+                    }),
+                  },
+                })
+              );
+              // Do not schedule tool-result — it often creates a tool-only response with no audio.
             }
 
             if (fnName === "lookup_vehicle") {
@@ -4447,6 +4554,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       }
     }
     if (callDurationTimer) clearTimeout(callDurationTimer);
+    pendingEndCall = null;
+    clearEndCallHangupTimer();
     clearTurnDetectionEnableTimer();
     clearPendingUserResponseTimer();
     clearInboundTranscriptFallbackTimer();
