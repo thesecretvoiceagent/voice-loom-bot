@@ -417,6 +417,8 @@ const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 /** GA Realtime: G.711 μ-law (Twilio-compatible). */
 const REALTIME_GA_ULAW_FORMAT = { type: "audio/pcmu" } as const;
 const REALTIME_GA_RESPONSE_MODALITIES = ["audio"] as const;
+/** ~100 ms of Twilio 20 ms μ-law frames before input_audio_buffer.commit. */
+const MIN_INPUT_FRAMES_BEFORE_COMMIT = 5;
 
 function clampVoiceSpeed(raw: unknown): number {
   const n = typeof raw === "number" && Number.isFinite(raw) ? raw : 1.0;
@@ -673,13 +675,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const turnGateDropCounts: Record<string, number> = {};
   let callerSpeechActive = false;
   let lastAcceptedCallerAudioAt = 0;
+  let vadEnabledAcknowledged = false;
+  let vadServerCreateResponseEnabled = false;
+  let initialGreetingResponseFinished = false;
+  let inputFramesSinceLastCommit = 0;
+  let lastCommittedUserItemId: string | null = null;
+  const responseCreateSentForItemIds = new Set<string>();
   let roadsideContextActive = false;
   const emittedOccupantNudges = new Set<string>();
   const emittedCallbackPreferenceNudges = new Set<string>();
   let agentBrainUiConfig: AgentBrainConfig = getDefaultAgentBrainConfigForCall();
 
   const diagState = () =>
-    `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
+    `state{greetingPlaying=${greetingInProgress},greetingCompletedAt=${greetingCompletedAt ? new Date(greetingCompletedAt).toISOString() : "null"},vadEnabled=${vadEnabledAcknowledged},assistantSpeaking=${aiIsSpeaking},activeResponse=${activeResponseId || "none"},pendingUserTurn=${pendingUserResponseReason || "none"},userUtteranceCount=${userUtteranceCount},openaiWs.readyState=${openaiWs?.readyState ?? "null"},twilioWs.readyState=${twilioWs.readyState}}`;
 
   const logCallDeploymentIdentity = () => {
     const d = getDeploymentIdentity();
@@ -1088,6 +1096,34 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const assistantPlaybackProtected = () =>
     Boolean(activeResponseId) || aiIsSpeaking || Boolean(responsePlaybackMarkName);
 
+  const clearStalePendingUserTurn = (reason: string, itemId?: string | null) => {
+    if (!pendingUserResponseReason && !pendingUserResponseTimer) return;
+    console.log(
+      `[TurnGate] pending_user_turn_cleared reason=${reason} pendingReason=${pendingUserResponseReason || "none"} itemId=${itemId || lastCommittedUserItemId || "none"} callId=${callId}`
+    );
+    clearPendingUserResponseTimer();
+    pendingUserResponseReason = null;
+    pendingUserResponseTranscript = null;
+    pendingUserResponseAttempts = 0;
+  };
+
+  const shouldManuallyScheduleResponse = (reason: string) => {
+    if (reason.startsWith("system-event") || reason === "tool-result") return true;
+    if (!vadServerCreateResponseEnabled) return true;
+    if (reason.includes("user-transcript") || reason.includes("inbound-transcript")) return false;
+    if (reason.includes("speech") || reason.includes("audio-commit") || reason.includes("watchdog")) {
+      return false;
+    }
+    return true;
+  };
+
+  const hasValidPendingUserTurn = () => {
+    const transcript = (pendingUserResponseTranscript || "").trim();
+    if (transcript.length > 0) return true;
+    if (!lastCommittedUserItemId) return false;
+    return !responseCreateSentForItemIds.has(lastCommittedUserItemId);
+  };
+
   const getCallerAudioBlockReason = (includeCallerSpeech = false): string | null => {
     if (includeCallerSpeech) {
       if (callerSpeechActive) return "caller_still_speaking";
@@ -1101,8 +1137,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (greetingInProgress) {
       return "greeting_playing";
     }
+    if (greetingCompletedAt && !vadEnabledAcknowledged) {
+      return "vad_not_enabled_yet";
+    }
     if (Date.now() < inboundAudioCooldownUntil) {
       return "post_playback_cooldown";
+    }
+    if (callDirection === "outbound" && assistantPlaybackProtected()) {
+      return "assistant_speaking";
     }
     if (strictTurnGateEnabled() && assistantPlaybackProtected()) {
       return "assistant_speaking";
@@ -1117,14 +1159,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     reason.includes("speech") ||
     reason.includes("audio-commit");
 
-  const commitAudioAndCreateResponse = (reason: string, delayMs = 80) => {
+  const tryCommitCallerAudio = (reason: string, delayMs = 80) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
       console.warn(`[Diag] audio commit skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} (callId=${callId})`);
-      return;
+      return false;
     }
-    console.warn(`[Diag] input_audio_buffer.commit sent reason=${reason} (callId=${callId})`);
+    const commitBlockReason = getCallerAudioBlockReason(true);
+    if (commitBlockReason) {
+      console.log(`[TurnGate] skip_empty_audio_commit reason=blocked_${commitBlockReason} frames=${inputFramesSinceLastCommit} callId=${callId}`);
+      return false;
+    }
+    if (inputFramesSinceLastCommit < MIN_INPUT_FRAMES_BEFORE_COMMIT) {
+      console.log(
+        `[TurnGate] skip_empty_audio_commit reason=too_few_frames frames=${inputFramesSinceLastCommit} callId=${callId}`
+      );
+      clearStalePendingUserTurn("too_few_frames");
+      return false;
+    }
+    console.warn(`[Diag] input_audio_buffer.commit sent reason=${reason} frames=${inputFramesSinceLastCommit} (callId=${callId})`);
     openaiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-    scheduleUserResponseCreate(reason, delayMs);
+    inputFramesSinceLastCommit = 0;
+    if (shouldManuallyScheduleResponse(reason)) {
+      scheduleUserResponseCreate(reason, delayMs);
+    }
+    return true;
   };
 
   const armCallerSpeechWatchdog = (reason: string, timeoutMs = liveTurnSettings.watchdog_commit_ms) => {
@@ -1142,8 +1200,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         return;
       }
       if (activeResponseId || greetingInProgress || responsePlaybackMarkName) return;
-      console.warn(`[Diag] caller speech watchdog fired reason=${reason}; forcing commit + response.create (callId=${callId})`);
-      commitAudioAndCreateResponse(`watchdog-${reason}`, 120);
+      console.warn(`[Diag] caller speech watchdog fired reason=${reason}; forcing commit (callId=${callId})`);
+      tryCommitCallerAudio(`watchdog-${reason}`, 120);
     }, timeoutMs);
   };
 
@@ -1151,6 +1209,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const blockReason = isUserTurnReason(reason) ? getCallerAudioBlockReason(true) : null;
     if (blockReason) {
       console.log(`[TurnGate] blocked response.create reason=${blockReason} source=${reason} callId=${callId}`);
+      return false;
+    }
+    if (
+      isUserTurnReason(reason) &&
+      !reason.startsWith("system-event") &&
+      reason !== "tool-result" &&
+      lastCommittedUserItemId &&
+      responseCreateSentForItemIds.has(lastCommittedUserItemId)
+    ) {
+      console.log(
+        `[TurnGate] response_create_deduped itemId=${lastCommittedUserItemId} existingResponseId=${activeResponseId || "none"} callId=${callId}`
+      );
       return false;
     }
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
@@ -1164,6 +1234,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseCreateSentCount += 1;
     if (reason !== "initial-greeting") userResponseCreateSentCount += 1;
     lastResponseCreateReason = reason;
+    if (lastCommittedUserItemId) {
+      responseCreateSentForItemIds.add(lastCommittedUserItemId);
+    }
     console.log(`[Diag] response.create sent #${responseCreateSentCount} reason=${reason} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`);
     openaiWs.send(JSON.stringify(response ? { type: "response.create", response } : { type: "response.create" }));
     return true;
@@ -1171,6 +1244,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const scheduleUserResponseCreate = (reason: string, delayMs: number, transcript?: string) => {
     const cleanTranscript = typeof transcript === "string" ? transcript.trim() : "";
+    if (!cleanTranscript && isUserTurnReason(reason) && shouldManuallyScheduleResponse(reason)) {
+      console.log(`[TurnGate] ignore_empty_user_turn callId=${callId} itemId=${lastCommittedUserItemId || "none"}`);
+      clearStalePendingUserTurn("empty_schedule_request");
+      return;
+    }
+    if (!shouldManuallyScheduleResponse(reason)) {
+      console.log(`[TurnGate] skip_manual_response_schedule reason=${reason} vad_create_response=${vadServerCreateResponseEnabled} callId=${callId}`);
+      return;
+    }
     if (cleanTranscript) pendingUserResponseTranscript = cleanTranscript;
     if (pendingUserResponseTimer) {
       if (cleanTranscript) {
@@ -1192,8 +1274,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       pendingUserResponseTimer = null;
       if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
 
+      const finalReason = pendingUserResponseReason || reason;
       const cooldownLeftMs = Math.max(0, inboundAudioCooldownUntil - Date.now());
-      const blockReason = isUserTurnReason(reason) ? getCallerAudioBlockReason(true) : null;
+      const blockReason = isUserTurnReason(finalReason) ? getCallerAudioBlockReason(true) : null;
+      if (
+        isUserTurnReason(finalReason) &&
+        !(pendingUserResponseTranscript || "").trim() &&
+        !hasValidPendingUserTurn()
+      ) {
+        clearStalePendingUserTurn("stale_empty_turn");
+        return;
+      }
       if (blockReason || activeResponseId || greetingInProgress || cooldownLeftMs > 0) {
         pendingUserResponseAttempts += 1;
         if (pendingUserResponseAttempts <= 120) {
@@ -1214,7 +1305,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         return;
       }
 
-      const finalReason = pendingUserResponseReason || reason;
       pendingUserResponseReason = null;
       pendingUserResponseTranscript = null;
       pendingUserResponseAttempts = 0;
@@ -1231,6 +1321,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const startInboundAudioCooldown = (ms: number, reason: string) => {
     inboundAudioCooldownUntil = Math.max(inboundAudioCooldownUntil, Date.now() + ms);
+    inputFramesSinceLastCommit = 0;
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
       openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
     }
@@ -1404,6 +1495,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // Flush any audio that accumulated during greeting playback (echo, line noise)
     // BEFORE enabling VAD, so it doesn't immediately fire a false speech_started.
     openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+    inputFramesSinceLastCommit = 0;
     const turnDetection = {
       type: "server_vad",
       threshold: liveTurnSettings.vad_threshold,
@@ -1430,6 +1522,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(
       `[Diag-OpenAI-Config] callId=${callId} direction=${callDirection} session.update patch=${JSON.stringify({ turn_detection: turnDetection, tools_count: Array.isArray(patchFields.tools) ? patchFields.tools.length : 0 })}`
     );
+    vadServerCreateResponseEnabled = true;
     sendGaSessionUpdate("post-greeting-vad-tools", patchFields);
   };
 
@@ -1473,12 +1566,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     aiIsSpeaking = false;
     startInboundAudioCooldown(recoveryCooldownMs, source);
     if (!greetingInProgress && pendingUserResponseReason) {
-      console.log(`[Diag] AI turn completed while user response pending (${pendingUserResponseReason}); scheduling response after cooldown (callId=${callId})`);
-      scheduleUserResponseCreate(pendingUserResponseReason, recoveryCooldownMs + 150);
+      if (hasValidPendingUserTurn() && !activeResponseId) {
+        console.log(`[Diag] AI turn completed while user response pending (${pendingUserResponseReason}); scheduling response after cooldown (callId=${callId})`);
+        scheduleUserResponseCreate(pendingUserResponseReason, recoveryCooldownMs + 150);
+      } else {
+        clearStalePendingUserTurn("stale_empty_turn");
+      }
     }
 
     if (greetingInProgress) {
       greetingInProgress = false;
+      initialGreetingResponseFinished = true;
+      if (lastResponseCreateReason === "initial-greeting") {
+        lastResponseCreateReason = "(greeting-done)";
+      }
       greetingCompletedAt = Date.now();
       if (useCombinedRegLocationSms && callDirection === "inbound") {
         try {
@@ -2179,6 +2280,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     sessionConfigured = false;
     pendingInitialResponse = false;
     realtimeSessionUpdateFailed = false;
+    vadEnabledAcknowledged = false;
+    vadServerCreateResponseEnabled = false;
+    initialGreetingResponseFinished = false;
+    inputFramesSinceLastCommit = 0;
+    lastCommittedUserItemId = null;
+    responseCreateSentForItemIds.clear();
     resetResponseState();
     ignoreAudioUntilNextResponse = false;
     aiIsSpeaking = false;
@@ -2284,7 +2391,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - Stay strictly on topic. Do not improvise or add unrequested information.
 - Follow the script above exactly. Do not deviate.
 - If asked about something outside your scope, briefly redirect back to the topic.
-- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.`;
+- ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.
+- If the caller says "jah", "jaa", "mina olen", "jah mina olen", or repeats the target name approximately, treat identity as confirmed. Do not ask identity again unless the caller explicitly denies being the person or the answer is truly unclear.`;
 
       if (useCombinedRegLocationSms && callDirection === "inbound") {
         fullInstructions += `\n\nIIZI COMBINED INBOUND — HARD ORDER (follow exactly; do not improvise):
@@ -2558,6 +2666,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 `[Diag] OpenAI session.updated — patch applied reason=${lastGaSessionPatchReason || "unknown"} (callId=${callId})`
               );
               if (lastGaSessionPatchReason === "post-greeting-vad-tools") {
+                vadEnabledAcknowledged = true;
                 console.log(`[GreetingGate] VAD enabled (session.updated ack) callId=${callId}`);
               }
             }
@@ -2570,9 +2679,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             clearPendingUserResponseTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
-            activeResponseReason = callDirection === "inbound" && !greetingInProgress && lastResponseCreateReason === "initial-greeting"
-              ? "inbound-auto-vad"
-              : lastResponseCreateReason;
+            if (lastCommittedUserItemId) {
+              responseCreateSentForItemIds.add(lastCommittedUserItemId);
+            }
+            let resolvedResponseReason = lastResponseCreateReason;
+            if (initialGreetingResponseFinished && resolvedResponseReason === "initial-greeting") {
+              resolvedResponseReason = pendingUserResponseReason || "vad-auto-response";
+            }
+            if (callDirection === "inbound" && !greetingInProgress && resolvedResponseReason === "initial-greeting") {
+              resolvedResponseReason = "inbound-auto-vad";
+            }
+            activeResponseReason = resolvedResponseReason;
             if (activeResponseReason !== "initial-greeting") userResponseCreatedCount += 1;
             responsePlaybackMarkName = null;
             responseHasAudio = false;
@@ -2795,11 +2912,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
-          case "conversation.item.input_audio_transcription.completed":
+          case "conversation.item.input_audio_transcription.completed": {
             clearCallerSpeechWatchdog();
             userTranscriptCount += 1;
+            const transcriptItemId = (event as { item_id?: string }).item_id || lastCommittedUserItemId || "none";
+            const transcriptTextAll = String(event.transcript || "").trim();
             console.log(`[Diag] user_transcript #${userTranscriptCount} (callId=${callId}): "${event.transcript}"`);
             transcriptLines.push(`[User]: ${event.transcript}`);
+            if (!transcriptTextAll) {
+              console.log(`[TurnGate] ignore_empty_user_turn callId=${callId} itemId=${transcriptItemId}`);
+              clearStalePendingUserTurn("empty_transcript", transcriptItemId);
+              break;
+            }
+            console.log(
+              `[TurnGate] valid_user_turn itemId=${transcriptItemId} transcript_len=${transcriptTextAll.length} frames=${inputFramesSinceLastCommit} callId=${callId}`
+            );
             if (typeof event.transcript === "string" && event.transcript.trim().length > 0) {
               userUtteranceCount += 1;
               const callerSpeechLower = event.transcript.toLowerCase();
@@ -2831,24 +2958,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             pendingRecoveryCooldownMs = 0;
             if (callDirection === "inbound") {
               const fallbackSeq = ++inboundTranscriptFallbackSeq;
-              const transcriptText = String(event.transcript || "").trim();
-              if (!transcriptText) {
-                console.warn(`[Diag-InboundTurn] transcript.completed empty; not arming fallback (callId=${callId})`);
-                if (useCombinedRegLocationSms) {
-                  try {
-                    ingestIiziBrainEmptyTranscript(iiziBrainRef.current);
-                    touchIiziBrainLog("transcript_empty_silence_signal");
-                  } catch (err) {
-                    console.error(`[IIZI-Brain] empty_transcript_failed callId=${callId}`, err);
-                  }
-                  if (iiziBrainRef.current.greetingPlaybackComplete && iiziBrainRef.current.finalResolvedIntent === "unknown") {
-                    console.warn(
-                      `[IIZI-Brain] TODO silence_gate=no_dedicated_watchdog_using_empty_transcript_only signals=${iiziBrainRef.current.silenceSignalCount} callId=${callId}`
-                    );
-                  }
-                }
-                break;
-              }
+              const transcriptText = transcriptTextAll;
               latestCompletedInboundTranscript = { seq: fallbackSeq, text: transcriptText, at: Date.now() };
               inboundRecoveryAttemptSeq = fallbackSeq;
               inboundRecoveryAttemptsForSeq = 0;
@@ -2893,10 +3003,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(
                 `[Diag-InboundTurn] fallback scheduled seq=${fallbackSeq} timeoutMs=${liveTurnSettings.inbound_transcript_fallback_ms} text="${transcriptText.slice(0, 160)}" (callId=${callId})`
               );
-            } else {
+            } else if (
+              !responseCreateSentForItemIds.has(transcriptItemId) &&
+              shouldManuallyScheduleResponse("user-transcript")
+            ) {
               scheduleUserResponseCreate("user-transcript", 150, event.transcript);
+            } else if (responseCreateSentForItemIds.has(transcriptItemId)) {
+              console.log(
+                `[TurnGate] response_create_deduped itemId=${transcriptItemId} existingResponseId=${activeResponseId || "none"} callId=${callId}`
+              );
             }
             break;
+          }
 
           case "response.function_call_arguments.done": {
             const fnName = event.name;
@@ -4105,14 +4223,31 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             callerSpeechActive = false;
             clearCallerSpeechWatchdog();
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
-            if (callDirection !== "inbound") commitAudioAndCreateResponse("speech-stopped", 120);
+            if (callDirection !== "inbound") {
+              tryCommitCallerAudio("speech-stopped", 120);
+            }
             break;
 
-          case "input_audio_buffer.committed":
+          case "input_audio_buffer.committed": {
             bufferCommittedCount += 1;
-            console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${event.item_id || "?"} (callId=${callId})`);
-            if (callDirection !== "inbound") scheduleUserResponseCreate("audio-commit", 1200);
+            const committedItemId = (event as { item_id?: string }).item_id || null;
+            if (committedItemId) {
+              lastCommittedUserItemId = committedItemId;
+              if (vadServerCreateResponseEnabled) {
+                responseCreateSentForItemIds.add(committedItemId);
+              }
+            }
+            console.log(`[Diag] input_audio_buffer.committed #${bufferCommittedCount} item_id=${committedItemId || "?"} (callId=${callId})`);
+            if (callDirection !== "inbound" && committedItemId) {
+              console.log(
+                `[TurnGate] valid_user_turn itemId=${committedItemId} transcript_len=0 frames=0 callId=${callId}`
+              );
+              if (!vadServerCreateResponseEnabled) {
+                scheduleUserResponseCreate("audio-commit", 1200);
+              }
+            }
             break;
+          }
 
           case "response.error":
           case "error": {
@@ -4130,6 +4265,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               errCode === "missing_required_parameter" ||
               /unknown parameter.*['\"]session\./i.test(errMessage) ||
               /missing required parameter.*['\"]session\./i.test(errMessage);
+            const isEmptyCommitError =
+              /commit_empty|input_audio_buffer_commit_empty/i.test(errMessage) ||
+              /input_audio_buffer_commit_empty/i.test(String((errPayload as { type?: string }).type || ""));
+
+            if (isEmptyCommitError) {
+              console.log(
+                `[TurnGate] ignore_empty_user_turn callId=${callId} itemId=${lastCommittedUserItemId || "none"}`
+              );
+              clearStalePendingUserTurn("input_audio_buffer_commit_empty", lastCommittedUserItemId);
+            }
 
             if (!sessionConfigured && !realtimeSessionUpdateFailed && isSessionPatchRejected) {
               realtimeSessionUpdateFailed = true;
@@ -4438,6 +4583,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               type: "input_audio_buffer.append",
               audio: msg.media.payload,
             }));
+            inputFramesSinceLastCommit += 1;
             twilioInboundFramesForwarded += 1;
             try {
               sttShadowSession?.sendAudioFrameBase64(msg.media?.payload ?? "");
