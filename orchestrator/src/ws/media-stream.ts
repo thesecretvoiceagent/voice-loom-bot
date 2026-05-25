@@ -420,9 +420,19 @@ const REALTIME_GA_RESPONSE_MODALITIES = ["audio"] as const;
 /** ~100 ms of Twilio 20 ms μ-law frames before input_audio_buffer.commit. */
 const MIN_INPUT_FRAMES_BEFORE_COMMIT = 5;
 
+const VOICE_SPEED_MIN = 1.0;
+const VOICE_SPEED_MAX = 1.5;
+
 function clampVoiceSpeed(raw: unknown): number {
-  const n = typeof raw === "number" && Number.isFinite(raw) ? raw : 1.0;
-  return Math.min(1.5, Math.max(0.25, n));
+  const n =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string"
+        ? Number(raw)
+        : NaN;
+  if (!Number.isFinite(n)) return VOICE_SPEED_MIN;
+  const stepped = Math.round(n / 0.05) * 0.05;
+  return Math.min(VOICE_SPEED_MAX, Math.max(VOICE_SPEED_MIN, stepped));
 }
 
 function buildGaAudioOutput(voice: string, speed: number) {

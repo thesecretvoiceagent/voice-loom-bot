@@ -172,6 +172,25 @@ const DEFAULT_LIVE_TURN_SETTINGS: LiveTurnSettings = {
   loudspeaker_mode: false,
 };
 
+const VOICE_SPEED_MIN = 1.0;
+const VOICE_SPEED_MAX = 1.5;
+const VOICE_SPEED_STEP = 0.05;
+
+const clampVoiceSpeedUi = (raw: unknown): number => {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return VOICE_SPEED_MIN;
+  const stepped = Math.round(n / VOICE_SPEED_STEP) * VOICE_SPEED_STEP;
+  return Math.min(VOICE_SPEED_MAX, Math.max(VOICE_SPEED_MIN, stepped));
+};
+
+const formatVoiceSpeedLabel = (speed: number): string => {
+  const v = clampVoiceSpeedUi(speed);
+  const rounded = Math.round(v * 100) / 100;
+  if (Number.isInteger(rounded)) return `${rounded.toFixed(1)}x`;
+  const two = rounded.toFixed(2);
+  return `${two.endsWith("0") ? rounded.toFixed(1) : two}x`;
+};
+
 const toLiveTurnSettings = (raw: unknown): LiveTurnSettings => {
   const s = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   return {
@@ -244,6 +263,7 @@ export default function CreateAgent() {
   const [enableRecording, setEnableRecording] = useState(true);
   const [temperature, setTemperature] = useState([0.6]);
   const [responseTokenCap, setResponseTokenCap] = useState([220]);
+  const [voiceSpeed, setVoiceSpeed] = useState([VOICE_SPEED_MIN]);
   const [useInitialGreeting, setUseInitialGreeting] = useState(true);
   const [uninterruptibleGreeting, setUninterruptibleGreeting] = useState(true);
   const [antiBargein, setAntiBargein] = useState(false);
@@ -352,6 +372,7 @@ export default function CreateAgent() {
         setEnableRecording(agent.settings.enable_recording ?? true);
         setTemperature([(agent.settings as any).temperature ?? 0.6]);
         setResponseTokenCap([(agent.settings as any).response_token_cap ?? 220]);
+        setVoiceSpeed([clampVoiceSpeedUi((agent.settings as any).voice_speed)]);
         setUseInitialGreeting((agent.settings as any).use_initial_greeting ?? true);
         setUninterruptibleGreeting((agent.settings as any).uninterruptible_greeting ?? true);
         setAntiBargein((agent.settings as any).anti_barge_in ?? false);
@@ -496,6 +517,7 @@ export default function CreateAgent() {
       enable_recording: enableRecording,
       temperature: temperature[0],
       response_token_cap: responseTokenCap[0],
+      voice_speed: clampVoiceSpeedUi(voiceSpeed[0]),
       use_initial_greeting: useInitialGreeting,
       uninterruptible_greeting: uninterruptibleGreeting,
       anti_barge_in: antiBargein,
@@ -563,6 +585,7 @@ export default function CreateAgent() {
         setUninterruptibleGreeting((saved.settings as any)?.uninterruptible_greeting ?? true);
         setAntiBargein((saved.settings as any)?.anti_barge_in ?? false);
         setResponseTokenCap([(saved.settings as any)?.response_token_cap ?? 220]);
+        setVoiceSpeed([clampVoiceSpeedUi((saved.settings as any)?.voice_speed)]);
         if (saved.schedule) {
           setStartTime(saved.schedule.start_time || "09:00");
           setEndTime(saved.schedule.end_time || "17:00");
@@ -1221,6 +1244,28 @@ export default function CreateAgent() {
                       <span>80 (very short)</span>
                       <span>220 (default)</span>
                       <span>1000 (long)</span>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-lg bg-secondary/50 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium text-foreground">Voice speed</p>
+                        <p className="text-sm text-muted-foreground">Controls assistant speaking speed for live calls.</p>
+                      </div>
+                      <span className="text-lg font-semibold tabular-nums">{formatVoiceSpeedLabel(voiceSpeed[0])}</span>
+                    </div>
+                    <Slider
+                      value={voiceSpeed}
+                      onValueChange={(v) => setVoiceSpeed([clampVoiceSpeedUi(v[0])])}
+                      min={VOICE_SPEED_MIN}
+                      max={VOICE_SPEED_MAX}
+                      step={VOICE_SPEED_STEP}
+                    />
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>1.0x (default)</span>
+                      <span>1.25x</span>
+                      <span>1.5x (max)</span>
                     </div>
                   </div>
 
