@@ -1255,7 +1255,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     ) {
       return true;
     }
-    return scheduleUserResponseCreate(reason, 80, transcript);
+    scheduleUserResponseCreate(reason, 80, transcript);
+    return false;
   };
 
   const registerPendingCommittedTurn = (itemId: string, framesAtCommit: number) => {
