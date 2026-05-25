@@ -448,6 +448,23 @@ function buildGaAudioInput(opts: {
   return input;
 }
 
+/** Every GA session.update must include session.type. */
+function buildGaSessionPatch(fields: Record<string, unknown>): Record<string, unknown> {
+  return { type: "realtime", ...fields };
+}
+
+function describeGaSessionPatchForLog(session: Record<string, unknown>): Record<string, unknown> {
+  const audio = session.audio as { input?: { turn_detection?: { type?: string } } } | undefined;
+  const turnDetection = audio?.input?.turn_detection;
+  return {
+    type: session.type,
+    max_output_tokens: session.max_output_tokens,
+    vad_nested: !!(audio?.input && turnDetection !== undefined),
+    turn_detection_type: turnDetection?.type,
+    tools_count: Array.isArray(session.tools) ? session.tools.length : 0,
+  };
+}
+
 const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
 1. NEVER go off-topic. Only discuss what your instructions cover.
 2. Keep every response to 1-3 short sentences maximum.
@@ -544,6 +561,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let sessionConfigured = false;
   let pendingInitialResponse = false;
   let realtimeSessionUpdateFailed = false;
+  let lastGaSessionPatchReason = "";
+  let lastGaSessionPatchForDiag: Record<string, unknown> | null = null;
   let inboundAudioCooldownUntil = 0;
   let turnDetectionEnableTimer: ReturnType<typeof setTimeout> | null = null;
   let lastAssistantTranscript = "";
@@ -1368,6 +1387,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     clearResponseDoneFallbackTimer();
   };
 
+  const sendGaSessionUpdate = (reason: string, fields: Record<string, unknown>) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    const session = buildGaSessionPatch(fields);
+    const diag = describeGaSessionPatchForLog(session);
+    lastGaSessionPatchReason = reason;
+    lastGaSessionPatchForDiag = diag;
+    console.log(
+      `[RealtimeGA] session_update_patch reason=${reason} has_session_type=${diag.type === "realtime"} vad_nested=${diag.vad_nested} tools_count=${diag.tools_count} callId=${callId}`
+    );
+    openaiWs.send(JSON.stringify({ type: "session.update", session }));
+  };
+
   const enableTurnDetection = () => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
     // Flush any audio that accumulated during greeting playback (echo, line noise)
@@ -1381,7 +1412,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       create_response: true,
       interrupt_response: liveTurnSettings.interrupt_response,
     };
-    const sessionPatch: Record<string, unknown> = {
+    const patchFields: Record<string, unknown> = {
       audio: {
         input: buildGaAudioInput({ turnDetection }),
       },
@@ -1389,18 +1420,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // Activate tools NOW (post-greeting). They were withheld during the greeting
     // so the model couldn't immediately call end_call or lookup_vehicle.
     if (!toolsActivated && pendingToolsForActivation.length > 0) {
-      sessionPatch.tools = pendingToolsForActivation;
+      patchFields.tools = pendingToolsForActivation;
       toolsActivated = true;
       console.log(`[MediaStream] Activating ${pendingToolsForActivation.length} tools post-greeting (callId=${callId})`);
     }
     console.log(
-      `[GreetingGate] enabling VAD after cooldown=${Math.max(0, Date.now() - (greetingCompletedAt || Date.now()))}ms callId=${callId}`
+      `[GreetingGate] requesting VAD session.update after cooldown=${Math.max(0, Date.now() - (greetingCompletedAt || Date.now()))}ms callId=${callId}`
     );
-    console.log(`[Diag-OpenAI-Config] callId=${callId} direction=${callDirection} session.update patch=${JSON.stringify({ turn_detection: turnDetection, tools_count: Array.isArray(sessionPatch.tools) ? sessionPatch.tools.length : 0 })}`);
-    openaiWs.send(JSON.stringify({
-      type: "session.update",
-      session: sessionPatch,
-    }));
+    console.log(
+      `[Diag-OpenAI-Config] callId=${callId} direction=${callDirection} session.update patch=${JSON.stringify({ turn_detection: turnDetection, tools_count: Array.isArray(patchFields.tools) ? patchFields.tools.length : 0 })}`
+    );
+    sendGaSessionUpdate("post-greeting-vad-tools", patchFields);
   };
 
   const maybeCompleteAiTurn = (source: string) => {
@@ -1416,11 +1446,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         console.log(`[MediaStream] Greeting hit max_output_tokens — keeping budget at ${INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS} for safety (callId=${callId})`);
       } else if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         try {
-          openaiWs.send(JSON.stringify({
-            type: "session.update",
-            session: { max_output_tokens: configuredMaxResponseOutputTokens },
-          }));
-          console.log(`[MediaStream] Greeting done — lowered max_output_tokens to ${configuredMaxResponseOutputTokens} (callId=${callId})`);
+          sendGaSessionUpdate("post-greeting-max-output-tokens", {
+            max_output_tokens: configuredMaxResponseOutputTokens,
+          });
+          console.log(`[MediaStream] Greeting done — requested max_output_tokens=${configuredMaxResponseOutputTokens} (callId=${callId})`);
         } catch (err) {
           console.warn(`[MediaStream] Failed to lower max_output_tokens:`, err);
         }
@@ -2525,7 +2554,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(`[Diag] OpenAI session.updated — INITIAL configured (callId=${callId}) ga=true output_modalities=audio format=audio/pcmu voice_speed=${voiceSpeed}`);
               maybeStartInitialResponse();
             } else {
-              console.log(`[Diag] OpenAI session.updated — patch applied (callId=${callId})`);
+              console.log(
+                `[Diag] OpenAI session.updated — patch applied reason=${lastGaSessionPatchReason || "unknown"} (callId=${callId})`
+              );
+              if (lastGaSessionPatchReason === "post-greeting-vad-tools") {
+                console.log(`[GreetingGate] VAD enabled (session.updated ack) callId=${callId}`);
+              }
             }
             break;
 
@@ -4091,22 +4125,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               `[Diag] OpenAI error #${responseErrorCount} code=${errCode} message=${errMessage} (callId=${callId}):`,
               JSON.stringify(errPayload)
             );
-            if (!sessionConfigured && !realtimeSessionUpdateFailed) {
-              const isSessionUpdateFailure =
-                errCode === "invalid_request_error" ||
-                /unknown parameter.*['\"]session\./i.test(errMessage);
-              if (isSessionUpdateFailure) {
-                realtimeSessionUpdateFailed = true;
-                pendingInitialResponse = false;
-                console.error(
-                  `[RealtimeGA] session.update failed — aborting, will not send response.create code=${errCode} (callId=${callId})`
-                );
-                transcriptLines.push(`[System]: OpenAI Realtime session configuration failed (${errCode})`);
-                try {
-                  if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
-                } catch {}
-                hangUpCall();
-                finalizeCall();
+            const isSessionPatchRejected =
+              errCode === "invalid_request_error" ||
+              errCode === "missing_required_parameter" ||
+              /unknown parameter.*['\"]session\./i.test(errMessage) ||
+              /missing required parameter.*['\"]session\./i.test(errMessage);
+
+            if (!sessionConfigured && !realtimeSessionUpdateFailed && isSessionPatchRejected) {
+              realtimeSessionUpdateFailed = true;
+              pendingInitialResponse = false;
+              console.error(
+                `[RealtimeGA] session.update failed — aborting, will not send response.create code=${errCode} patch=${JSON.stringify(lastGaSessionPatchForDiag)} (callId=${callId})`
+              );
+              transcriptLines.push(`[System]: OpenAI Realtime session configuration failed (${errCode})`);
+              try {
+                if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
+              } catch {}
+              hangUpCall();
+              finalizeCall();
+            } else if (sessionConfigured && isSessionPatchRejected && lastGaSessionPatchReason) {
+              console.error(
+                `[RealtimeGA] post-initial session.update rejected reason=${lastGaSessionPatchReason} code=${errCode} message=${errMessage} patch=${JSON.stringify(lastGaSessionPatchForDiag)} (callId=${callId})`
+              );
+              if (lastGaSessionPatchReason === "post-greeting-vad-tools") {
+                console.error(`[GreetingGate] VAD was NOT enabled — session.update rejected (callId=${callId})`);
               }
             }
             break;
