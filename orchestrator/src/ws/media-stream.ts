@@ -414,6 +414,32 @@ async function sendSms(to: string, body: string): Promise<{ ok: boolean; sid?: s
 }
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
+/** GA Realtime: G.711 μ-law (Twilio-compatible). */
+const REALTIME_GA_ULAW_FORMAT = { type: "audio/pcmu" } as const;
+const REALTIME_GA_RESPONSE_MODALITIES = ["audio"] as const;
+
+function clampVoiceSpeed(raw: unknown): number {
+  const n = typeof raw === "number" && Number.isFinite(raw) ? raw : 1.0;
+  return Math.min(1.5, Math.max(0.25, n));
+}
+
+function buildGaAudioOutput(voice: string, speed: number) {
+  return {
+    format: REALTIME_GA_ULAW_FORMAT,
+    voice,
+    speed,
+  };
+}
+
+function buildGaAudioInput(opts: {
+  turnDetection?: Record<string, unknown> | null;
+  transcription?: { model: string; language: string; prompt: string };
+}) {
+  const input: Record<string, unknown> = { format: REALTIME_GA_ULAW_FORMAT };
+  if (opts.transcription) input.transcription = opts.transcription;
+  if (opts.turnDetection !== undefined) input.turn_detection = opts.turnDetection;
+  return input;
+}
 
 const DEFAULT_INSTRUCTIONS = `You are a professional AI phone agent. Follow these rules strictly:
 1. NEVER go off-topic. Only discuss what your instructions cover.
@@ -1167,7 +1193,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       pendingUserResponseTranscript = null;
       pendingUserResponseAttempts = 0;
       console.warn(`[Diag] No assistant response after ${finalReason}; sending single response.create (callId=${callId})`);
-      sendResponseCreate(finalReason, { modalities: ["text", "audio"] });
+      sendResponseCreate(finalReason, { output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES] });
     }, delayMs);
   };
 
@@ -1262,7 +1288,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       injectInboundTranscriptAsUserText(latestCompletedInboundTranscript.text, reason, latestCompletedInboundTranscript.seq);
       lastResponseCreateReason = reason;
       console.warn(`[Diag-InboundTurn] fallback sent seq=${latestCompletedInboundTranscript.seq} reason=${reason} text="${latestCompletedInboundTranscript.text.slice(0, 160)}" (callId=${callId})`);
-      sendResponseCreate(reason, { modalities: ["text", "audio"] });
+      sendResponseCreate(reason, { output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES] });
     };
     if (shouldCancelActiveResponse) {
       if (pendingInboundRecoveryAfterCancel) {
@@ -1340,14 +1366,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // Flush any audio that accumulated during greeting playback (echo, line noise)
     // BEFORE enabling VAD, so it doesn't immediately fire a false speech_started.
     openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
-    const sessionPatch: any = {
-      turn_detection: {
-        type: "server_vad",
-        threshold: liveTurnSettings.vad_threshold,
-        prefix_padding_ms: liveTurnSettings.prefix_padding_ms,
-        silence_duration_ms: liveTurnSettings.silence_duration_ms,
-        create_response: true,
-        interrupt_response: liveTurnSettings.interrupt_response,
+    const turnDetection = {
+      type: "server_vad",
+      threshold: liveTurnSettings.vad_threshold,
+      prefix_padding_ms: liveTurnSettings.prefix_padding_ms,
+      silence_duration_ms: liveTurnSettings.silence_duration_ms,
+      create_response: true,
+      interrupt_response: liveTurnSettings.interrupt_response,
+    };
+    const sessionPatch: Record<string, unknown> = {
+      audio: {
+        input: buildGaAudioInput({ turnDetection }),
       },
     };
     // Activate tools NOW (post-greeting). They were withheld during the greeting
@@ -1360,7 +1389,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(
       `[GreetingGate] enabling VAD after cooldown=${Math.max(0, Date.now() - (greetingCompletedAt || Date.now()))}ms callId=${callId}`
     );
-    console.log(`[Diag-OpenAI-Config] callId=${callId} direction=${callDirection} session.update patch=${JSON.stringify({ turn_detection: sessionPatch.turn_detection, tools_count: Array.isArray(sessionPatch.tools) ? sessionPatch.tools.length : 0 })}`);
+    console.log(`[Diag-OpenAI-Config] callId=${callId} direction=${callDirection} session.update patch=${JSON.stringify({ turn_detection: turnDetection, tools_count: Array.isArray(sessionPatch.tools) ? sessionPatch.tools.length : 0 })}`);
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: sessionPatch,
@@ -1382,11 +1411,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         try {
           openaiWs.send(JSON.stringify({
             type: "session.update",
-            session: { max_response_output_tokens: configuredMaxResponseOutputTokens },
+            session: { max_output_tokens: configuredMaxResponseOutputTokens },
           }));
-          console.log(`[MediaStream] Greeting done — lowered max_response_output_tokens to ${configuredMaxResponseOutputTokens} (callId=${callId})`);
+          console.log(`[MediaStream] Greeting done — lowered max_output_tokens to ${configuredMaxResponseOutputTokens} (callId=${callId})`);
         } catch (err) {
-          console.warn(`[MediaStream] Failed to lower max_response_output_tokens:`, err);
+          console.warn(`[MediaStream] Failed to lower max_output_tokens:`, err);
         }
       }
       greetingTokenLimitRaised = false;
@@ -1448,6 +1477,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     let instructions = DEFAULT_INSTRUCTIONS;
     let greeting = "";
     let voice = "alloy";
+    let voiceSpeed = 1.0;
     let agentConfig = null;
     let agentTools: string[] = [];
     let agentTemperature = 0.6;
@@ -1483,6 +1513,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         if (typeof settings.temperature === "number") {
           agentTemperature = settings.temperature;
         }
+        voiceSpeed = clampVoiceSpeed((settings as { voice_speed?: unknown }).voice_speed);
         // Per-response token cap for normal turns (greeting still uses INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS)
         const rawCap = (settings as any).response_token_cap;
         if (typeof rawCap === "number" && Number.isFinite(rawCap) && rawCap >= 50 && rawCap <= 4096) {
@@ -2131,7 +2162,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     openaiWs = new WebSocket(url, {
       headers: {
         Authorization: `Bearer ${config.openai.apiKey}`,
-        "OpenAI-Beta": "realtime=v1",
       },
     });
 
@@ -2428,29 +2458,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       const sessionTemperature = Math.min(1.2, Math.max(0.6, rawTemp));
       greetingTokenLimitRaised = Boolean(greeting);
 
+      const gaTranscription = {
+        model: "whisper-1",
+        // Lock STT to Estonian — most callers speak ET. Mixed-language whisper
+        // mangles plates like 484DLC → 484DLT, which breaks CRM lookups.
+        language: "et",
+        prompt: "Eesti keelne kõne. Auto registreerimismärgid on kujul kolm numbrit ja kolm tähte, näiteks 484DLC, 495BJS, 606BSB, 130XMS.",
+      };
       const sessionUpdate: any = {
         type: "session.update",
         session: {
-          modalities: ["text", "audio"],
+          type: "realtime",
           instructions: fullInstructions,
-          voice,
           temperature: sessionTemperature,
-          // Cap each turn so the model can't ramble or loop on the same sentence forever.
-          max_response_output_tokens: greetingTokenLimitRaised
+          output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
+          max_output_tokens: greetingTokenLimitRaised
             ? INITIAL_GREETING_MAX_RESPONSE_OUTPUT_TOKENS
             : configuredMaxResponseOutputTokens,
-          input_audio_format: "g711_ulaw",
-          output_audio_format: "g711_ulaw",
-          input_audio_transcription: {
-            model: "whisper-1",
-            // Lock STT to Estonian — most callers speak ET. Mixed-language whisper
-            // mangles plates like 484DLC → 484DLT, which breaks CRM lookups.
-            language: "et",
-            prompt: "Eesti keelne kõne. Auto registreerimismärgid on kujul kolm numbrit ja kolm tähte, näiteks 484DLC, 495BJS, 606BSB, 130XMS.",
+          audio: {
+            input: buildGaAudioInput({
+              transcription: gaTranscription,
+              turnDetection: null,
+            }),
+            output: buildGaAudioOutput(voice, voiceSpeed),
           },
-          // Start with VAD disabled — we enable it after the greeting playback is fully complete,
-          // or immediately if greetings are allowed to be interruptible.
-          turn_detection: null,
         },
       };
 
@@ -2461,15 +2492,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       pendingToolsForActivation = tools;
       toolsActivated = false;
 
+      console.log(`[RealtimeAudio] voice_speed=${voiceSpeed} callId=${callId}`);
       pendingInitialResponse = true;
       lastSessionConfigSent = {
         model: config.openai.realtimeModel,
-        modalities: sessionUpdate.session.modalities,
-        input_audio_format: sessionUpdate.session.input_audio_format,
-        output_audio_format: sessionUpdate.session.output_audio_format,
-        voice: sessionUpdate.session.voice,
-        turn_detection: sessionUpdate.session.turn_detection,
-        input_audio_transcription: sessionUpdate.session.input_audio_transcription,
+        session_type: sessionUpdate.session.type,
+        output_modalities: sessionUpdate.session.output_modalities,
+        audio_input_format: REALTIME_GA_ULAW_FORMAT.type,
+        audio_output_format: REALTIME_GA_ULAW_FORMAT.type,
+        voice: sessionUpdate.session.audio?.output?.voice,
+        voice_speed: sessionUpdate.session.audio?.output?.speed,
+        turn_detection: sessionUpdate.session.audio?.input?.turn_detection,
+        input_audio_transcription: sessionUpdate.session.audio?.input?.transcription,
         tools_count: tools.length,
       };
       console.log(`[GreetingGate] initial turn_detection=null toolsWithheld=true callId=${callId}`);
@@ -2505,7 +2539,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             openaiSessionUpdatedAt = Date.now();
             if (!sessionConfigured) {
               sessionConfigured = true;
-              console.log(`[Diag] OpenAI session.updated — INITIAL configured (callId=${callId}) modalities=text+audio audioFormat=g711_ulaw`);
+              console.log(`[Diag] OpenAI session.updated — INITIAL configured (callId=${callId}) ga=true output_modalities=audio format=audio/pcmu voice_speed=${voiceSpeed}`);
               maybeStartInitialResponse();
             } else {
               console.log(`[Diag] OpenAI session.updated — patch applied (callId=${callId})`);
@@ -2562,13 +2596,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               aiIsSpeaking = false;
               console.warn(`[Diag-InboundTurn] response.cancelled received; sending recovery response seq=${pending.transcriptSeq} failedResponseId=${pending.failedResponseId || "none"} reason=${pending.reason} (callId=${callId})`);
               injectInboundTranscriptAsUserText(pending.transcriptText, pending.reason, pending.transcriptSeq);
-              sendResponseCreate(pending.reason, { modalities: ["text", "audio"] });
+              sendResponseCreate(pending.reason, { output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES] });
             }
             break;
           }
 
           case "response.audio.delta":
           case "response.output_audio.delta": {
+            if (event.type === "response.audio.delta") {
+              console.warn(`[Diag] OpenAI beta audio event type=${event.type} — GA expects response.output_audio.delta (callId=${callId})`);
+            }
             const responseId = event.response_id || activeResponseId || null;
             if (smsPendingTemplate && responseId && responseId === activeResponseId && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
               console.warn(
@@ -2693,7 +2730,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
           }
 
-          case "response.audio_transcript.done": {
+          case "response.audio_transcript.done":
+          case "response.output_audio_transcript.done": {
+            if (event.type === "response.audio_transcript.done") {
+              console.warn(`[Diag] OpenAI beta transcript event type=${event.type} — GA expects response.output_audio_transcript.done (callId=${callId})`);
+            }
             const assistantTranscript = (event.transcript || "").toString();
             console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
             transcriptLines.push(`[Agent]: ${assistantTranscript}`);
@@ -3972,7 +4013,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               aiIsSpeaking = false;
               console.warn(`[Diag-InboundTurn] cancelled/stalled response.done received; sending recovery response seq=${pending.transcriptSeq} failedResponseId=${pending.failedResponseId || "none"} reason=${pending.reason} (callId=${callId})`);
               injectInboundTranscriptAsUserText(pending.transcriptText, pending.reason, pending.transcriptSeq);
-              sendResponseCreate(pending.reason, { modalities: ["text", "audio"] });
+              sendResponseCreate(pending.reason, { output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES] });
               break;
             }
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
@@ -4057,11 +4098,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             break;
 
           case "response.error":
-          case "error":
+          case "error": {
             responseErrorCount += 1;
             clearInboundTranscriptFallbackTimer();
-            console.error(`[Diag] OpenAI error #${responseErrorCount} (callId=${callId}):`, JSON.stringify(event.error || event));
+            const errPayload = (event as { error?: { code?: string; message?: string } }).error || event;
+            const errCode = (errPayload as { code?: string }).code || "(none)";
+            const errMessage = (errPayload as { message?: string }).message || JSON.stringify(errPayload);
+            console.error(
+              `[Diag] OpenAI error #${responseErrorCount} code=${errCode} message=${errMessage} (callId=${callId}):`,
+              JSON.stringify(errPayload)
+            );
             break;
+          }
 
           default:
             break;

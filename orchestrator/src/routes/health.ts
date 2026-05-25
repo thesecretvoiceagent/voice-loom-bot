@@ -34,9 +34,10 @@ healthRouter.post("/diag/openai-realtime-self-test", async (req, res) => {
   const startedAt = Date.now();
   const sessionConfig = {
     model: config.openai.realtimeModel,
-    modalities: ["text", "audio"],
-    input_audio_format: "g711_ulaw",
-    output_audio_format: "g711_ulaw",
+    session_type: "realtime",
+    output_modalities: ["audio"],
+    audio_input_format: "audio/pcmu",
+    audio_output_format: "audio/pcmu",
     voice,
     turn_detection: null,
     input_audio_transcription: { model: "whisper-1", language: "et" },
@@ -69,7 +70,6 @@ healthRouter.post("/diag/openai-realtime-self-test", async (req, res) => {
       const ws = new WebSocket(`${OPENAI_REALTIME_URL}?model=${config.openai.realtimeModel}`, {
         headers: {
           Authorization: `Bearer ${config.openai.apiKey}`,
-          "OpenAI-Beta": "realtime=v1",
         },
       });
       const finish = (ok: boolean, reason: string) => {
@@ -89,13 +89,20 @@ healthRouter.post("/diag/openai-realtime-self-test", async (req, res) => {
         ws.send(JSON.stringify({
           type: "session.update",
           session: {
-            modalities: sessionConfig.modalities,
-            voice,
-            input_audio_format: sessionConfig.input_audio_format,
-            output_audio_format: sessionConfig.output_audio_format,
-            input_audio_transcription: sessionConfig.input_audio_transcription,
-            turn_detection: sessionConfig.turn_detection,
+            type: "realtime",
+            output_modalities: sessionConfig.output_modalities,
             instructions: "You are testing the realtime bridge. Reply briefly.",
+            audio: {
+              input: {
+                format: { type: "audio/pcmu" },
+                transcription: sessionConfig.input_audio_transcription,
+                turn_detection: sessionConfig.turn_detection,
+              },
+              output: {
+                format: { type: "audio/pcmu" },
+                voice,
+              },
+            },
           },
         }));
       });
@@ -110,7 +117,7 @@ healthRouter.post("/diag/openai-realtime-self-test", async (req, res) => {
             item: { type: "message", role: "user", content: [{ type: "input_text", text: "Say test." }] },
           }));
           counters.response_create_sent = true;
-          ws.send(JSON.stringify({ type: "response.create", response: { modalities: ["text", "audio"] } }));
+          ws.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
         }
         if (event.type === "response.created") counters.response_created = true;
         if (event.type === "response.text.delta" || event.type === "response.output_text.delta") counters.text_delta_count += 1;
