@@ -39,6 +39,22 @@ import {
   type BrainRuntimeSnapshot,
   type ToolValidationResult,
 } from "../brain/agent-brain.js";
+import {
+  createInitialIiziDeterministicState,
+  isIiziDeterministicCall,
+  logIiziDeterministicGuard,
+  reduceIiziDeterministicTurn,
+  resolveIiziExactLine,
+  resolveIiziLocalizedLine,
+  computeOccupantRequirement,
+  resolveIiziFillerLine,
+  maybeSpeakIiziFiller,
+  iiziDeterministicAllowsModelEndCall,
+  IIZI_MINIMAL_REALTIME_PROMPT,
+  type IiziDeterministicAction,
+  type IiziDeterministicStateBag,
+  type IiziFillerReason,
+} from "../flow/iiziDeterministic.js";
 import type { SttStreamingAdapterHandle } from "../stt/types.js";
 import { createSttShadowSession, type SttShadowBrainHooks } from "../stt/sttShadowSession.js";
 
@@ -553,6 +569,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const iiziShadowStateRef: { current: IiziShadowState | null } = { current: null };
   /** IIZI combined-mode brain (intent + SMS gate); inbound only effective path. */
   const iiziBrainRef: { current: IiziBrainRuntimeState } = { current: createInitialIiziBrainState() };
+  /** IIZI deterministic strangler — owns critical flow for target agent only. */
+  let iiziDeterministicMode = false;
+  const iiziDetRef: { current: IiziDeterministicStateBag } = { current: createInitialIiziDeterministicState() };
+  const iiziDetPendingActions: IiziDeterministicAction[] = [];
+  let iiziDetCriticalLineQueued = false;
+  let iiziDetDraining = false;
 
   const touchIiziBrainLog = (reason: string) => {
     if (!useCombinedRegLocationSms || callDirection !== "inbound") return;
@@ -1027,11 +1049,265 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     );
   };
 
+  const iiziDeterministicInbound = () => iiziDeterministicMode && iiziCombinedInbound();
+
+  const speakExactIizi = (lineId: string, vars?: Record<string, string>): boolean => {
+    const lang = iiziDetRef.current.iiziLanguage;
+    const text = resolveIiziLocalizedLine(lineId, lang, vars, callId);
+    if (!text) {
+      console.warn(`[IIZI-Deterministic] unknown line_id=${lineId} callId=${callId}`);
+      return false;
+    }
+    console.log(
+      `[IIZI-Deterministic] line_id=${lineId} transcript_source=backend_exact remainingModelOwnedDecision=none callId=${callId}`,
+    );
+    iiziDetCriticalLineQueued = true;
+    return sendResponseCreate("iizi-exact", {
+      instructions:
+        `Speak ONLY the following sentence verbatim in Estonian. Do not add, remove, or change any words. ` +
+        `Do not call tools. Do not add filler.\n"""\n${text}\n"""`,
+      output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
+    });
+  };
+
+  const speakFillerIizi = (lineId: string, reason: IiziFillerReason): boolean => {
+    const text = resolveIiziFillerLine(lineId);
+    if (!text) return false;
+    return sendResponseCreate("iizi-filler", {
+      instructions:
+        `Speak ONLY this brief filler verbatim, then stop:\n"""\n${text}\n"""`,
+      output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
+    });
+  };
+
+  const enqueueIiziDeterministicActions = (actions: IiziDeterministicAction[]) => {
+    for (const a of actions) {
+      if (a.type !== "none") iiziDetPendingActions.push(a);
+    }
+    void drainIiziDeterministicQueue();
+  };
+
+  const runIiziBackendSms = async (
+    templateName: string,
+  ): Promise<{ ok: boolean; alreadySent: boolean }> => {
+    const recipient = callDirection === "inbound" ? fromNumber : calledNumber;
+    const tpl = smsMessages.find((m) => m.trigger === "during" && m.name === templateName);
+    if (!recipient || !tpl) {
+      if (templateName) setSmsToolState(templateName, "failed", "backend_deterministic_missing");
+      return { ok: false, alreadySent: false };
+    }
+    if (smsSentNames.has(tpl.name)) {
+      return { ok: true, alreadySent: true };
+    }
+    setSmsToolState(tpl.name, "pending", "backend_deterministic_send");
+    if (tpl.name === COMBINED_SMS_TEMPLATE_NAME) {
+      setLocationStatus("pending", "combined_sms_sent", null);
+      vehicleValidationStatus = "unknown";
+      vehicleLookupPassed = false;
+      vehicleReadbackDone = false;
+      locationReadbackDone = false;
+    }
+    const body = substituteVarsRef(tpl.content);
+    const result = await sendSms(recipient, body);
+    lastSmsToolResultAt = Date.now();
+    lastSmsToolResultTemplate = tpl.name;
+    if (result.ok) {
+      smsSentNames.add(tpl.name);
+      setSmsToolState(tpl.name, "sent", "backend_deterministic_ok");
+      if (tpl.name === COMBINED_SMS_TEMPLATE_NAME) {
+        try {
+          ingestIiziBrainFlow(iiziBrainRef.current, "combined_sms_sent");
+        } catch {
+          /* observability only */
+        }
+      }
+      if (tpl.name === CALLBACK_SMS_TEMPLATE_NAME) {
+        callbackSmsSent = true;
+        callbackPending = true;
+        callbackMode = "different_number_sms";
+      }
+      return { ok: true, alreadySent: false };
+    }
+    setSmsToolState(tpl.name, "failed", `backend_det:${result.error || "fail"}`);
+    return { ok: false, alreadySent: false };
+  };
+
+  const processOneIiziDeterministicAction = async (action: IiziDeterministicAction): Promise<boolean> => {
+    switch (action.type) {
+      case "speak_exact":
+        return speakExactIizi(action.lineId, action.vars);
+      case "speak_filler":
+        return speakFillerIizi(action.lineId, action.reason);
+      case "mark_occupant_required": {
+        const norm = action.normalizedTranscript ?? "";
+        const occ = action.category
+          ? computeOccupantRequirement(action.category, norm)
+          : computeOccupantRequirement(null, norm);
+        if (occ.required) {
+          incidentNeedsOccupantCount = true;
+          occupantCountStatus = "pending";
+          iiziDetRef.current.flags.occupantCountRequired = true;
+          console.log(
+            `[IIZI-Deterministic] occupantCountRequired=true occupantCountRequiredReason=${occ.reason} ` +
+              `passengerMentionDetected=${occ.passengerMentionDetected} passengerPhrase=${occ.passengerPhrase ?? "null"} ` +
+              `triggerCategory=${action.category ?? "null"} callId=${callId}`,
+          );
+        }
+        return true;
+      }
+      case "send_combined_sms": {
+        const r = await runIiziBackendSms(COMBINED_SMS_TEMPLATE_NAME);
+        const turn = reduceIiziDeterministicTurn({
+          callId,
+          bag: iiziDetRef.current,
+          event: {
+            type: "combined_sms_result",
+            success: r.ok,
+            alreadySent: r.alreadySent,
+          },
+        });
+        enqueueIiziDeterministicActions(turn.actions);
+        return false;
+      }
+      case "send_callback_sms": {
+        const r = await runIiziBackendSms(CALLBACK_SMS_TEMPLATE_NAME);
+        const turn = reduceIiziDeterministicTurn({
+          callId,
+          bag: iiziDetRef.current,
+          event: { type: "callback_sms_result", success: r.ok },
+        });
+        enqueueIiziDeterministicActions(turn.actions);
+        return false;
+      }
+      default:
+        return true;
+    }
+  };
+
+  const drainIiziDeterministicQueue = async () => {
+    if (iiziDetDraining || !iiziDeterministicInbound()) return;
+    iiziDetDraining = true;
+    try {
+      while (iiziDetPendingActions.length > 0 && !activeResponseId && openaiWs?.readyState === WebSocket.OPEN) {
+        const action = iiziDetPendingActions.shift()!;
+        const spoke = await processOneIiziDeterministicAction(action);
+        if (spoke) break;
+      }
+    } finally {
+      iiziDetDraining = false;
+      iiziDetCriticalLineQueued = false;
+    }
+  };
+
+  const runIiziDeterministicUserTranscript = (text: string) => {
+    const filler = maybeSpeakIiziFiller({
+      bag: iiziDetRef.current,
+      reason: "transcript_processing",
+      now: Date.now(),
+      assistantSpeaking: aiIsSpeaking || Boolean(activeResponseId),
+      criticalLineQueued: iiziDetCriticalLineQueued,
+    });
+    if (filler.lineId && !activeResponseId) {
+      speakFillerIizi(filler.lineId, "transcript_processing");
+    } else if (filler.suppressedReason) {
+      console.log(
+        `[IIZI-Deterministic] fillerUsed=false fillerSuppressedReason=${filler.suppressedReason} callId=${callId}`,
+      );
+    }
+    const turn = reduceIiziDeterministicTurn({
+      callId,
+      bag: iiziDetRef.current,
+      event: { type: "user_transcript", text },
+    });
+    if (turn.remainingModelOwnedDecision) {
+      console.log(
+        `[IIZI-Deterministic] remainingModelOwnedDecision=${turn.remainingModelOwnedDecision} callId=${callId}`,
+      );
+    }
+    enqueueIiziDeterministicActions(turn.actions);
+  };
+
+  const runIiziDeterministicSystemEvent = (
+    event:
+      | { type: "form_submitted" }
+      | { type: "vehicle_lookup_result"; match: boolean; coverageInvalid?: boolean }
+      | { type: "location_confirmed"; address: string }
+      | { type: "callback_form_received" },
+  ) => {
+    const turn = reduceIiziDeterministicTurn({ callId, bag: iiziDetRef.current, event });
+    enqueueIiziDeterministicActions(turn.actions);
+  };
+
+  const resetInboundRecoveryPlaybackState = () => {
+    clearInboundTranscriptFallbackTimer();
+    clearInboundNoAudioTimer();
+    clearResponseDoneFallbackTimer();
+    clearMarkFallback();
+    activeResponseId = null;
+    responsePlaybackMarkName = null;
+    responseHasAudio = false;
+    responseAudioDone = false;
+    responseDoneReceived = false;
+    responseAudioDeltaLogged = false;
+    activeResponseTwilioChunks = 0;
+    activeResponseTwilioBytes = 0;
+    aiIsSpeaking = false;
+  };
+
+  const completeInboundTranscriptRecovery = (reason: string, transcriptText: string, transcriptSeq: number) => {
+    if (iiziDeterministicInbound()) {
+      console.log(
+        `[IIZI-Deterministic] iiziTranscriptRecoveryMode=backend_fsm reason=${reason} ` +
+          `recoveredTranscript="${transcriptText.slice(0, 160)}" recoveryFedToBackend=true ` +
+          `recoveryTriggeredModelResponse=false callId=${callId}`,
+      );
+      runIiziDeterministicUserTranscript(transcriptText);
+      return;
+    }
+    injectInboundTranscriptAsUserText(transcriptText, reason, transcriptSeq);
+    lastResponseCreateReason = reason;
+    console.warn(
+      `[Diag-InboundTurn] fallback sent seq=${transcriptSeq} reason=${reason} text="${transcriptText.slice(0, 160)}" (callId=${callId})`,
+    );
+    sendResponseCreate(reason, { output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES] });
+  };
+
   /** Returns block result if IIZI brain denies tool; otherwise null. */
   const rejectToolIfBrainBlocks = (
     fnName: string,
     toolArgs: { template_name?: string; count?: string },
   ): ToolValidationResult | null => {
+    if (iiziDeterministicInbound()) {
+      if (fnName === "end_call" && !iiziDeterministicAllowsModelEndCall(iiziDetRef.current.currentState)) {
+        return {
+          allowed: false,
+          errorCode: "iizi_deterministic_backend_not_closed",
+          message: "end_call blocked — backend has not reached a terminal closure state.",
+          correctionSystemText:
+            `[SYSTEM EVENT: brain_tool_blocked] Internal note — do NOT read aloud. ` +
+            `end_call is owned by the backend until the call reaches a terminal state.`,
+        };
+      }
+      const backendOwned = [
+        "send_sms",
+        "confirm_iizi_vehicle_readback_complete",
+        "confirm_iizi_location_readback_complete",
+        "confirm_iizi_callback_same_incoming_number",
+        "confirm_iizi_callback_phone_verbal",
+        "confirm_occupant_count",
+        "mark_occupant_count_required",
+      ];
+      if (backendOwned.includes(fnName)) {
+        return {
+          allowed: false,
+          errorCode: "iizi_deterministic_backend_owned",
+          message: `${fnName} is owned by the backend in IIZI deterministic mode.`,
+          correctionSystemText:
+            `[SYSTEM EVENT: brain_tool_blocked] Internal note — do NOT read aloud. ` +
+            `The orchestrator owns this step. Wait for backend exact speech; do not improvise or call this tool.`,
+        };
+      }
+    }
     if (!iiziCombinedInbound()) return null;
     const snap = buildBrainRuntimeSnapshot();
     const decision = evaluateBrain(snap);
@@ -1638,6 +1914,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (callDirection !== "inbound" || greetingInProgress) return;
     if (!latestCompletedInboundTranscript?.text) {
       console.warn(`[Diag-InboundTurn] recovery skipped reason=${reason} skip=no_transcript responseId=${failedResponseId || "none"} (callId=${callId})`);
+      if (iiziDeterministicInbound()) {
+        console.log(
+          `[IIZI-Deterministic] iiziTranscriptRecoveryMode=suppressed reason=empty_transcript ` +
+            `recoveryFedToBackend=false recoveryTriggeredModelResponse=false callId=${callId}`,
+        );
+      }
+      return;
+    }
+    if (iiziDeterministicInbound() && !latestCompletedInboundTranscript.text.trim()) {
+      console.log(
+        `[IIZI-Deterministic] iiziTranscriptRecoveryMode=suppressed reason=would_trigger_model_response ` +
+          `recoveryFedToBackend=false recoveryTriggeredModelResponse=false callId=${callId}`,
+      );
       return;
     }
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
@@ -1673,26 +1962,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         console.error(`[Diag-InboundTurn] response.cancel failed responseId=${failedResponseId} (callId=${callId}):`, err);
       }
     }
-    clearInboundTranscriptFallbackTimer();
-    clearInboundNoAudioTimer();
-    clearResponseDoneFallbackTimer();
-    clearMarkFallback();
-    activeResponseId = null;
-    responsePlaybackMarkName = null;
-    responseHasAudio = false;
-    responseAudioDone = false;
-    responseDoneReceived = false;
-    responseAudioDeltaLogged = false;
-    activeResponseTwilioChunks = 0;
-    activeResponseTwilioBytes = 0;
-    aiIsSpeaking = false;
+    resetInboundRecoveryPlaybackState();
     ignoreAudioUntilNextResponse = shouldCancelActiveResponse;
     const sendRecoveryResponse = () => {
       if (!latestCompletedInboundTranscript?.text || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-      injectInboundTranscriptAsUserText(latestCompletedInboundTranscript.text, reason, latestCompletedInboundTranscript.seq);
-      lastResponseCreateReason = reason;
-      console.warn(`[Diag-InboundTurn] fallback sent seq=${latestCompletedInboundTranscript.seq} reason=${reason} text="${latestCompletedInboundTranscript.text.slice(0, 160)}" (callId=${callId})`);
-      sendResponseCreate(reason, { output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES] });
+      completeInboundTranscriptRecovery(
+        reason,
+        latestCompletedInboundTranscript.text,
+        latestCompletedInboundTranscript.seq,
+      );
     };
     if (shouldCancelActiveResponse) {
       if (pendingInboundRecoveryAfterCancel) {
@@ -1905,6 +2183,14 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           console.error(`[IIZI-Brain] greeting_ingest_failed callId=${callId || "?"}`, err);
         }
       }
+      if (iiziDeterministicInbound()) {
+        const turn = reduceIiziDeterministicTurn({
+          callId,
+          bag: iiziDetRef.current,
+          event: { type: "greeting_complete" },
+        });
+        enqueueIiziDeterministicActions(turn.actions);
+      }
       console.log(`[GreetingGate] complete source=${source} callId=${callId}`);
       console.log(`[MediaStream] Greeting playback complete via ${source}, enabling VAD after ${recoveryCooldownMs}ms cooldown (callId=${callId}, responseId=${completedResponseId})`);
       clearTurnDetectionEnableTimer();
@@ -1916,6 +2202,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
 
     console.log(`[MediaStream] AI playback complete via ${source} (callId=${callId}, responseId=${completedResponseId})`);
+    if (iiziDeterministicInbound()) {
+      void drainIiziDeterministicQueue();
+    }
   };
 
   // Connect to OpenAI Realtime API with agent-specific config
@@ -2016,6 +2305,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     } else {
       console.warn(`[MediaStream] No agents found at all, using defaults (callId=${callId})`);
     }
+
     console.log(`[LiveTurnSettings] callId=${callId} settings=${JSON.stringify(liveTurnSettings)}`);
     console.log(
       `[LiveCallBehavior] loaded anti_barge_in=${antiBargeinEnabled} uninterruptible_greeting=${greetingInProgress} use_initial_greeting=${useInitialGreeting} loudspeaker_mode=${liveTurnSettings.loudspeaker_mode} callId=${callId}`
@@ -2210,6 +2500,31 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       (agentConfig && (agentConfig as any).id) ||
       null;
     resolvedAgentIdRef = resolvedAgentId;
+
+    const detGuard = isIiziDeterministicCall({
+      agentId: resolvedAgentId,
+      agentName: loadedAgentName,
+      direction: callDirection,
+      useCombinedRegLocationSms,
+    });
+    iiziDeterministicMode = detGuard.active;
+    logIiziDeterministicGuard(callId, detGuard);
+    if (iiziDeterministicInbound()) {
+      const exactGreeting = resolveIiziLocalizedLine("greeting.initial", iiziDetRef.current.iiziLanguage, undefined, callId);
+      if (exactGreeting) greeting = exactGreeting;
+      instructions = IIZI_MINIMAL_REALTIME_PROMPT;
+      reduceIiziDeterministicTurn({
+        callId,
+        bag: iiziDetRef.current,
+        event: {
+          type: "crm_prefetch",
+          callerKnown: callVariables.caller_known === "true",
+        },
+      });
+      console.log(
+        `[IIZI-Deterministic] applied minimal_non_authoritative prompt and greeting.initial callId=${callId}`,
+      );
+    }
     callStartTime = new Date();
 
     if (useCombinedRegLocationSms && callDirection === "inbound" && resolvedAgentId) {
@@ -2300,16 +2615,24 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 });
 
                 if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-                  const sysMsg = `[SYSTEM EVENT: sms_received] from="${fromNum}" body="${replyBody}". Internal note only — do NOT read this tag aloud. Acknowledge the customer's SMS content naturally in the conversation right now (for example, read any phone number or address back to confirm). Speak in the same language the call is being conducted in.`;
-                  openaiWs.send(JSON.stringify({
-                    type: "conversation.item.create",
-                    item: {
-                      type: "message",
-                      role: "system",
-                      content: [{ type: "input_text", text: sysMsg }],
-                    },
-                  }));
-                  scheduleUserResponseCreate("system-event", 50);
+                  if (iiziDeterministicInbound()) {
+                    console.log(
+                      `[IIZI-Deterministic] iizi_sms_received_model_response_blocked=true from="${fromNum}" ` +
+                        `bodyPreview="${replyBody.slice(0, 80)}" currentState=${iiziDetRef.current.currentState} ` +
+                        `callId=${callId}`,
+                    );
+                  } else {
+                    const sysMsg = `[SYSTEM EVENT: sms_received] from="${fromNum}" body="${replyBody}". Internal note only — do NOT read this tag aloud. Acknowledge the customer's SMS content naturally in the conversation right now (for example, read any phone number or address back to confirm). Speak in the same language the call is being conducted in.`;
+                    openaiWs.send(JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "message",
+                        role: "system",
+                        content: [{ type: "input_text", text: sysMsg }],
+                      },
+                    }));
+                    scheduleUserResponseCreate("system-event", 50);
+                  }
                 }
               },
             )
@@ -2368,6 +2691,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                     if (useCombinedRegLocationSms && vehicleValidationStatus !== "valid") {
                       combinedLocationReadbackQueued = true;
+                    } else if (iiziDeterministicInbound() && hasAddress) {
+                      runIiziDeterministicSystemEvent({ type: "location_confirmed", address: addr });
                     } else {
                       emitLocationConfirmedSystemEvent();
                     }
@@ -2430,7 +2755,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     console.log(`[IIZI-Callback] confirmed via form_callback_phone callId=${callId}`);
                   }
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
-                  if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+                  if (iiziDeterministicInbound() && reg) {
+                    runIiziDeterministicSystemEvent({ type: "form_submitted" });
+                  }
+                  if (iiziDeterministicInbound() && phone.trim()) {
+                    runIiziDeterministicSystemEvent({ type: "callback_form_received" });
+                  }
+                  if (openaiWs && openaiWs.readyState === WebSocket.OPEN && !iiziDeterministicInbound()) {
                     const fieldParts: string[] = [];
                     if (reg) fieldParts.push(`reg="${reg}"`);
                     if (phone) fieldParts.push(`callback_phone="${phone}"`);
@@ -2478,18 +2809,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                             console.log(`[IIZI-CombinedSMS] vehicle valid, continuing callId=${callId}`);
                           }
                         }
-                        openaiWs.send(
-                          JSON.stringify({
-                            type: "conversation.item.create",
-                            item: {
-                              type: "message",
-                              role: "system",
-                              content: [{ type: "input_text", text: vehicleEvent }],
-                            },
-                          })
-                        );
-                        console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=true (callId=${callId})`);
-                        scheduleUserResponseCreate("system-event", 50);
+                        if (iiziDeterministicInbound()) {
+                          runIiziDeterministicSystemEvent({
+                            type: "vehicle_lookup_result",
+                            match: true,
+                            coverageInvalid: lookup.coverage_invalid,
+                          });
+                        } else {
+                          openaiWs.send(
+                            JSON.stringify({
+                              type: "conversation.item.create",
+                              item: {
+                                type: "message",
+                                role: "system",
+                                content: [{ type: "input_text", text: vehicleEvent }],
+                              },
+                            })
+                          );
+                          console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=true (callId=${callId})`);
+                          scheduleUserResponseCreate("system-event", 50);
+                        }
                         recordIiziShadowTrace({
                           callId,
                           agentId: resolvedAgentIdRef,
@@ -2520,8 +2859,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           locationStatus === "confirmed" &&
                           combinedLocationReadbackQueued
                         ) {
-                          const emitted = emitLocationConfirmedSystemEvent();
-                          if (emitted) combinedLocationReadbackQueued = false;
+                          if (iiziDeterministicInbound()) {
+                            runIiziDeterministicSystemEvent({
+                              type: "location_confirmed",
+                              address: locationConfirmedValue?.address || "",
+                            });
+                            combinedLocationReadbackQueued = false;
+                          } else {
+                            const emitted = emitLocationConfirmedSystemEvent();
+                            if (emitted) combinedLocationReadbackQueued = false;
+                          }
                         }
                         maybeEmitDeferredOccupantPrompt();
                         maybeNudgeDeferredCallbackSms("vehicle_valid");
@@ -2542,18 +2889,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           locationReadbackDone = false;
                           console.log(`[IIZI-CombinedSMS] vehicle invalid, blocking flow callId=${callId}`);
                         }
-                        openaiWs.send(
-                          JSON.stringify({
-                            type: "conversation.item.create",
-                            item: {
-                              type: "message",
-                              role: "system",
-                              content: [{ type: "input_text", text: vehicleEvent }],
-                            },
-                          })
-                        );
-                        console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=false (callId=${callId})`);
-                        scheduleUserResponseCreate("system-event", 50);
+                        if (iiziDeterministicInbound()) {
+                          runIiziDeterministicSystemEvent({
+                            type: "vehicle_lookup_result",
+                            match: false,
+                            coverageInvalid: false,
+                          });
+                        } else {
+                          openaiWs.send(
+                            JSON.stringify({
+                              type: "conversation.item.create",
+                              item: {
+                                type: "message",
+                                role: "system",
+                                content: [{ type: "input_text", text: vehicleEvent }],
+                              },
+                            })
+                          );
+                          console.log(`[IIZI-StrictLookup] injected vehicle_lookup_result event match=false (callId=${callId})`);
+                          scheduleUserResponseCreate("system-event", 50);
+                        }
                         recordIiziShadowTrace({
                           callId,
                           agentId: resolvedAgentIdRef,
@@ -2717,7 +3072,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 - ALWAYS finish your sentence completely before stopping. Never cut off mid-word or mid-sentence.
 - If the caller says "jah", "jaa", "mina olen", "jah mina olen", or repeats the target name approximately, treat identity as confirmed. Do not ask identity again unless the caller explicitly denies being the person or the answer is truly unclear.`;
 
-      if (useCombinedRegLocationSms && callDirection === "inbound") {
+      if (iiziDeterministicInbound()) {
+        fullInstructions = IIZI_MINIMAL_REALTIME_PROMPT;
+        console.log(
+          `[IIZI-Deterministic] realtime session uses minimal prompt only (no roadside triggers in prompt) callId=${callId}`,
+        );
+      } else if (useCombinedRegLocationSms && callDirection === "inbound") {
         fullInstructions += `\n\nIIZI COMBINED INBOUND — HARD ORDER (follow exactly; do not improvise):
 - NEVER claim or imply that an SMS was sent (e.g. do not say "saadan" / "saatsin" about the registration+location SMS) until the send_sms tool has returned success=true for that send.
 - Combined registration+location SMS: send at most once using the combined template when the script allows.
@@ -3072,8 +3432,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               activeResponseTwilioBytes = 0;
               aiIsSpeaking = false;
               console.warn(`[Diag-InboundTurn] response.cancelled received; sending recovery response seq=${pending.transcriptSeq} failedResponseId=${pending.failedResponseId || "none"} reason=${pending.reason} (callId=${callId})`);
-              injectInboundTranscriptAsUserText(pending.transcriptText, pending.reason, pending.transcriptSeq);
-              sendResponseCreate(pending.reason, { output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES] });
+              completeInboundTranscriptRecovery(pending.reason, pending.transcriptText, pending.transcriptSeq);
             }
             break;
           }
@@ -3318,6 +3677,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   console.error(`[IIZI-Brain] speech_ingest_failed callId=${callId}`, err);
                 }
               }
+              if (iiziDeterministicInbound()) {
+                runIiziDeterministicUserTranscript(transcriptText);
+              }
               if (activeResponseId && !responseHasAudio && activeResponseReason !== "initial-greeting") {
                 console.warn(`[Diag-InboundTurn] new user transcript while previous response has no usable audio; resetting stale response state activeResponse=${activeResponseId} seq=${fallbackSeq} previousSeq=${activeResponseInboundTranscriptSeq} (callId=${callId})`);
                 clearInboundNoAudioTimer();
@@ -3349,6 +3711,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(
                 `[Diag-InboundTurn] fallback scheduled seq=${fallbackSeq} timeoutMs=${liveTurnSettings.inbound_transcript_fallback_ms} text="${transcriptText.slice(0, 160)}" (callId=${callId})`
               );
+            } else if (iiziDeterministicInbound()) {
+              console.log(
+                `[IIZI-Deterministic] skip_model_user_transcript_response callId=${callId} itemId=${transcriptItemId}`,
+              );
             } else if (runtimeOwnsPostGreetingResponses()) {
               scheduleResponseForCommittedTurn(transcriptItemId, "transcript-ready", event.transcript);
             } else if (
@@ -3376,6 +3742,31 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const args = JSON.parse(event.arguments);
                 reason = args.reason || reason;
               } catch {}
+              if (iiziDeterministicInbound()) {
+                const detState = iiziDetRef.current.currentState;
+                if (!iiziDeterministicAllowsModelEndCall(detState)) {
+                  console.log(
+                    `[IIZI-Deterministic] iizi_model_end_call_blocked=true currentState=${detState} ` +
+                      `reason=backend_not_closed callId=${callId}`,
+                  );
+                  openaiWs!.send(
+                    JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "function_call_output",
+                        call_id: event.call_id,
+                        output: JSON.stringify({
+                          success: false,
+                          error: "iizi_deterministic_backend_not_closed",
+                          message:
+                            "end_call is owned by the backend for this call. Wait for backend closure instructions.",
+                        }),
+                      },
+                    }),
+                  );
+                  break;
+                }
+              }
               recordIiziShadowTrace({
                 callId,
                 agentId: resolvedAgentIdRef,
@@ -4523,8 +4914,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               activeResponseTwilioBytes = 0;
               aiIsSpeaking = false;
               console.warn(`[Diag-InboundTurn] cancelled/stalled response.done received; sending recovery response seq=${pending.transcriptSeq} failedResponseId=${pending.failedResponseId || "none"} reason=${pending.reason} (callId=${callId})`);
-              injectInboundTranscriptAsUserText(pending.transcriptText, pending.reason, pending.transcriptSeq);
-              sendResponseCreate(pending.reason, { output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES] });
+              completeInboundTranscriptRecovery(pending.reason, pending.transcriptText, pending.transcriptSeq);
               break;
             }
             if (!activeResponseId || !responseId || responseId !== activeResponseId) {
