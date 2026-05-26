@@ -1376,11 +1376,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     includeCallerSpeech = false,
     opts?: { transcriptReadyItemId?: string | null }
   ): string | null => {
-    const transcriptItemId = opts?.transcriptReadyItemId || null;
-    const trustVadTurnEnd =
-      Boolean(transcriptItemId) &&
-      runtimeOwnsPostGreetingResponses() &&
-      pendingCommittedUserTurns.has(transcriptItemId);
+    const transcriptItemId = opts?.transcriptReadyItemId ?? null;
+    let trustVadTurnEnd = false;
+    if (transcriptItemId) {
+      trustVadTurnEnd =
+        runtimeOwnsPostGreetingResponses() &&
+        pendingCommittedUserTurns.has(transcriptItemId);
+    }
 
     if (includeCallerSpeech) {
       if (callerSpeechActive) return "caller_still_speaking";
