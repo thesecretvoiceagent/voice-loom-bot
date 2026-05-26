@@ -7,10 +7,6 @@ import {
   IIZI_DETERMINISTIC_AGENT_ID,
   IIZI_DETERMINISTIC_AGENT_NAME,
   IIZI_FILLER_LINES,
-  IIZI_FUZZY_CANONICAL_PHRASES,
-  IIZI_NON_ROADSIDE_INDEX,
-  IIZI_ROADSIDE_TRIGGER_INDEX,
-  IIZI_UNSAFE_INDEX,
   IIZI_EN_LANG_HINTS_NORM,
   IIZI_ET_LANG_HINTS_NORM,
   IIZI_RU_LANG_HINTS_NORM,
@@ -27,6 +23,12 @@ export {
   computeOccupantRequirement,
 } from "./iiziDeterministicConfig.js";
 import { normalizeIiziTranscript, transcriptHasCyrillic } from "./iiziDeterministicNormalize.js";
+import {
+  classifyTwoStage,
+  occupantForClassification,
+  updateClassifierContext,
+  type TwoStageClassificationResult,
+} from "./iiziDeterministicBroad.js";
 import type { IiziIncidentType, IiziLanguage, IiziRoadsideCategory } from "./iiziDeterministicTypes.js";
 export type { IiziLanguage, IiziRoadsideCategory, IiziIncidentType } from "./iiziDeterministicTypes.js";
 
@@ -67,9 +69,18 @@ export type IiziDeterministicState =
 export type IiziClassificationMethod =
   | "exact"
   | "fuzzy"
+  | "broad_roadside_evidence"
   | "clarification"
   | "human_route"
-  | "non_roadside";
+  | "non_roadside"
+  | "unsafe"
+  | "context_followup";
+
+export type IiziBroadIntent =
+  | "roadside_assistance"
+  | "not_roadside_assistance"
+  | "unsafe_volunteered"
+  | "unclear";
 
 export type IiziDeterministicAction =
   | { type: "speak_exact"; lineId: string; vars?: Record<string, string> }
@@ -121,6 +132,11 @@ export interface IiziDeterministicStateBag {
   flags: IiziDeterministicRuntimeFlags;
   iiziLanguage: IiziLanguage;
   previousIiziLanguage: IiziLanguage | null;
+  lastWeakRoadsideEvidenceCategory: IiziRoadsideCategory | null;
+  lastBroadIntent: IiziBroadIntent | null;
+  lastSubCategoryCandidate: IiziRoadsideCategory | null;
+  lastUnclearTranscript: string;
+  unclearCount: number;
 }
 
 export function createInitialIiziDeterministicState(): IiziDeterministicStateBag {
@@ -148,6 +164,11 @@ export function createInitialIiziDeterministicState(): IiziDeterministicStateBag
     },
     iiziLanguage: "et",
     previousIiziLanguage: null,
+    lastWeakRoadsideEvidenceCategory: null,
+    lastBroadIntent: null,
+    lastSubCategoryCandidate: null,
+    lastUnclearTranscript: "",
+    unclearCount: 0,
   };
 }
 
@@ -185,6 +206,8 @@ export function resolveIiziFillerLine(lineId: string): string | null {
 }
 
 export interface IiziTranscriptClassification {
+  broadIntent: IiziBroadIntent;
+  subCategory: IiziRoadsideCategory | null;
   finalBackendIntent: "roadside_assistance" | "not_roadside_assistance" | "unclear" | "unsafe";
   incidentType: IiziIncidentType | null;
   classificationMethod: IiziClassificationMethod;
@@ -192,10 +215,15 @@ export interface IiziTranscriptClassification {
   canonicalPhrase: string | null;
   triggerCategory: IiziRoadsideCategory | null;
   classifierConfidence: number;
+  subCategoryConfidence: number;
+  broadRoadsideEvidenceDetected: boolean;
+  broadRoadsideEvidenceTokens: string[];
   rawTranscript: string;
   normalizedTranscript: string;
   unsafeVolunteered: boolean;
   unsafePhrase: string | null;
+  humanHandoffReason: string | null;
+  suggestConfirmFlatTire: boolean;
   iiziLanguage: IiziLanguage;
   detectedLanguage: IiziLanguage;
   languageDetectionMethod: IiziLanguageDetectionMethod;
@@ -205,31 +233,6 @@ export interface IiziTranscriptClassification {
   occupantCountRequiredReason: string;
   passengerMentionDetected: boolean;
   passengerPhrase: string | null;
-}
-
-function levenshtein(a: string, b: string): number {
-  if (a === b) return 0;
-  const m = a.length;
-  const n = b.length;
-  if (m === 0) return n;
-  if (n === 0) return m;
-  const dp = new Array(n + 1);
-  for (let j = 0; j <= n; j++) dp[j] = j;
-  for (let i = 1; i <= m; i++) {
-    let prev = dp[0];
-    dp[0] = i;
-    for (let j = 1; j <= n; j++) {
-      const tmp = dp[j];
-      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
-      prev = tmp;
-    }
-  }
-  return dp[n];
-}
-
-function fuzzySimilarity(a: string, b: string): number {
-  const maxLen = Math.max(a.length, b.length, 1);
-  return 1 - levenshtein(a, b) / maxLen;
 }
 
 export function detectIiziLanguage(
@@ -286,15 +289,14 @@ export function detectIiziLanguage(
   return { lang: currentLang, method: "default", switch: false, switchReason: null };
 }
 
-function buildClassificationBase(
+function applyLanguageFromClassification(
   rawTranscript: string,
   normalizedTranscript: string,
   bag: IiziDeterministicStateBag,
+  two: TwoStageClassificationResult,
   callId: string | null,
 ): Pick<
   IiziTranscriptClassification,
-  | "rawTranscript"
-  | "normalizedTranscript"
   | "iiziLanguage"
   | "detectedLanguage"
   | "languageDetectionMethod"
@@ -302,47 +304,51 @@ function buildClassificationBase(
   | "languageSwitchReason"
 > {
   const prev = bag.iiziLanguage;
-  const det = detectIiziLanguage(rawTranscript, normalizedTranscript, prev);
-  if (det.switch) {
-    bag.previousIiziLanguage = prev;
-    bag.iiziLanguage = det.lang;
-    console.log(
-      `[IIZI-Deterministic] iiziLanguage=${bag.iiziLanguage} previousIiziLanguage=${bag.previousIiziLanguage} ` +
-        `detectedLanguage=${det.lang} languageDetectionMethod=${det.method} languageSwitch=true ` +
-        `languageSwitchReason=${det.switchReason} callId=${callId || "?"}`,
-    );
-  } else {
-    console.log(
-      `[IIZI-Deterministic] iiziLanguage=${bag.iiziLanguage} detectedLanguage=${det.lang} ` +
-        `languageDetectionMethod=${det.method} languageSwitch=false callId=${callId || "?"}`,
-    );
-  }
-  return {
-    rawTranscript,
-    normalizedTranscript,
-    iiziLanguage: bag.iiziLanguage,
-    detectedLanguage: det.lang,
-    languageDetectionMethod: det.method,
-    languageSwitch: det.switch,
-    languageSwitchReason: det.switchReason,
-  };
-}
+  let detectedLanguage: IiziLanguage;
+  let languageDetectionMethod: IiziLanguageDetectionMethod;
+  let languageSwitchReason: string | null = null;
+  let matchedAliasLanguage: IiziLanguage | null = two.matchedAliasLanguage;
+  let triggerIndexSource = two.triggerIndexSource ?? "default";
 
-function withOccupantFields(
-  partial: Omit<
-    IiziTranscriptClassification,
-    "occupantCountRequired" | "occupantCountRequiredReason" | "passengerMentionDetected" | "passengerPhrase"
-  >,
-  category: IiziRoadsideCategory | null,
-  normalizedTranscript: string,
-): IiziTranscriptClassification {
-  const occ = computeOccupantRequirement(category, normalizedTranscript);
+  if (transcriptHasCyrillic(rawTranscript)) {
+    detectedLanguage = "ru";
+    languageDetectionMethod = "script";
+    matchedAliasLanguage = "ru";
+    triggerIndexSource = "default";
+    languageSwitchReason = prev !== "ru" ? "cyrillic_script" : null;
+  } else if (two.matchedAliasLanguage) {
+    detectedLanguage = two.matchedAliasLanguage;
+    languageDetectionMethod = "exact";
+    languageSwitchReason = "trigger_phrase_language";
+  } else {
+    const det = detectIiziLanguage(rawTranscript, normalizedTranscript, prev);
+    detectedLanguage = det.lang;
+    languageDetectionMethod = det.method;
+    languageSwitchReason = det.switchReason;
+    matchedAliasLanguage = null;
+    triggerIndexSource = "default";
+  }
+
+  const languageSwitch = detectedLanguage !== prev;
+  if (languageSwitch) {
+    bag.previousIiziLanguage = prev;
+    bag.iiziLanguage = detectedLanguage;
+  }
+
+  console.log(
+    `[IIZI-Deterministic] iiziLanguage=${bag.iiziLanguage} previousIiziLanguage=${bag.previousIiziLanguage ?? "null"} ` +
+      `detectedLanguage=${detectedLanguage} languageDetectionMethod=${languageDetectionMethod} ` +
+      `languageSwitch=${languageSwitch} languageSwitchReason=${languageSwitchReason ?? "null"} ` +
+      `matchedAliasLanguage=${matchedAliasLanguage ?? "null"} triggerIndexSource=${triggerIndexSource} ` +
+      `callId=${callId || "?"}`,
+  );
+
   return {
-    ...partial,
-    occupantCountRequired: occ.required,
-    occupantCountRequiredReason: occ.reason,
-    passengerMentionDetected: occ.passengerMentionDetected,
-    passengerPhrase: occ.passengerPhrase,
+    iiziLanguage: bag.iiziLanguage,
+    detectedLanguage,
+    languageDetectionMethod,
+    languageSwitch,
+    languageSwitchReason,
   };
 }
 
@@ -353,144 +359,48 @@ export function classifyIiziTranscript(
 ): IiziTranscriptClassification {
   const normalizedTranscript = normalizeIiziTranscript(rawTranscript);
   const langBag = bag ?? createInitialIiziDeterministicState();
-  const base = buildClassificationBase(rawTranscript, normalizedTranscript, langBag, callId ?? null);
 
-  const applyTriggerLanguage = (sourceLang: IiziLanguage) => {
-    if (bag && sourceLang !== bag.iiziLanguage) {
-      bag.previousIiziLanguage = bag.iiziLanguage;
-      bag.iiziLanguage = sourceLang;
-      base.iiziLanguage = sourceLang;
-      base.detectedLanguage = sourceLang;
-      base.languageDetectionMethod = "exact";
-      base.languageSwitch = true;
-      base.languageSwitchReason = "trigger_phrase_language";
-    }
-  };
-
-  for (const { phrase, sourceLang } of IIZI_UNSAFE_INDEX) {
-    if (normalizedTranscript.includes(phrase)) {
-      applyTriggerLanguage(sourceLang);
-      return withOccupantFields(
-        {
-          ...base,
-          finalBackendIntent: "unsafe",
-          incidentType: null,
-          classificationMethod: "human_route",
-          matchedPhrase: phrase,
-          canonicalPhrase: phrase,
-          triggerCategory: null,
-          classifierConfidence: 1,
-          unsafeVolunteered: true,
-          unsafePhrase: phrase,
-        },
-        null,
-        normalizedTranscript,
-      );
-    }
+  const two = classifyTwoStage(normalizedTranscript, langBag);
+  if (bag) {
+    updateClassifierContext(bag, normalizedTranscript, two);
   }
 
-  for (const { phrase, sourceLang } of IIZI_NON_ROADSIDE_INDEX) {
-    if (normalizedTranscript.includes(phrase)) {
-      applyTriggerLanguage(sourceLang);
-      return withOccupantFields(
-        {
-          ...base,
-          finalBackendIntent: "not_roadside_assistance",
-          incidentType: null,
-          classificationMethod: "non_roadside",
-          matchedPhrase: phrase,
-          canonicalPhrase: phrase,
-          triggerCategory: null,
-          classifierConfidence: 0.9,
-          unsafeVolunteered: false,
-          unsafePhrase: null,
-        },
-        null,
-        normalizedTranscript,
-      );
-    }
-  }
-
-  for (const { category, phrase, sourceLang } of IIZI_ROADSIDE_TRIGGER_INDEX) {
-    if (normalizedTranscript.includes(phrase)) {
-      applyTriggerLanguage(sourceLang);
-      return withOccupantFields(
-        {
-          ...base,
-          finalBackendIntent: "roadside_assistance",
-          incidentType: category,
-          classificationMethod: "exact",
-          matchedPhrase: phrase,
-          canonicalPhrase: phrase,
-          triggerCategory: category,
-          classifierConfidence: 1,
-          unsafeVolunteered: false,
-          unsafePhrase: null,
-        },
-        category,
-        normalizedTranscript,
-      );
-    }
-  }
-
-  const tokens = normalizedTranscript.split(/\s+/).filter(Boolean);
-  for (const { phrase, category } of IIZI_FUZZY_CANONICAL_PHRASES) {
-    if (normalizedTranscript.includes(phrase)) {
-      return withOccupantFields(
-        {
-          ...base,
-          finalBackendIntent: "roadside_assistance",
-          incidentType: category,
-          classificationMethod: "exact",
-          matchedPhrase: phrase,
-          canonicalPhrase: phrase,
-          triggerCategory: category,
-          classifierConfidence: 1,
-          unsafeVolunteered: false,
-          unsafePhrase: null,
-        },
-        category,
-        normalizedTranscript,
-      );
-    }
-    const sim = fuzzySimilarity(normalizedTranscript.replace(/\s/g, ""), phrase.replace(/\s/g, ""));
-    const tokenHit = tokens.some((tok) => fuzzySimilarity(tok, phrase.split(/\s+/)[0] || phrase) >= 0.82);
-    if (sim >= 0.88 || tokenHit) {
-      return withOccupantFields(
-        {
-          ...base,
-          finalBackendIntent: "roadside_assistance",
-          incidentType: category,
-          classificationMethod: "fuzzy",
-          matchedPhrase: normalizedTranscript.slice(0, 80),
-          canonicalPhrase: phrase,
-          triggerCategory: category,
-          classifierConfidence: sim >= 0.88 ? sim : 0.82,
-          unsafeVolunteered: false,
-          unsafePhrase: null,
-        },
-        category,
-        normalizedTranscript,
-      );
-    }
-  }
-
-  return withOccupantFields(
-    {
-      ...base,
-      finalBackendIntent: "unclear",
-      incidentType: null,
-      classificationMethod: "clarification",
-      matchedPhrase: null,
-      canonicalPhrase: null,
-      triggerCategory: null,
-      classifierConfidence: 0.4,
-      unsafeVolunteered: false,
-      unsafePhrase: null,
-    },
-    null,
+  const langFields = applyLanguageFromClassification(
+    rawTranscript,
     normalizedTranscript,
+    langBag,
+    two,
+    callId ?? null,
   );
+
+  const category = two.subCategory ?? two.triggerCategory;
+  const occ = occupantForClassification(category, normalizedTranscript);
+
+  return {
+    rawTranscript,
+    normalizedTranscript,
+    ...langFields,
+    broadIntent: two.broadIntent,
+    subCategory: two.subCategory,
+    finalBackendIntent: two.finalBackendIntent,
+    incidentType: category,
+    classificationMethod: two.classificationMethod,
+    matchedPhrase: two.matchedPhrase,
+    canonicalPhrase: two.canonicalPhrase,
+    triggerCategory: two.triggerCategory ?? category,
+    classifierConfidence: two.classifierConfidence,
+    subCategoryConfidence: two.subCategoryConfidence,
+    broadRoadsideEvidenceDetected: two.broadRoadsideEvidenceDetected,
+    broadRoadsideEvidenceTokens: two.broadRoadsideEvidenceTokens,
+    unsafeVolunteered: two.unsafeVolunteered,
+    unsafePhrase: two.unsafePhrase,
+    humanHandoffReason: two.humanHandoffReason,
+    suggestConfirmFlatTire: two.suggestConfirmFlatTire,
+    occupantCountRequired: occ.required,
+    occupantCountRequiredReason: occ.reason,
+    passengerMentionDetected: occ.passengerMentionDetected,
+    passengerPhrase: occ.passengerPhrase,
+  };
 }
 
 function logClassification(callId: string | null, c: IiziTranscriptClassification, nextState: string): void {
@@ -499,14 +409,33 @@ function logClassification(callId: string | null, c: IiziTranscriptClassificatio
       `normalizedTranscript="${c.normalizedTranscript.slice(0, 120)}" ` +
       `iiziLanguage=${c.iiziLanguage} detectedLanguage=${c.detectedLanguage} ` +
       `languageDetectionMethod=${c.languageDetectionMethod} languageSwitch=${c.languageSwitch} ` +
+      `broadIntent=${c.broadIntent} subCategory=${c.subCategory ?? "null"} ` +
       `classificationMethod=${c.classificationMethod} matchedPhrase=${c.matchedPhrase ?? "null"} ` +
       `canonicalPhrase=${c.canonicalPhrase ?? "null"} triggerCategory=${c.triggerCategory ?? "null"} ` +
-      `classifierConfidence=${c.classifierConfidence.toFixed(2)} finalBackendIntent=${c.finalBackendIntent} ` +
+      `classifierConfidence=${c.classifierConfidence.toFixed(2)} ` +
+      `subCategoryConfidence=${c.subCategoryConfidence.toFixed(2)} ` +
+      `broadRoadsideEvidenceDetected=${c.broadRoadsideEvidenceDetected} ` +
+      `broadRoadsideEvidenceTokens=${c.broadRoadsideEvidenceTokens.join("|") || "none"} ` +
+      `finalBackendIntent=${c.finalBackendIntent} ` +
       `occupantCountRequired=${c.occupantCountRequired} occupantCountRequiredReason=${c.occupantCountRequiredReason} ` +
       `passengerMentionDetected=${c.passengerMentionDetected} passengerPhrase=${c.passengerPhrase ?? "null"} ` +
       `unsafeVolunteered=${c.unsafeVolunteered} unsafePhrase=${c.unsafePhrase ?? "null"} ` +
+      `humanHandoffReason=${c.humanHandoffReason ?? "null"} suggestConfirmFlatTire=${c.suggestConfirmFlatTire} ` +
       `unsafeRouteTaken=${c.finalBackendIntent === "unsafe"} nextState=${nextState} callId=${callId || "?"}`,
   );
+}
+
+function roadsideClassifiedActions(
+  bag: IiziDeterministicStateBag,
+  category: IiziRoadsideCategory,
+  norm: string,
+): IiziDeterministicAction[] {
+  return [
+    { type: "speak_exact", lineId: incidentLineId(category) },
+    { type: "mark_occupant_required", category, normalizedTranscript: norm },
+    { type: "speak_exact", lineId: bag.flags.callerKnown ? "crm.known" : "crm.unknown" },
+    { type: "send_combined_sms" },
+  ];
 }
 
 function eventKey(callId: string, type: string, payloadKey: string): string {
@@ -601,19 +530,33 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     if (state === "UNCLEAR_CLARIFY_ONCE") {
       const c = classifyIiziTranscript(event.text, bag, callId);
       logClassification(callId, c, state);
-      if (c.finalBackendIntent === "roadside_assistance" && c.triggerCategory) {
-        bag.flags.incidentCategory = c.triggerCategory;
+      if (c.finalBackendIntent === "roadside_assistance") {
+        const category = c.triggerCategory ?? c.subCategory ?? "generic_roadside";
+        bag.flags.incidentCategory = category;
         bag.flags.occupantCountRequired = c.occupantCountRequired;
         return transition(
           bag,
-          "SEND_COMBINED_REG_LOCATION_SMS",
+          "ROADSIDE_CONFIRMED",
           "clarify_roadside",
-          [
-            { type: "speak_exact", lineId: incidentLineId(c.triggerCategory) },
-            { type: "mark_occupant_required", category: c.triggerCategory, normalizedTranscript: norm },
-            { type: "speak_exact", lineId: bag.flags.callerKnown ? "crm.known" : "crm.unknown" },
-            { type: "send_combined_sms" },
-          ],
+          roadsideClassifiedActions(bag, category, norm),
+          callId,
+        );
+      }
+      if (c.finalBackendIntent === "not_roadside_assistance") {
+        return transition(
+          bag,
+          "NON_ROADSIDE_HUMAN_ROUTE",
+          "clarify_non_roadside",
+          [{ type: "speak_exact", lineId: "handoff.human_followup" }],
+          callId,
+        );
+      }
+      if (bag.lastWeakRoadsideEvidenceCategory && bag.unclearCount >= 1) {
+        return transition(
+          bag,
+          "UNCLEAR_CLARIFY_ONCE",
+          "confirm_flat_tire_after_clarify",
+          [{ type: "speak_exact", lineId: "intent.confirm_flat_tire" }],
           callId,
         );
       }
@@ -649,40 +592,71 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
           callId,
         );
       }
-      if (c.finalBackendIntent === "roadside_assistance" && c.triggerCategory) {
-        bag.flags.incidentCategory = c.triggerCategory;
+      if (c.finalBackendIntent === "roadside_assistance") {
+        const category = c.triggerCategory ?? c.subCategory ?? "generic_roadside";
+        if (
+          c.suggestConfirmFlatTire &&
+          c.classificationMethod !== "context_followup" &&
+          c.subCategoryConfidence < 0.75 &&
+          !bag.flags.clarifyUsed
+        ) {
+          bag.flags.clarifyUsed = true;
+          return transition(
+            bag,
+            "UNCLEAR_CLARIFY_ONCE",
+            "confirm_flat_tire_weak_evidence",
+            [{ type: "speak_exact", lineId: "intent.confirm_flat_tire" }],
+            callId,
+          );
+        }
+        bag.flags.incidentCategory = category;
         bag.flags.occupantCountRequired = c.occupantCountRequired;
-        const lineId = incidentLineId(c.triggerCategory);
         return transition(
           bag,
-          "SEND_COMBINED_REG_LOCATION_SMS",
+          "ROADSIDE_CONFIRMED",
           "roadside_classified",
-          [
-            { type: "speak_exact", lineId },
-            { type: "mark_occupant_required", category: c.triggerCategory, normalizedTranscript: norm },
-            { type: "speak_exact", lineId: bag.flags.callerKnown ? "crm.known" : "crm.unknown" },
-            { type: "send_combined_sms" },
-          ],
+          roadsideClassifiedActions(bag, category, norm),
           callId,
         );
       }
-      if (!bag.flags.clarifyUsed) {
-        bag.flags.clarifyUsed = true;
+      if (c.finalBackendIntent === "unclear") {
+        if (c.suggestConfirmFlatTire || (bag.unclearCount >= 2 && bag.lastWeakRoadsideEvidenceCategory)) {
+          bag.flags.clarifyUsed = true;
+          return transition(
+            bag,
+            "UNCLEAR_CLARIFY_ONCE",
+            "confirm_flat_tire_unclear_repeat",
+            [{ type: "speak_exact", lineId: "intent.confirm_flat_tire" }],
+            callId,
+          );
+        }
+        if (!bag.flags.clarifyUsed) {
+          bag.flags.clarifyUsed = true;
+          return transition(
+            bag,
+            "UNCLEAR_CLARIFY_ONCE",
+            "unclear_first",
+            [{ type: "speak_exact", lineId: "intent.unclear_roadside_or_other" }],
+            callId,
+          );
+        }
+        if (bag.lastWeakRoadsideEvidenceCategory) {
+          return transition(
+            bag,
+            "UNCLEAR_CLARIFY_ONCE",
+            "confirm_flat_tire_before_handoff",
+            [{ type: "speak_exact", lineId: "intent.confirm_flat_tire" }],
+            callId,
+          );
+        }
         return transition(
           bag,
-          "UNCLEAR_CLARIFY_ONCE",
-          "unclear_first",
-          [{ type: "speak_exact", lineId: "intent.unclear_roadside_or_other" }],
+          "NON_ROADSIDE_HUMAN_ROUTE",
+          "unclear_after_clarify",
+          [{ type: "speak_exact", lineId: "handoff.human_followup" }],
           callId,
         );
       }
-      return transition(
-        bag,
-        "NON_ROADSIDE_HUMAN_ROUTE",
-        "unclear_after_clarify",
-        [{ type: "speak_exact", lineId: "handoff.human_followup" }],
-        callId,
-      );
     }
 
     if (state === "ASK_CALLBACK_SAME_NUMBER") {

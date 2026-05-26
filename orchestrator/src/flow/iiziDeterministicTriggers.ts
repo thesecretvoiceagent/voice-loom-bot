@@ -210,7 +210,7 @@ export const IIZI_NON_ROADSIDE_TRIGGER_DATA: LangPhrases = {
     "poliisi lopetamine", "makse", "maksmine", "kindlustuse hind",
   ],
   en: [
-    "insurance", "policy", "insurance policy", "policy question", "invoice", "bill", "billing",
+    "insurance", "insurance question", "policy", "insurance policy", "policy question", "invoice", "bill", "billing",
     "quote", "insurance quote", "i want a quote", "claim", "insurance claim", "change my policy",
     "green card", "payment schedule", "cancel policy", "cancel insurance", "payment",
     "price of insurance",

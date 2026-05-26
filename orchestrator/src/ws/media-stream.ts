@@ -801,9 +801,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const iiziCombinedInbound = () => useCombinedRegLocationSms && callDirection === "inbound";
-  /** Themis / prompt-led outbound: runtime schedules response.create (not OpenAI VAD auto). */
+  /** IIZI deterministic inbound + Themis outbound: backend owns post-greeting responses (not VAD auto). */
   const runtimeOwnsPostGreetingResponses = () =>
-    initialGreetingResponseFinished && callDirection === "outbound" && !iiziCombinedInbound();
+    initialGreetingResponseFinished &&
+    ((iiziDeterministicMode && iiziCombinedInbound()) ||
+      (callDirection === "outbound" && !iiziCombinedInbound()));
   /** Strict lookup success + location_confirmed=true */
   const iiziBackendReadyForReadbacks = () => vehicleLookupPassed && locationConfirmedFlag;
   const iiziCanAskOccupantQuestion = () =>
@@ -2061,7 +2063,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // BEFORE enabling VAD, so it doesn't immediately fire a false speech_started.
     openaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
     inputFramesSinceLastCommit = 0;
-    const vadAutoCreateResponse = iiziCombinedInbound();
+    const vadAutoCreateResponse =
+      iiziDeterministicMode && iiziCombinedInbound() ? false : iiziCombinedInbound();
     const turnDetection = {
       type: "server_vad",
       threshold: liveTurnSettings.vad_threshold,
@@ -3713,7 +3716,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               );
             } else if (iiziDeterministicInbound()) {
               console.log(
-                `[IIZI-Deterministic] skip_model_user_transcript_response callId=${callId} itemId=${transcriptItemId}`,
+                `[IIZI-Deterministic] skip_model_user_transcript_response=true callId=${callId} itemId=${transcriptItemId}`,
               );
             } else if (runtimeOwnsPostGreetingResponses()) {
               scheduleResponseForCommittedTurn(transcriptItemId, "transcript-ready", event.transcript);

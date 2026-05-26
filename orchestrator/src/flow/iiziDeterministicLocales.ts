@@ -14,6 +14,11 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     en: "Is your request about immediate roadside assistance or another IIZI insurance matter?",
     ru: "Ваше обращение связано с немедленной помощью на дороге или с другим вопросом по страховке IIZI?",
   },
+  "intent.confirm_flat_tire": {
+    et: "Kas saan õigesti aru, et probleem on tühja rehviga?",
+    en: "Do I understand correctly that the issue is a flat tire?",
+    ru: "Правильно ли я понимаю, что проблема в спущенном колесе?",
+  },
   "incident.accident": {
     et: "Sain aru, et toimus avarii.",
     en: "I understand there was an accident.",
