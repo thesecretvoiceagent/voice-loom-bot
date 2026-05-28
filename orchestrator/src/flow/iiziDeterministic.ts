@@ -1099,6 +1099,10 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       }
     }
 
+    if (state === "SEND_CALLBACK_SMS" || state === "WAITING_FOR_CALLBACK_FORM") {
+      return { actions: [{ type: "none" }], transitionReason: "callback_sms_flow_awaiting_form" };
+    }
+
     if (state === "ASK_CALLBACK_SAME_NUMBER") {
       if (!hasMeaningfulCallerTranscript(norm)) {
         return { actions: [{ type: "none" }], transitionReason: "callback_awaiting_transcript" };
@@ -1127,7 +1131,9 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       }
       if (different) {
         bag.flags.callbackSameNumber = false;
-        console.log(`[IIZI-Deterministic] callbackSmsRequested=true callId=${callId || "?"}`);
+        console.log(
+          `[IIZI-Deterministic] callbackSmsRequested=true callbackDifferentNumberSmsOnly=true callId=${callId || "?"}`,
+        );
         return transition(
           bag,
           "SEND_CALLBACK_SMS",

@@ -10,6 +10,67 @@ import {
   type IiziDeterministicAction,
 } from "./iiziDeterministic.js";
 import { resolveIiziLocalizedLine } from "./iiziDeterministicConfig.js";
+
+const CALLBACK_DIFFERENT_NUMBER_SMS_SENT_ET =
+  "Saatsin Teile SMS-i tagasihelistamise numbri sisestamiseks. Palun avage link ja sisestage sinna sobiv tagasihelistamise number.";
+
+const CALLBACK_VERBAL_ASK_LINE_IDS = new Set([
+  "callback.ask_same_number",
+  "callback.ask_same_number_clarify",
+]);
+
+function assertNoVerbalCallbackAskLines(actions: IiziDeterministicAction[], label: string): void {
+  for (const id of lineIds(actions)) {
+    assert.equal(
+      CALLBACK_VERBAL_ASK_LINE_IDS.has(id),
+      false,
+      `${label}: must not queue verbal callback ask line ${id}`,
+    );
+  }
+}
+
+function assertDifferentNumberSmsOnlyFlow(
+  bag: ReturnType<typeof createInitialIiziDeterministicState>,
+  text: string,
+  callId: string,
+): void {
+  bag.currentState = "ASK_CALLBACK_SAME_NUMBER";
+  const askTurn = reduceIiziDeterministicTurn({
+    callId,
+    bag,
+    event: { type: "user_transcript", text },
+  });
+  assert.deepEqual(askTurn.actions, [{ type: "send_callback_sms" }], `${callId}: different -> SMS only`);
+  assert.equal(bag.currentState, "SEND_CALLBACK_SMS", `${callId}: SEND_CALLBACK_SMS`);
+  assertNoVerbalCallbackAskLines(askTurn.actions, callId);
+  assert.equal(lineIds(askTurn.actions).includes("handoff.normal_partner"), false, `${callId}: no handoff`);
+
+  const smsTurn = reduceIiziDeterministicTurn({
+    callId,
+    bag,
+    event: { type: "callback_sms_result", success: true },
+  });
+  assert.deepEqual(
+    lineIds(smsTurn.actions),
+    ["callback.different_number_sms_sent"],
+    `${callId}: SMS success line only`,
+  );
+  assert.equal(bag.currentState, "WAITING_FOR_CALLBACK_FORM", `${callId}: wait form`);
+  assertNoVerbalCallbackAskLines(smsTurn.actions, callId);
+  assert.equal(
+    resolveIiziLocalizedLine("callback.different_number_sms_sent", "et"),
+    CALLBACK_DIFFERENT_NUMBER_SMS_SENT_ET,
+    `${callId}: exact ET SMS sent line`,
+  );
+
+  const duringForm = reduceIiziDeterministicTurn({
+    callId,
+    bag,
+    event: { type: "user_transcript", text: "viis kaks kolm" },
+  });
+  assert.deepEqual(duringForm.actions, [{ type: "none" }], `${callId}: ignore transcript while waiting form`);
+  assertNoVerbalCallbackAskLines(duringForm.actions, callId);
+}
 import { normalizeIiziTranscript } from "./iiziDeterministicNormalize.js";
 
 function lineIds(actions: IiziDeterministicAction[]): string[] {
@@ -228,14 +289,21 @@ function run(): void {
     assert.equal(asrTurn.actions.some((a) => a.type === "send_callback_sms"), false, "ASR same no SMS");
     assert.equal(lineIds(asrTurn.actions).includes("callback.same_number_confirmed"), true, "ASR same path");
 
-    const bagCb = createInitialIiziDeterministicState();
-    bagCb.currentState = "ASK_CALLBACK_SAME_NUMBER";
-    const diffTurn = reduceIiziDeterministicTurn({
-      callId: "cb-diff",
-      bag: bagCb,
-      event: { type: "user_transcript", text: "soovin teist tagasihelistamise numbrit" },
-    });
-    assert.deepEqual(diffTurn.actions, [{ type: "send_callback_sms" }], "different -> send_callback_sms");
+    assertDifferentNumberSmsOnlyFlow(
+      createInitialIiziDeterministicState(),
+      "soovin teist tagasihelistamise numbrit",
+      "cb-diff",
+    );
+    assertDifferentNumberSmsOnlyFlow(
+      createInitialIiziDeterministicState(),
+      "ei, soovin teist numbrit",
+      "cb-diff-ei",
+    );
+    assertDifferentNumberSmsOnlyFlow(
+      createInitialIiziDeterministicState(),
+      "number pole sama",
+      "cb-diff-pole",
+    );
 
     for (const text of ["Nüüd on täma.", "halloo", "ma ei saanud aru"]) {
       const bagUnknown = createInitialIiziDeterministicState();

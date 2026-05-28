@@ -165,7 +165,7 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     ru: "Хорошо, мы перезвоним на этот же номер.",
   },
   "callback.different_number_sms_sent": {
-    et: "Saatsin Teile SMS-i, kuhu saate sisestada tagasihelistamise numbri. Palun avage oma sõnumite rakendus, vajutage lingile ning sisestage tagasihelistamise number.",
+    et: "Saatsin Teile SMS-i tagasihelistamise numbri sisestamiseks. Palun avage link ja sisestage sinna sobiv tagasihelistamise number.",
     en: "I sent you an SMS to enter your callback number. Please open the link and enter the number you want us to call back.",
     ru: "Я отправила вам SMS для ввода номера обратного звонка. Пожалуйста, откройте ссылку и введите номер, на который вы хотите получить звонок.",
   },
