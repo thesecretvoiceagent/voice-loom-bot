@@ -437,7 +437,7 @@ function roadsideClassifiedActions(
   _norm: string,
 ): IiziDeterministicAction[] {
   return [
-    { type: "speak_exact", lineId: incidentLineId(category) },
+    { type: "speak_exact", lineId: "incident.generic_roadside" },
     { type: "speak_exact", lineId: bag.flags.callerKnown ? "crm.known" : "crm.unknown" },
     { type: "send_combined_sms" },
   ];

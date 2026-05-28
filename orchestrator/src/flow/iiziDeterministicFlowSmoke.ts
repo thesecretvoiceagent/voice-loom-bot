@@ -20,7 +20,7 @@ function run(): void {
     "greeting.initial exact text",
   );
 
-  // Test 1: "rehv tühi" chain and strict forbiddens before form
+  // Test A: roadside spoken incident is always generic
   {
     const bagA = createInitialIiziDeterministicState();
     reduceIiziDeterministicTurn({ callId: "A", bag: bagA, event: { type: "crm_prefetch", callerKnown: true } });
@@ -28,10 +28,12 @@ function run(): void {
     const turnA = reduceIiziDeterministicTurn({
       callId: "A",
       bag: bagA,
-      event: { type: "user_transcript", text: "rehv tühi" },
+      event: { type: "user_transcript", text: "autorehv katki" },
     });
     const aLines = lineIds(turnA.actions);
-    assert.equal(aLines.includes("incident.flat_tire"), true, "A incident line");
+    assert.equal(aLines[0], "incident.generic_roadside", "A first incident line is generic");
+    assert.equal(aLines.includes("incident.no_start"), false, "A no no_start spoken line");
+    assert.equal(aLines.includes("incident.flat_tire"), false, "A no flat_tire spoken line");
     assert.equal(aLines.includes("crm.known"), true, "A crm line");
     assert.equal(turnA.actions.some((a) => a.type === "send_combined_sms"), true, "A combined sms action");
     assert.equal(aLines.includes("occupants.ask"), false, "A no occupants before form");
@@ -42,7 +44,7 @@ function run(): void {
     assert.equal(bagA.flags.occupantCountRequired, false, "A flat tire only does not require occupant count");
   }
 
-  // Test 2: "rehv tühi ja ma ei saa liikuda" sets occupant flag only
+  // Test 2: category logic still works (occupant requirement retained)
   {
     const bagB = createInitialIiziDeterministicState();
     reduceIiziDeterministicTurn({ callId: "B", bag: bagB, event: { type: "crm_prefetch", callerKnown: false } });
@@ -53,7 +55,7 @@ function run(): void {
       event: { type: "user_transcript", text: "rehv tühi ja ma ei saa liikuda" },
     });
     const bLines = lineIds(turnB.actions);
-    assert.equal(bLines.includes("incident.flat_tire"), true, "B flat_tire incident");
+    assert.equal(bLines[0], "incident.generic_roadside", "B generic spoken incident");
     assert.equal(bLines.includes("crm.unknown"), true, "B crm unknown");
     assert.equal(turnB.actions.some((a) => a.type === "send_combined_sms"), true, "B combined sms action");
     assert.equal(bagB.flags.occupantCountRequired, true, "B occupant required");
