@@ -582,6 +582,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     | { lineId: string; vars?: Record<string, string>; actionId: string; blockedReason: string }
     | null = null;
   let pendingIiziExactSpeechRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  const iiziExactSpeechSentKeys = new Set<string>();
 
   const touchIiziBrainLog = (reason: string) => {
     if (!useCombinedRegLocationSms || callDirection !== "inbound") return;
@@ -1074,7 +1075,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const allowedIiziResponseReason = (reason: string): boolean =>
     reason === "initial-greeting" || reason === "iizi-exact-speech" || reason === "iizi-filler";
 
-  const speakExactIizi = (lineId: string, vars?: Record<string, string>): { sent: boolean; blockedReason: string | null } => {
+  const speakExactIizi = (
+    lineId: string,
+    vars?: Record<string, string>,
+    opts?: { actionId?: string; dedupeKey?: string; committedItemId?: string | null },
+  ): { sent: boolean; blockedReason: string | null } => {
     const lang = iiziDetRef.current.iiziLanguage;
     const text = resolveIiziLocalizedLine(lineId, lang, vars, callId);
     if (!text) {
@@ -1090,6 +1095,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         `Speak ONLY the following sentence verbatim in Estonian. Do not add, remove, or change any words. ` +
         `Do not call tools. Do not add filler.\n"""\n${text}\n"""`,
       output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
+    }, {
+      committedItemId: opts?.committedItemId ?? null,
+      iiziExactSpeechLineId: lineId,
+      iiziExactSpeechActionId: opts?.actionId ?? null,
+      iiziExactSpeechDedupeKey: opts?.dedupeKey ?? null,
     });
     return { sent, blockedReason: sent ? null : lastResponseCreateBlockReason || "unknown_block" };
   };
@@ -1200,7 +1210,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
           }
           const actionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          const speak = speakExactIizi(action.lineId, action.vars);
+          const dedupeItemId = lastCommittedUserItemId || "no_item";
+          const dedupeKey = `${actionId}:${action.lineId}:${dedupeItemId}`;
+          const speak = speakExactIizi(action.lineId, action.vars, {
+            actionId,
+            dedupeKey,
+            committedItemId: lastCommittedUserItemId,
+          });
           if (!speak.sent) {
             const blockedReason = speak.blockedReason || "unknown_block";
             pendingIiziExactSpeech = { lineId: action.lineId, vars: action.vars, actionId, blockedReason };
@@ -1398,7 +1414,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         ? Math.max(40, Math.min(1200, Math.max(0, inboundAudioCooldownUntil - Date.now()) + 30))
         : 70;
     console.log(
-      `[IIZI-Deterministic] pendingIiziExactSpeechAutoRetryScheduled=true lineId=${lineId} reason=${reason} callId=${callId}`,
+      `[IIZI-Deterministic] pendingIiziExactSpeechAutoRetryScheduled=true lineId=${lineId} reason=${reason} delayMs=${waitMs} callId=${callId}`,
     );
     pendingIiziExactSpeechRetryTimer = setTimeout(() => {
       pendingIiziExactSpeechRetryTimer = null;
@@ -1944,7 +1960,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const sendResponseCreate = (
     reason: string,
     response?: Record<string, unknown>,
-    opts?: { committedItemId?: string | null }
+    opts?: {
+      committedItemId?: string | null;
+      iiziExactSpeechLineId?: string | null;
+      iiziExactSpeechActionId?: string | null;
+      iiziExactSpeechDedupeKey?: string | null;
+    }
   ) => {
     if (iiziDeterministicInbound()) {
       const allowed = allowedIiziResponseReason(reason);
@@ -1963,6 +1984,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
     lastResponseCreateBlockReason = null;
     const committedItemId = opts?.committedItemId ?? lastCommittedUserItemId;
+    const iiziExactSpeechLineId = opts?.iiziExactSpeechLineId || null;
+    const iiziExactSpeechActionId = opts?.iiziExactSpeechActionId || null;
+    const iiziExactSpeechDedupeKey = opts?.iiziExactSpeechDedupeKey || null;
     const blockReason = isUserTurnReason(reason)
       ? getCallerAudioBlockReason(true, {
           transcriptReadyItemId: isRuntimeCommittedTranscriptReason(reason) ? committedItemId : null,
@@ -2015,10 +2039,32 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         return false;
       }
     }
+    if (iiziDeterministicInbound() && reason === "iizi-exact-speech") {
+      const dedupeKey = iiziExactSpeechDedupeKey || [
+        iiziExactSpeechActionId || "no_action",
+        iiziExactSpeechLineId || "no_line",
+        committedItemId || "no_item",
+      ].join(":");
+      if (iiziExactSpeechSentKeys.has(dedupeKey)) {
+        lastResponseCreateBlockReason = "deduped_same_response_key";
+        console.log(
+          `[IIZI-Deterministic] iiziExactSpeechDeduped=true dedupeKey=${dedupeKey} ` +
+            `dedupeReason=deduped_same_response_key lineId=${iiziExactSpeechLineId || "unknown"} ` +
+            `actionId=${iiziExactSpeechActionId || "unknown"} itemId=${committedItemId || "none"} callId=${callId}`,
+        );
+        return false;
+      }
+      console.log(
+        `[IIZI-Deterministic] iiziExactSpeechDeduped=false dedupeKey=${dedupeKey} ` +
+          `lineId=${iiziExactSpeechLineId || "unknown"} actionId=${iiziExactSpeechActionId || "unknown"} ` +
+          `itemId=${committedItemId || "none"} callId=${callId}`,
+      );
+    }
     if (
       isUserTurnReason(reason) &&
       !reason.startsWith("system-event") &&
       reason !== "tool-result" &&
+      reason !== "iizi-exact-speech" &&
       committedItemId &&
       responseCreateSentForItemIds.has(committedItemId)
     ) {
@@ -2040,10 +2086,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseCreateSentCount += 1;
     if (reason !== "initial-greeting") userResponseCreateSentCount += 1;
     lastResponseCreateReason = reason;
-    if (committedItemId) {
+    if (committedItemId && reason !== "iizi-exact-speech") {
       responseCreateSentForItemIds.add(committedItemId);
       const turn = pendingCommittedUserTurns.get(committedItemId);
       if (turn) turn.responseScheduled = true;
+    }
+    if (iiziDeterministicInbound() && reason === "iizi-exact-speech") {
+      const dedupeKey = iiziExactSpeechDedupeKey || [
+        iiziExactSpeechActionId || "no_action",
+        iiziExactSpeechLineId || "no_line",
+        committedItemId || "no_item",
+      ].join(":");
+      iiziExactSpeechSentKeys.add(dedupeKey);
     }
     console.log(
       `[Diag] response.create sent #${responseCreateSentCount} reason=${reason} itemId=${committedItemId || "none"} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`
@@ -3243,6 +3297,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     inputFramesSinceLastCommit = 0;
     lastCommittedUserItemId = null;
     responseCreateSentForItemIds.clear();
+    iiziExactSpeechSentKeys.clear();
     pendingCommittedUserTurns.clear();
     framesForPendingCommit = 0;
     hasPostGreetingSpeechStarted = false;
