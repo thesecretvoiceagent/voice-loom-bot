@@ -47,8 +47,9 @@ export const IIZI_ROADSIDE_TRIGGER_DATA: Record<IiziRoadsideCategory, LangPhrase
   },
   flat_tire: {
     et: [
-      "rehv katki", "rehv purunes", "rehv tühi", "rehv tyhi", "kumm katki", "kumm tühi",
-      "kumm tyhi", "rehv läks katki", "rehv laks katki", "rehv on puru", "rehviprobleem",
+      "rehv katki", "rehv purunes", "rehv tühi", "rehv tyhi", "rehv on tühi", "rehv on tuhi",
+      "kumm katki", "kumm tühi", "kumm tyhi", "kumm on tühi", "kumm on tuhi",
+      "autorehv katki", "rehv läks katki", "rehv laks katki", "rehv on puru", "rehviprobleem",
       "autorehv tegi pauku", "rehv tegi pauku", "kumm tegi pauku", "rehv lõhkes", "rehv lohkes",
       "rehv läks puruks", "rehv laks puruks", "abi vaja", "abivaja", "autoabi vaja",
     ],
@@ -96,16 +97,21 @@ export const IIZI_ROADSIDE_TRIGGER_DATA: Record<IiziRoadsideCategory, LangPhrase
   },
   out_of_fuel: {
     et: [
-      "kütus otsas", "kutus otsas", "bensiin otsas", "diisel otsas", "paak tühi", "paak tyhi",
-      "kütus sai otsa", "kutus sai otsa", "bensiin sai otsa",
+      "kütus otsas", "kutus otsas", "kütus on otsas", "kutus on otsas",
+      "kütus sai otsa", "kutus sai otsa", "bensiin otsas", "bensiin on otsas",
+      "bensiin sai otsa", "diisel otsas", "paak tühi", "paak tyhi", "tank tühi", "tank tyhi",
+      "bensiinsaiotsa", "bensiinsajotsa", "bensiin saiotsa", "bensiin sajotsa", "bensiin saijotsa",
+      "bensiinsajotsa tee peal", "bensiinsaiotsa tee peal",
     ],
     en: [
-      "out of fuel", "out of gas", "out of petrol", "out of diesel", "no fuel", "empty tank",
-      "tank is empty", "ran out of petrol", "ran out of diesel", "ran out of fuel",
+      "out of fuel", "out of gas", "out of petrol", "out of diesel", "no fuel", "no petrol",
+      "empty tank", "tank is empty", "gas tank empty", "fuel tank empty",
+      "ran out of petrol", "ran out of diesel", "ran out of fuel",
     ],
     ru: [
-      "закончился бензин", "закончился дизель", "нет топлива", "кончилось топливо",
-      "закончилось топливо", "пустой бак", "бак пустой", "нет бензина", "нет дизеля",
+      "закончился бензин", "кончился бензин", "нет бензина", "закончился дизель",
+      "нет топлива", "кончилось топливо", "закончилось топливо", "пустой бак", "бак пустой",
+      "нет дизеля",
     ],
   },
   locked_out: {
@@ -282,6 +288,13 @@ export const IIZI_FUZZY_EXTRA: readonly { phrase: string; category: IiziRoadside
   { phrase: "rehv katki", category: "flat_tire" },
   { phrase: "reff katki", category: "flat_tire" },
   { phrase: "rehv gatki", category: "flat_tire" },
+  { phrase: "rehv tuhi", category: "flat_tire" },
+  { phrase: "rehv tyhi", category: "flat_tire" },
+  { phrase: "autorehv katki", category: "flat_tire" },
+  { phrase: "bensiinsajotsa", category: "out_of_fuel" },
+  { phrase: "bensiinsaiotsa", category: "out_of_fuel" },
+  { phrase: "bensiin otsas", category: "out_of_fuel" },
+  { phrase: "kutus otsas", category: "out_of_fuel" },
   { phrase: "auto ei kaivitu", category: "no_start" },
   { phrase: "aku tyhi", category: "no_start" },
   { phrase: "puksiir", category: "tow_needed" },

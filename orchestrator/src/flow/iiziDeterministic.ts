@@ -487,6 +487,32 @@ function stripPostcode(address: string): string {
   return address.replace(/\b\d{5}\b/g, "").replace(/\s+/g, " ").trim();
 }
 
+const FORM_WAITING_HELP_PATTERNS = [
+  "mis ma teen",
+  "mida ma teen",
+  "mis edasi",
+  "mida edasi",
+  "kuhu vajutan",
+  "ma ei saanud aru",
+  "what do i do",
+  "what now",
+  "what should i do",
+  "was muss ich tun",
+];
+
+function isFormWaitingHelpQuestion(normalized: string): boolean {
+  return FORM_WAITING_HELP_PATTERNS.some((p) => normalized.includes(p));
+}
+
+function isWaitingForFormPipelineState(state: IiziDeterministicState): boolean {
+  return (
+    state === "WAITING_FOR_FORM_SUBMITTED" ||
+    state === "WAITING_FOR_VEHICLE_LOOKUP" ||
+    state === "VEHICLE_MATCHED_ACTIVE" ||
+    state === "WAITING_FOR_LOCATION_CONFIRMED"
+  );
+}
+
 export interface IiziDeterministicTurnInput {
   callId: string | null;
   event:
@@ -532,23 +558,31 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     const norm = normalizeIiziTranscript(event.text);
     const state = bag.currentState;
 
-    if (state === "WAITING_FOR_FORM_SUBMITTED") {
-      return {
-        actions: [{ type: "speak_exact", lineId: "form.not_received_yet" }],
-        transitionReason: "waiting_for_form",
-      };
-    }
-    if (state === "WAITING_FOR_VEHICLE_LOOKUP") {
-      return {
-        actions: [{ type: "speak_filler", lineId: "filler.processing_1", reason: "safe_transition_pause" }],
-        transitionReason: "waiting_for_vehicle_lookup",
-      };
-    }
-    if (state === "VEHICLE_MATCHED_ACTIVE" || state === "WAITING_FOR_LOCATION_CONFIRMED") {
-      return {
-        actions: [{ type: "speak_exact", lineId: "location.not_received_yet" }],
-        transitionReason: "waiting_for_location",
-      };
+    if (isWaitingForFormPipelineState(state)) {
+      if (bag.flags.combinedSmsSuccess && isFormWaitingHelpQuestion(norm)) {
+        return {
+          actions: [{ type: "speak_exact", lineId: "form.waiting_sms_help" }],
+          transitionReason: "waiting_for_form_sms_help",
+        };
+      }
+      if (state === "WAITING_FOR_FORM_SUBMITTED") {
+        return {
+          actions: [{ type: "speak_exact", lineId: "form.not_received_yet" }],
+          transitionReason: "waiting_for_form",
+        };
+      }
+      if (state === "WAITING_FOR_VEHICLE_LOOKUP") {
+        return {
+          actions: [{ type: "speak_filler", lineId: "filler.processing_1", reason: "safe_transition_pause" }],
+          transitionReason: "waiting_for_vehicle_lookup",
+        };
+      }
+      if (state === "VEHICLE_MATCHED_ACTIVE" || state === "WAITING_FOR_LOCATION_CONFIRMED") {
+        return {
+          actions: [{ type: "speak_exact", lineId: "location.not_received_yet" }],
+          transitionReason: "waiting_for_location",
+        };
+      }
     }
 
     if (state === "UNCLEAR_CLARIFY_ONCE") {

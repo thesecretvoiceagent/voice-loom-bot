@@ -45,6 +45,7 @@ export type IiziClassificationMethod =
 
 const BROAD_ROADSIDE_TOKENS_ET = [
   "auto", "soiduk", "sõiduk", "masin", "rehv", "reff", "autoreff", "autorehv", "kumm", "ratas",
+  "bensiin", "kutus", "kütus", "diisel", "paak", "tank",
   "tuhi", "tyhi", "tühi", "katki", "purunenud", "purunes", "puru", "ei liigu", "ei saa liikuda",
   "ei saa edasi soita", "ei saa edasi sõita", "ei kaivitu", "ei käivitu", "kaima ei lahe",
   "käima ei lähe", "aku", "mootor", "generaator", "genekas", "lekib", "oli", "õli", "puksiir",
@@ -98,7 +99,24 @@ const NO_START_TOKENS = [
 
 const STUCK_TOKENS = ["kinni", "kraavis", "stuck", "застрял", "застряла"];
 
-const FUEL_TOKENS = ["kutus otsas", "kutus otsas", "out of fuel", "out of gas", "нет топлива", "бак пустой"];
+const FUEL_TOKENS = [
+  "kutus otsas", "kütus otsas", "kutus on otsas", "kütus on otsas", "kutus sai otsa", "kütus sai otsa",
+  "bensiin otsas", "bensiin on otsas", "bensiin sai otsa", "diisel otsas",
+  "paak tühi", "paak tyhi", "tank tühi", "tank tyhi",
+  "bensiinsaiotsa", "bensiinsajotsa", "bensiin saiotsa", "bensiin sajotsa",
+  "out of fuel", "out of gas", "out of petrol", "no fuel", "no petrol", "gas tank empty",
+  "fuel tank empty", "ran out of fuel",
+  "нет топлива", "кончилось топливо", "закончилось топливо", "нет бензина", "кончился бензин",
+  "бак пустой", "пустой бак",
+];
+
+function hasFuelEvidence(normalized: string): boolean {
+  if (hasAnyToken(normalized, FUEL_TOKENS)) return true;
+  const compact = normalized.replace(/\s/g, "");
+  if (/bensiin/.test(compact) && /(otsa|otsas|saiotsa|sajotsa|saijotsa)/.test(compact)) return true;
+  if (compact.includes("bensiinsajotsa") || compact.includes("bensiinsaiotsa")) return true;
+  return false;
+}
 
 const LOCKED_TOKENS = ["votmed autos", "võtmed autos", "locked out", "keys in car", "ключи в машине"];
 
@@ -249,7 +267,7 @@ export function inferSubCategoryFromEvidence(
   if (hasAnyToken(normalized, STUCK_TOKENS)) {
     return { subCategory: "stuck", confidence: 0.8, weakTireHint: false };
   }
-  if (hasAnyToken(normalized, FUEL_TOKENS)) {
+  if (hasFuelEvidence(normalized)) {
     return { subCategory: "out_of_fuel", confidence: 0.8, weakTireHint: false };
   }
   if (hasAnyToken(normalized, LOCKED_TOKENS)) {

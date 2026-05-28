@@ -75,7 +75,7 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     ru: "По этому номеру телефона я не нашла клиентский аккаунт.",
   },
   "sms.combined.sent_success": {
-    et: "Saatsin Teile tekstisõnumi. Palun avage link, sisestage auto registreerimisnumber, kinnitage asukoht ja vajutage Kinnita.",
+    et: "Saatsin Teile SMS-i. Avage link, sisestage auto registreerimismärk, kinnitage asukoht ja vajutage Kinnita.",
     en: "I sent you a text message. Please open the link, enter your registration number, confirm your location, and press Confirm.",
     ru: "Я отправила вам SMS. Откройте ссылку, введите регистрационный номер, подтвердите местоположение и нажмите Подтвердить.",
   },
@@ -98,6 +98,11 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     et: "Mul ei ole registreerimisnumbrit veel kätte tulnud.",
     en: "I have not received the registration number yet.",
     ru: "Я еще не получила регистрационный номер.",
+  },
+  "form.waiting_sms_help": {
+    et: "Mul ei ole veel teie andmeid käes. Saatsin Teile SMS-i. Avage link, sisestage auto registreerimismärk, kinnitage asukoht ja vajutage Kinnita.",
+    en: "I do not have your details yet. I sent you an SMS. Please open the link, enter your registration mark, confirm your location, and press Confirm.",
+    ru: "У меня пока нет ваших данных. Я отправила вам SMS. Откройте ссылку, введите регистрационный номер, подтвердите местоположение и нажмите Подтвердить.",
   },
   "vehicle.match_false.handoff": {
     et: "Sain registreerimisnumbri kätte, aga ma ei leidnud selle numbriga sõidukit meie andmetest. Edastan info meie töötajale, kes võtab Teiega ühendust viie kuni kümne minuti jooksul.",

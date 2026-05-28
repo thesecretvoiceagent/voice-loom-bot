@@ -3,6 +3,10 @@
  */
 
 import assert from "node:assert/strict";
+import {
+  IIZI_EXACT_SPEECH_MAX_OUTPUT_TOKENS,
+  IIZI_EXACT_SPEECH_TOOL_CHOICE,
+} from "./iiziDeterministicConfig.js";
 import { classifyIiziTranscript, createInitialIiziDeterministicState } from "./iiziDeterministic.js";
 import type { IiziLanguage, IiziRoadsideCategory } from "./iiziDeterministicTypes.js";
 
@@ -101,6 +105,17 @@ function run(): void {
   expectClassify("mul oli avarii", { category: "accident", lang: "et" }, "et avarii");
   expectClassify("auto ei käivitu", { category: "no_start", lang: "et" }, "et no_start");
   expectClassify("reff katki", { category: "flat_tire", lang: "et" }, "et flat fuzzy");
+  // Out-of-fuel (A–C) — exact/fuzzy trigger, no clarification
+  expectClassify("out of fuel", { category: "out_of_fuel", lang: "en" }, "en out of fuel");
+  expectClassify("bensiin otsas", { category: "out_of_fuel", lang: "et" }, "et bensiin otsas");
+  expectClassify(
+    "Oleks bensiinsajotsa tee peal.",
+    { category: "out_of_fuel", lang: "et" },
+    "et ASR bensiinsajotsa tee peal",
+  );
+  // Flat tire (D–E)
+  expectClassify("rehv tühi", { category: "flat_tire", lang: "et" }, "et rehv tuhi");
+  expectClassify("autorehv katki", { category: "flat_tire", lang: "et" }, "et autorehv katki");
   expectClassify("õli lekib", { category: "mechanical_issue", lang: "et" }, "et oil");
   expectClassify("generaator on katki", { category: "mechanical_issue", lang: "et" }, "et alternator");
 
@@ -126,7 +141,11 @@ function run(): void {
   expectClassify("someone is injured", { category: "unsafe", lang: "en" }, "unsafe en");
   expectClassify("кто-то пострадал", { category: "unsafe", lang: "ru" }, "unsafe ru");
 
-  console.log("[iizi-deterministic-smoke] OK (two-stage et/en/ru)");
+  // Exact speech runtime policy (G, F partial)
+  assert.ok(IIZI_EXACT_SPEECH_MAX_OUTPUT_TOKENS >= 700, "exact speech max_output_tokens >= 700");
+  assert.equal(IIZI_EXACT_SPEECH_TOOL_CHOICE, "none", "exact speech tool_choice none");
+
+  console.log("[iizi-deterministic-smoke] OK (two-stage et/en/ru + fuel/tire + exact speech policy)");
 }
 
 run();

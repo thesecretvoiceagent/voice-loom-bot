@@ -13,5 +13,5 @@
     "sourceMap": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/flow/iiziBrainIntentSmoke.ts", "src/flow/iiziDeterministicClassifySmoke.ts"]
+  "exclude": ["node_modules", "dist", "src/flow/iiziBrainIntentSmoke.ts"]
 }

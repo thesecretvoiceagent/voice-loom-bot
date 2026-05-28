@@ -18,6 +18,15 @@ import type { IiziLanguage, IiziRoadsideCategory } from "./iiziDeterministicType
 export const IIZI_DETERMINISTIC_AGENT_ID = "00def519-9dd5-402e-bb36-bbb4a865dbc6";
 export const IIZI_DETERMINISTIC_AGENT_NAME = "Iizi autoaubi vol 2";
 
+/** Per-response token budget for backend exact speech (prevents mid-sentence cuts). */
+export const IIZI_EXACT_SPEECH_MAX_OUTPUT_TOKENS = 900;
+
+/** Realtime must not invoke tools during backend exact speech. */
+export const IIZI_EXACT_SPEECH_TOOL_CHOICE = "none" as const;
+
+/** Forced playback speed for IIZI deterministic Realtime audio output. */
+export const IIZI_DETERMINISTIC_VOICE_SPEED = 1.3;
+
 export type {
   IiziCanonicalCategory,
   IiziIncidentType,
