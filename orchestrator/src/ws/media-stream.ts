@@ -761,6 +761,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const turnGateDropCounts: Record<string, number> = {};
   let callerSpeechActive = false;
   let lastAcceptedCallerAudioAt = 0;
+  let iiziCallerTurnEnded = false;
+  let lastIiziCallerTurnEndedAt = 0;
+  let iiziSpeechStoppedSeen = false;
+  let iiziCommittedSeen = false;
+  let iiziTranscriptCompletedSeen = false;
   let vadEnabledAcknowledged = false;
   let vadServerCreateResponseEnabled = false;
   let initialGreetingResponseFinished = false;
@@ -1830,6 +1835,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     reason.includes("speech") ||
     reason.includes("audio-commit");
 
+  const markIiziCallerTurnEnded = (source: "speech_stopped" | "committed" | "transcript_completed") => {
+    if (!iiziDeterministicInbound()) return;
+    iiziCallerTurnEnded = true;
+    lastIiziCallerTurnEndedAt = Date.now();
+    if (source === "speech_stopped") iiziSpeechStoppedSeen = true;
+    if (source === "committed") iiziCommittedSeen = true;
+    if (source === "transcript_completed") iiziTranscriptCompletedSeen = true;
+    console.log(`[IIZI-Deterministic] iiziCallerTurnEnded=true source=${source} callId=${callId}`);
+  };
+
   const tryCommitCallerAudio = (reason: string, delayMs = 80) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
       console.warn(`[Diag] audio commit skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} (callId=${callId})`);
@@ -1904,6 +1919,31 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           transcriptReadyItemId: isRuntimeCommittedTranscriptReason(reason) ? committedItemId : null,
         })
       : null;
+    if (
+      iiziDeterministicInbound() &&
+      reason === "iizi-exact-speech" &&
+      blockReason === "caller_still_speaking"
+    ) {
+      const msSinceTurnEnded =
+        lastIiziCallerTurnEndedAt > 0 ? Date.now() - lastIiziCallerTurnEndedAt : Number.POSITIVE_INFINITY;
+      const trustedTurnEnded = iiziCallerTurnEnded && Number.isFinite(msSinceTurnEnded);
+      if (trustedTurnEnded && !activeResponseId && !greetingInProgress) {
+        console.log(
+          `[IIZI-Deterministic] iiziExactSpeechCallerStillSpeakingOverride=true reason=trusted_turn_ended ` +
+            `speechStoppedSeen=${iiziSpeechStoppedSeen} committedSeen=${iiziCommittedSeen} ` +
+            `transcriptCompletedSeen=${iiziTranscriptCompletedSeen} msSinceTurnEnded=${msSinceTurnEnded} callId=${callId}`,
+        );
+        console.log(`[IIZI-Deterministic] exactSpeechReleaseDecision=allow msSinceTurnEnded=${msSinceTurnEnded} callId=${callId}`);
+      } else {
+        console.log(
+          `[IIZI-Deterministic] iiziExactSpeechBlockedByCallerStillSpeaking=true ` +
+            `iiziExactSpeechCallerStillSpeakingOverride=false speechStoppedSeen=${iiziSpeechStoppedSeen} ` +
+            `committedSeen=${iiziCommittedSeen} transcriptCompletedSeen=${iiziTranscriptCompletedSeen} ` +
+            `msSinceTurnEnded=${Number.isFinite(msSinceTurnEnded) ? msSinceTurnEnded : -1} callId=${callId}`,
+        );
+        console.log(`[IIZI-Deterministic] exactSpeechReleaseDecision=retry_wait callId=${callId}`);
+      }
+    }
     if (blockReason) {
       lastResponseCreateBlockReason = blockReason;
       if (iiziDeterministicInbound()) {
@@ -1911,8 +1951,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           `[IIZI-Deterministic] iiziAllowedResponseCreate=false responseCreateReason=${reason} blockedReason=${blockReason} callId=${callId}`,
         );
       }
-      console.log(`[TurnGate] blocked response.create reason=${blockReason} source=${reason} callId=${callId}`);
-      return false;
+      if (
+        iiziDeterministicInbound() &&
+        reason === "iizi-exact-speech" &&
+        blockReason === "caller_still_speaking" &&
+        iiziCallerTurnEnded &&
+        !activeResponseId &&
+        !greetingInProgress
+      ) {
+        // Trusted VAD/commit/transcript end observed: allow backend exact speech despite late media frames.
+        lastResponseCreateBlockReason = null;
+      } else {
+        console.log(`[TurnGate] blocked response.create reason=${blockReason} source=${reason} callId=${callId}`);
+        return false;
+      }
     }
     if (
       isUserTurnReason(reason) &&
@@ -3851,6 +3903,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   `[IIZI-Deterministic] skip_model_user_transcript_response=true iiziBrainNextActionControl=false callId=${callId} itemId=${transcriptItemId}`,
                 );
                 retryPendingIiziExactSpeech("transcript_done");
+                markIiziCallerTurnEnded("transcript_completed");
               }
               if (activeResponseId && !responseHasAudio && activeResponseReason !== "initial-greeting") {
                 console.warn(`[Diag-InboundTurn] new user transcript while previous response has no usable audio; resetting stale response state activeResponse=${activeResponseId} seq=${fallbackSeq} previousSeq=${activeResponseInboundTranscriptSeq} (callId=${callId})`);
@@ -5173,6 +5226,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             callerSpeechActive = false;
             clearCallerSpeechWatchdog();
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
+            markIiziCallerTurnEnded("speech_stopped");
             retryPendingIiziExactSpeech("speech_stopped");
             setTimeout(() => retryPendingIiziExactSpeech("no_audio_grace"), 220);
             if (callDirection !== "inbound") {
@@ -5194,6 +5248,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             if (runtimeOwnsPostGreetingResponses() && committedItemId) {
               registerPendingCommittedTurn(committedItemId, framesForPendingCommit);
+              markIiziCallerTurnEnded("committed");
               retryPendingIiziExactSpeech("committed");
             } else if (callDirection !== "inbound" && committedItemId && !vadServerCreateResponseEnabled) {
               console.log(
