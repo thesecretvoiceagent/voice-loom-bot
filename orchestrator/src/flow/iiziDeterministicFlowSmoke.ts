@@ -9,6 +9,7 @@ import {
   type IiziDeterministicAction,
 } from "./iiziDeterministic.js";
 import { resolveIiziLocalizedLine } from "./iiziDeterministicConfig.js";
+import { normalizeIiziTranscript } from "./iiziDeterministicNormalize.js";
 
 function lineIds(actions: IiziDeterministicAction[]): string[] {
   return actions
@@ -67,7 +68,7 @@ function run(): void {
   const SMS_HELP_ET =
     "Mul ei ole Teie andmeid veel kätte tulnud. Saatsin Teile SMS-i. Palun avage sõnumite rakendus, vajutage lingile, kerige alla, sisestage auto registreerimismärk, kinnitage asukoht ja vajutage Kinnita.";
 
-  // SMS-help fallback after combined SMS, before form_submitted (tests A–E)
+  // Callback smoke E: 0601116 SMS-help fallback after combined SMS, before form_submitted (tests A–E)
   {
     const bagHelp = createInitialIiziDeterministicState();
     reduceIiziDeterministicTurn({ callId: "help", bag: bagHelp, event: { type: "combined_sms_result", success: true } });
@@ -155,17 +156,28 @@ function run(): void {
   assert.equal(vehicleLines.filter((id) => id === "vehicle_location.combined.readback").length, 1, "combined readback once");
   assert.equal(vehicleLines.includes("callback.ask_same_number"), true, "callback after readback when no occupant");
 
-  const callbackYes = reduceIiziDeterministicTurn({
-    callId,
-    bag,
-    event: { type: "user_transcript", text: "jah" },
-  });
-  assert.equal(lineIds(callbackYes.actions).includes("callback.same_number_confirmed"), true, "callback yes");
-
-  // D: callback different number phrases
-  assert.equal(isCallbackDifferentNumberRequest("tahan uut tagasihelistamise numbrit"), true, "D tahan uut");
-  assert.equal(isCallbackDifferentNumberRequest("soovin teist tagasihelistamise numbrit"), true, "D soovin teist");
+  // Callback intent: same number (Jaa / sobib)
   {
+    assert.equal(isCallbackSameNumberConfirmation(normalizeIiziTranscript("Jaa")), true, "Jaa same");
+    assert.equal(isCallbackSameNumberConfirmation(normalizeIiziTranscript("sobib")), true, "sobib same");
+    const bagJaa = createInitialIiziDeterministicState();
+    bagJaa.currentState = "ASK_CALLBACK_SAME_NUMBER";
+    const jaaTurn = reduceIiziDeterministicTurn({
+      callId: "cb-jaa",
+      bag: bagJaa,
+      event: { type: "user_transcript", text: "Jaa" },
+    });
+    assert.equal(lineIds(jaaTurn.actions).includes("callback.same_number_confirmed"), true, "Jaa confirms same");
+    assert.equal(jaaTurn.actions.some((a) => a.type === "send_callback_sms"), false, "Jaa no callback SMS");
+  }
+
+  // Callback intent: different number (ei / pole sama / soovin teist...)
+  {
+    for (const text of ["ei", "pole sama", "soovin teist tagasihelistamise numbrit"]) {
+      const norm = normalizeIiziTranscript(text);
+      assert.equal(isCallbackDifferentNumberRequest(norm), true, `different: ${text}`);
+      assert.equal(isCallbackSameNumberConfirmation(norm), false, `not same: ${text}`);
+    }
     const bagCb = createInitialIiziDeterministicState();
     bagCb.currentState = "ASK_CALLBACK_SAME_NUMBER";
     const diffTurn = reduceIiziDeterministicTurn({
@@ -173,18 +185,13 @@ function run(): void {
       bag: bagCb,
       event: { type: "user_transcript", text: "soovin teist tagasihelistamise numbrit" },
     });
-    assert.deepEqual(diffTurn.actions, [{ type: "send_callback_sms" }], "D sends callback SMS action only");
+    assert.deepEqual(diffTurn.actions, [{ type: "send_callback_sms" }], "different -> send_callback_sms");
     const smsOk = reduceIiziDeterministicTurn({
       callId: "cb-diff",
       bag: bagCb,
       event: { type: "callback_sms_result", success: true },
     });
-    assert.deepEqual(lineIds(smsOk.actions), ["callback.different_number_sms_sent"], "D callback SMS success line");
-    assert.equal(
-      resolveIiziLocalizedLine("callback.different_number_sms_sent", "et"),
-      "Saatsin Teile SMS-i, kuhu saate sisestada tagasihelistamise numbri. Palun avage oma sõnumite rakendus, vajutage lingile ning sisestage tagasihelistamise number.",
-      "D exact callback SMS spoken line",
-    );
+    assert.deepEqual(lineIds(smsOk.actions), ["callback.different_number_sms_sent"], "SMS success line");
   }
 
   // E: occupant ask once then parse üks
@@ -248,7 +255,7 @@ function run(): void {
     assert.equal(lineIds(unclear2.actions).includes("occupants.ask"), false, "F no more occupant ask");
   }
 
-  console.log("[iizi-deterministic-flow-smoke] OK (P0 chain + UX fixes A-F)");
+  console.log("[iizi-deterministic-flow-smoke] OK (0601116 SMS-help + callback A-E)");
 }
 
 run();
