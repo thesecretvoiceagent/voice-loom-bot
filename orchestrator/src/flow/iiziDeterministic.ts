@@ -640,6 +640,10 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
         }
         bag.flags.incidentCategory = category;
         bag.flags.occupantCountRequired = c.occupantCountRequired;
+        console.log(
+          `[IIZI-Deterministic] roadsideStartChain=true incidentLineSpoken=true crmLineSpoken=true ` +
+            `combinedSmsRequested=true callId=${callId || "?"}`,
+        );
         return transition(
           bag,
           "ROADSIDE_CONFIRMED",

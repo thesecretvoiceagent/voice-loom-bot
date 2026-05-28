@@ -20,7 +20,7 @@ function run(): void {
     "greeting.initial exact text",
   );
 
-  // Test A: rigid roadside chain (issue -> incident + crm + send sms)
+  // Test 1: "rehv tühi" chain and strict forbiddens before form
   {
     const bagA = createInitialIiziDeterministicState();
     reduceIiziDeterministicTurn({ callId: "A", bag: bagA, event: { type: "crm_prefetch", callerKnown: true } });
@@ -28,19 +28,21 @@ function run(): void {
     const turnA = reduceIiziDeterministicTurn({
       callId: "A",
       bag: bagA,
-      event: { type: "user_transcript", text: "Ma sooviksin käivitusabi." },
+      event: { type: "user_transcript", text: "rehv tühi" },
     });
     const aLines = lineIds(turnA.actions);
-    assert.equal(
-      aLines.includes("incident.no_start") || aLines.includes("incident.generic_roadside"),
-      true,
-      "A incident line",
-    );
+    assert.equal(aLines.includes("incident.flat_tire"), true, "A incident line");
     assert.equal(aLines.includes("crm.known"), true, "A crm line");
     assert.equal(turnA.actions.some((a) => a.type === "send_combined_sms"), true, "A combined sms action");
+    assert.equal(aLines.includes("occupants.ask"), false, "A no occupants before form");
+    assert.equal(aLines.includes("callback.ask_same_number"), false, "A no callback before form");
+    const smsTurn = reduceIiziDeterministicTurn({ callId: "A", bag: bagA, event: { type: "combined_sms_result", success: true } });
+    assert.deepEqual(lineIds(smsTurn.actions), ["sms.combined.sent_success"], "A sms success line queued");
+    assert.equal(bagA.currentState, "WAITING_FOR_FORM_SUBMITTED", "A final waiting state");
+    assert.equal(bagA.flags.occupantCountRequired, false, "A flat tire only does not require occupant count");
   }
 
-  // Test B: flat tire + cannot move -> occupant required path later
+  // Test 2: "rehv tühi ja ma ei saa liikuda" sets occupant flag only
   {
     const bagB = createInitialIiziDeterministicState();
     reduceIiziDeterministicTurn({ callId: "B", bag: bagB, event: { type: "crm_prefetch", callerKnown: false } });
@@ -48,13 +50,14 @@ function run(): void {
     const turnB = reduceIiziDeterministicTurn({
       callId: "B",
       bag: bagB,
-      event: { type: "user_transcript", text: "Minu autoreff on tühi ja ma ei saa liikuda." },
+      event: { type: "user_transcript", text: "rehv tühi ja ma ei saa liikuda" },
     });
     const bLines = lineIds(turnB.actions);
     assert.equal(bLines.includes("incident.flat_tire"), true, "B flat_tire incident");
     assert.equal(bLines.includes("crm.unknown"), true, "B crm unknown");
     assert.equal(turnB.actions.some((a) => a.type === "send_combined_sms"), true, "B combined sms action");
     assert.equal(bagB.flags.occupantCountRequired, true, "B occupant required");
+    assert.equal(bLines.includes("occupants.ask"), false, "B no early occupant ask");
   }
 
   const bag = createInitialIiziDeterministicState();
@@ -95,7 +98,7 @@ function run(): void {
   );
   assert.equal(bag.flags.locationConfirmed, true, "pending location consumed after vehicle");
 
-  // Test D: callback ask is mandatory when no occupant gate remains
+  // Test 4/5: callback ask is mandatory when no occupant gate remains
   assert.equal(
     lineIds(vehicleTurn.actions).includes("callback.ask_same_number"),
     true,
@@ -134,7 +137,15 @@ function run(): void {
     "reg payload form is not deduped by generic key",
   );
 
-  console.log("[iizi-deterministic-flow-smoke] OK (A-F)");
+  // Test 3: waiting states must never ask occupant/callback early
+  const waitFormTurn = reduceIiziDeterministicTurn({
+    callId: "WF",
+    bag: createInitialIiziDeterministicState(),
+    event: { type: "user_transcript", text: "tere" },
+  });
+  assert.equal(lineIds(waitFormTurn.actions).includes("occupants.ask"), false, "No early occupants ask in waiting flow smoke");
+
+  console.log("[iizi-deterministic-flow-smoke] OK (P0 chain)");
 }
 
 run();
