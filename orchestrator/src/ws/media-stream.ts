@@ -703,6 +703,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let userResponseCreatedCount = 0;
   let responseDoneCount = 0;
   let responseErrorCount = 0;
+  let callEndingSource:
+    | "end_call_tool"
+    | "twilio_stop"
+    | "max_duration"
+    | "ws_close"
+    | "error"
+    | "unknown" = "unknown";
   let pendingUserResponseTimer: ReturnType<typeof setTimeout> | null = null;
   let callerSpeechWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingUserResponseReason: string | null = null;
@@ -1059,7 +1066,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const iiziDeterministicInbound = () => iiziDeterministicMode && iiziCombinedInbound();
   const allowedIiziResponseReason = (reason: string): boolean =>
-    reason === "initial-greeting" || reason === "iizi-exact" || reason === "iizi-exact-speech" || reason === "iizi-filler";
+    reason === "initial-greeting" || reason === "iizi-exact-speech" || reason === "iizi-filler";
 
   const speakExactIizi = (lineId: string, vars?: Record<string, string>): { sent: boolean; blockedReason: string | null } => {
     const lang = iiziDetRef.current.iiziLanguage;
@@ -1561,7 +1568,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(`[EndCall] close_playback_done_hanging_up source=${source} callId=${callId}`);
     pendingEndCall = null;
     clearEndCallHangupTimer();
-    hangUpCall();
+    callEndingSource = "end_call_tool";
+    console.log(`[Diag-Close] callEndingSource=end_call_tool callId=${callId} callSid=${callSid || "?"} source=${source}`);
+    hangUpCall("end_call_tool");
   };
 
   const speakEndCallClose = (): boolean => {
@@ -1897,6 +1906,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       : null;
     if (blockReason) {
       lastResponseCreateBlockReason = blockReason;
+      if (iiziDeterministicInbound()) {
+        console.log(
+          `[IIZI-Deterministic] iiziAllowedResponseCreate=false responseCreateReason=${reason} blockedReason=${blockReason} callId=${callId}`,
+        );
+      }
       console.log(`[TurnGate] blocked response.create reason=${blockReason} source=${reason} callId=${callId}`);
       return false;
     }
@@ -1938,6 +1952,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const scheduleUserResponseCreate = (reason: string, delayMs: number, transcript?: string) => {
+    if (iiziDeterministicInbound() && !allowedIiziResponseReason(reason)) {
+      console.log(
+        `[IIZI-Deterministic] scheduleUserResponseCreateBlocked=true reason=${reason} ` +
+          `iiziDeterministicMode=true currentState=${iiziDetRef.current.currentState} callId=${callId}`,
+      );
+      return;
+    }
     const cleanTranscript = typeof transcript === "string" ? transcript.trim() : "";
     if (!cleanTranscript && isUserTurnReason(reason) && shouldManuallyScheduleResponse(reason)) {
       console.log(`[TurnGate] ignore_empty_user_turn callId=${callId} itemId=${lastCommittedUserItemId || "none"}`);
@@ -3180,7 +3201,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         callDurationTimer = setTimeout(() => {
           console.log(`[MediaStream] Max call duration reached, hanging up (callId=${callId})`);
           transcriptLines.push(`[System]: Call ended — max duration (${maxCallDurationMinutes}m) reached`);
-          hangUpCall();
+          hangUpCall("max_duration");
         }, maxMs);
       }
 
@@ -3893,8 +3914,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 const args = JSON.parse(event.arguments);
                 reason = args.reason || reason;
               } catch {}
+              console.log(
+                `[Diag-Close] endCallAttempted=true source=model currentState=${iiziDetRef.current.currentState} callId=${callId} callSid=${callSid || "?"}`,
+              );
               if (iiziDeterministicInbound()) {
                 const detState = iiziDetRef.current.currentState;
+                const iiziEndCallAllowed = iiziDeterministicAllowsModelEndCall(detState);
+                console.log(
+                  `[Diag-Close] endCallAttempted=true source=model currentState=${detState} iiziEndCallAllowed=${iiziEndCallAllowed} callId=${callId}`,
+                );
                 if (!iiziDeterministicAllowsModelEndCall(detState)) {
                   console.log(
                     `[IIZI-Deterministic] iizi_model_end_call_blocked=true currentState=${detState} ` +
@@ -4047,6 +4075,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 closeSpeechRequired: willSpeakClose,
                 closeResponseSent: false,
               };
+              callEndingSource = "end_call_tool";
               clearEndCallHangupTimer();
 
               openaiWs!.send(
@@ -5214,7 +5243,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               try {
                 if (openaiWs && openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
               } catch {}
-              hangUpCall();
+              hangUpCall("error");
               finalizeCall();
             } else if (sessionConfigured && isSessionPatchRejected && lastGaSessionPatchReason) {
               console.error(
@@ -5244,19 +5273,32 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       clearResponseDoneFallbackTimer();
       clearPendingInboundRecoveryAfterCancel();
       clearCallerSpeechWatchdog();
-      console.log(`[Diag-OpenAI] OpenAI websocket close code=${code} reason=${reason?.toString() || ""} (callId=${callId})`);
+      const closeReason = reason?.toString() || "";
+      console.log(`[Diag-OpenAI] OpenAI websocket close code=${code} reason=${closeReason} (callId=${callId})`);
+      console.log(
+        `[Diag-Close] openaiWsClosed=true code=${code} reason="${closeReason}" callId=${callId} callSid=${callSid || "?"}`,
+      );
+      if (callEndingSource === "unknown") {
+        callEndingSource = "ws_close";
+      }
+      console.log(`[Diag-Close] callEndingSource=${callEndingSource} callId=${callId} callSid=${callSid || "?"}`);
       openaiWs = null;
       finalizeCall();
     });
 
     openaiWs.on("error", (err) => {
       console.error(`[MediaStream] OpenAI WS error (callId=${callId}):`, err.message);
+      console.error(`[Diag-Close] openaiWsClosed=false error="${err.message}" callId=${callId} callSid=${callSid || "?"}`);
     });
   };
 
   // Hang up the Twilio call
-  const hangUpCall = () => {
+  const hangUpCall = (
+    source: "end_call_tool" | "twilio_stop" | "max_duration" | "ws_close" | "error" | "unknown" = "unknown",
+  ) => {
     if (!callSid || !config.twilio.isConfigured) return;
+    callEndingSource = source;
+    console.log(`[Diag-Close] callEndingSource=${source} callId=${callId} callSid=${callSid}`);
 
     const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${config.twilio.accountSid}/Calls/${callSid}.json`;
     const authHeader = Buffer.from(`${config.twilio.accountSid}:${config.twilio.authToken}`).toString("base64");
@@ -5439,6 +5481,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
           }
           console.log(`[Diag-Twilio] twilio.start received callId=${callId} streamSid=${streamSid} agentId=${agentId || "(resolve-by-number)"} callSid=${callSid} direction=${callDirection} bridgeSelfTest=${bridgeSelfTest || "none"}`);
+          console.log(`[Diag-Twilio] twilioStreamStarted=true callId=${callId} callSid=${callSid} streamSid=${streamSid}`);
 
           // Periodic diagnostic snapshot — proves end-to-end media flow.
           diagnosticSnapshotTimer = setInterval(() => {
@@ -5553,6 +5596,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         case "stop":
           twilioStopReceived = true;
           console.log(`[Diag-Twilio] twilio.stop received (callId=${callId})`);
+          console.log(
+            `[Diag-Twilio] twilioStreamStopped=true callId=${callId} callSid=${callSid || "?"} payload=${JSON.stringify(msg.stop || {})}`,
+          );
+          callEndingSource = "twilio_stop";
+          console.log(`[Diag-Close] callEndingSource=twilio_stop callId=${callId} callSid=${callSid || "?"}`);
           try {
             sttShadowSession?.stop(callId);
             sttShadowSession = null;
@@ -5574,6 +5622,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   twilioWs.on("close", (code, reason) => {
     console.log(`[Diag-Twilio] Twilio websocket close code=${code} reason=${reason?.toString() || ""} (callId=${callId})`);
+    console.log(
+      `[Diag-Close] twilioWsClosed=true code=${code} reason="${reason?.toString() || ""}" callId=${callId} callSid=${callSid || "?"}`,
+    );
+    if (callEndingSource === "unknown") {
+      callEndingSource = "ws_close";
+    }
+    console.log(`[Diag-Close] callEndingSource=${callEndingSource} callId=${callId} callSid=${callSid || "?"}`);
     try {
       sttShadowSession?.stop(callId);
       sttShadowSession = null;
@@ -5593,5 +5648,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   twilioWs.on("error", (err) => {
     console.error(`[MediaStream] Twilio WS error (callId=${callId}):`, err.message);
+    console.error(`[Diag-Close] twilioWsClosed=false error="${err.message}" callId=${callId} callSid=${callSid || "?"}`);
   });
 }
