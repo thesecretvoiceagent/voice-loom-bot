@@ -1298,8 +1298,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       "iizi-exact-speech",
       buildIiziDeterministicSpeechResponse("iizi-exact-speech", {
         instructions:
-          `Speak ONLY the following sentence verbatim in Estonian. Do not add, remove, or change any words. ` +
-          `Do not call tools. Do not add filler.\n"""\n${text}\n"""`,
+          `You are a strict text-to-speech engine, not a conversational assistant. ` +
+          `Output ONLY the exact text between the triple quotes, word for word, in Estonian. ` +
+          `Do NOT translate it. Do NOT add, remove, reorder, or change any word. ` +
+          `Do NOT add greetings, filler, apologies, opinions, or ANY personal, emotional, or off-topic statements. ` +
+          `NEVER speak English. NEVER talk about yourself. Do NOT call tools. ` +
+          `If you are unsure, still output the text exactly as written and nothing else.\n"""\n${text}\n"""`,
         output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
       }),
       {
@@ -3895,7 +3899,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       greetingTokenLimitRaised = Boolean(greeting);
 
       const gaTranscription = {
-        model: "gpt-4o-transcribe",
+        model: "whisper-1",
         // Lock STT to Estonian — most callers speak ET. Mixed-language STT
         // mangles plates like 484DLC → 484DLT, which breaks CRM lookups.
         language: "et",
