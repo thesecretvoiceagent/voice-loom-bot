@@ -793,6 +793,15 @@ export function classifyCallbackSameNumberIntent(normalized: string): IiziCallba
     return { intent: "same_number", evidence };
   }
 
+  // ASR-lenient: on a yes/no confirm question, an answer that mentions the
+  // callback/number context with NO negation token is treated as "same number".
+  // whisper-1 frequently mangles short ET answers (e.g. "number on sama" -> "Numbrit"),
+  // dropping the positive word but keeping the number context. Negative phrases are
+  // already handled above, so this only leans positive when nothing contradicts it.
+  if (phoneContext && evidence.negative.length === 0) {
+    return { intent: "same_number", evidence };
+  }
+
   return { intent: "unknown", evidence };
 }
 

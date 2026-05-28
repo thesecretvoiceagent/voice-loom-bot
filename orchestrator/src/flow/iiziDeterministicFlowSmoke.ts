@@ -228,6 +228,9 @@ function run(): void {
       "Jaa",
       "sobib",
       "helistamise numbr on sama",
+      "Numbrit.",
+      "numbri",
+      "tagasihelistamise number",
     ];
     for (const text of expectSame) {
       const norm = normalizeIiziTranscript(text);
