@@ -434,11 +434,10 @@ function logClassification(callId: string | null, c: IiziTranscriptClassificatio
 function roadsideClassifiedActions(
   bag: IiziDeterministicStateBag,
   category: IiziRoadsideCategory,
-  norm: string,
+  _norm: string,
 ): IiziDeterministicAction[] {
   return [
     { type: "speak_exact", lineId: incidentLineId(category) },
-    { type: "mark_occupant_required", category, normalizedTranscript: norm },
     { type: "speak_exact", lineId: bag.flags.callerKnown ? "crm.known" : "crm.unknown" },
     { type: "send_combined_sms" },
   ];

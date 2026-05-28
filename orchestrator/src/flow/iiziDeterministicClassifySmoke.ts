@@ -72,6 +72,11 @@ function run(): void {
     "et full autoreff sentence",
   );
   expectClassify("autoreff on tühi", { category: "flat_tire", lang: "et", broadEvidence: true }, "et autoreff tuhi short");
+  expectClassify(
+    "Tere, mul sai tee peal autorehv tegi pauku, mul oleks rehti abivaja palun.",
+    { broadIntent: "roadside_assistance", category: "flat_tire", lang: "et", broadEvidence: true },
+    "et long tire burst sentence",
+  );
   expectClassify("auto probleem", { category: "generic_roadside", lang: "et", broadEvidence: true }, "et auto probleem");
   expectClassify("mul on kindlustuse küsimus", { category: "not_roadside", lang: "et" }, "et insurance only");
   expectClassify("insurance question", { category: "not_roadside", lang: "en" }, "en insurance question short");

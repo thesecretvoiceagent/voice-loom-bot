@@ -49,6 +49,8 @@ export const IIZI_ROADSIDE_TRIGGER_DATA: Record<IiziRoadsideCategory, LangPhrase
     et: [
       "rehv katki", "rehv purunes", "rehv tühi", "rehv tyhi", "kumm katki", "kumm tühi",
       "kumm tyhi", "rehv läks katki", "rehv laks katki", "rehv on puru", "rehviprobleem",
+      "autorehv tegi pauku", "rehv tegi pauku", "kumm tegi pauku", "rehv lõhkes", "rehv lohkes",
+      "rehv läks puruks", "rehv laks puruks", "abi vaja", "abivaja", "autoabi vaja",
     ],
     en: [
       "flat tire", "flat tyre", "tire flat", "tyre flat", "tire is flat", "tyre is flat",

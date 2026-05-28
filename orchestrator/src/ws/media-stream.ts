@@ -577,6 +577,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let iiziDetDraining = false;
   let iiziDetVehicleReadbackSpoken = false;
   let iiziDetLocationReadbackSpoken = false;
+  let lastResponseCreateBlockReason: string | null = null;
+  let pendingIiziExactSpeech:
+    | { lineId: string; vars?: Record<string, string>; actionId: string; blockedReason: string }
+    | null = null;
 
   const touchIiziBrainLog = (reason: string) => {
     if (!useCombinedRegLocationSms || callDirection !== "inbound") return;
@@ -1057,23 +1061,24 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const allowedIiziResponseReason = (reason: string): boolean =>
     reason === "initial-greeting" || reason === "iizi-exact" || reason === "iizi-exact-speech" || reason === "iizi-filler";
 
-  const speakExactIizi = (lineId: string, vars?: Record<string, string>): boolean => {
+  const speakExactIizi = (lineId: string, vars?: Record<string, string>): { sent: boolean; blockedReason: string | null } => {
     const lang = iiziDetRef.current.iiziLanguage;
     const text = resolveIiziLocalizedLine(lineId, lang, vars, callId);
     if (!text) {
       console.warn(`[IIZI-Deterministic] unknown line_id=${lineId} callId=${callId}`);
-      return false;
+      return { sent: false, blockedReason: "unknown_line_id" };
     }
     console.log(
       `[IIZI-Deterministic] line_id=${lineId} transcript_source=backend_exact remainingModelOwnedDecision=none callId=${callId}`,
     );
     iiziDetCriticalLineQueued = true;
-    return sendResponseCreate("iizi-exact-speech", {
+    const sent = sendResponseCreate("iizi-exact-speech", {
       instructions:
         `Speak ONLY the following sentence verbatim in Estonian. Do not add, remove, or change any words. ` +
         `Do not call tools. Do not add filler.\n"""\n${text}\n"""`,
       output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
     });
+    return { sent, blockedReason: sent ? null : lastResponseCreateBlockReason || "unknown_block" };
   };
 
   const speakFillerIizi = (lineId: string, reason: IiziFillerReason): boolean => {
@@ -1148,7 +1153,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return { ok: false, alreadySent: false };
   };
 
-  const processOneIiziDeterministicAction = async (action: IiziDeterministicAction): Promise<boolean> => {
+  const processOneIiziDeterministicAction = async (
+    action: IiziDeterministicAction,
+  ): Promise<{ shouldPause: boolean; queuePauseReason?: string }> => {
     const actionName = action.type === "speak_exact" ? `speak_exact:${action.lineId}` : action.type;
     console.log(`[IIZI-Deterministic] actionDequeued=${actionName} callId=${callId}`);
     switch (action.type) {
@@ -1176,23 +1183,46 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 `[IIZI-Deterministic] occupantAskBlockedReason=${waitingReasons.join("|") || "unknown"} callId=${callId}`,
               );
               console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
-              return true;
+              return { shouldPause: false };
             }
           }
-          const spoke = speakExactIizi(action.lineId, action.vars);
-          if (spoke && action.lineId === "vehicle.match_active.readback") iiziDetVehicleReadbackSpoken = true;
-          if (spoke && action.lineId === "location.received.readback") iiziDetLocationReadbackSpoken = true;
-          if (spoke && action.lineId === "sms.combined.sent_success") {
+          const actionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const speak = speakExactIizi(action.lineId, action.vars);
+          if (!speak.sent) {
+            const blockedReason = speak.blockedReason || "unknown_block";
+            pendingIiziExactSpeech = { lineId: action.lineId, vars: action.vars, actionId, blockedReason };
+            iiziDetPendingActions.unshift(action);
+            console.log(
+              `[IIZI-Deterministic] iiziExactSpeechBlocked=true blockedLineId=${action.lineId} ` +
+                `blockedReason=${blockedReason} actionCompleted=false actionRequeued=true callId=${callId}`,
+            );
+            console.log(
+              `[IIZI-Deterministic] pendingIiziExactSpeechSet=true actionId=${actionId} lineId=${action.lineId} ` +
+                `blockedReason=${blockedReason} callId=${callId}`,
+            );
+            return { shouldPause: true, queuePauseReason: "blocked_waiting_for_safe_speech" };
+          }
+          if (speak.sent && action.lineId === "vehicle.match_active.readback") iiziDetVehicleReadbackSpoken = true;
+          if (speak.sent && action.lineId === "location.received.readback") iiziDetLocationReadbackSpoken = true;
+          if (speak.sent && action.lineId === "sms.combined.sent_success") {
             console.log(`[IIZI-Deterministic] smsSuccessLineSpoken=true callId=${callId}`);
           }
-          console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=${spoke} callId=${callId}`);
-          return spoke;
+          if (pendingIiziExactSpeech && pendingIiziExactSpeech.lineId === action.lineId) {
+            console.log(
+              `[IIZI-Deterministic] pendingIiziExactSpeechSent=true actionId=${pendingIiziExactSpeech.actionId} ` +
+                `lineId=${pendingIiziExactSpeech.lineId} callId=${callId}`,
+            );
+            pendingIiziExactSpeech = null;
+            console.log(`[IIZI-Deterministic] pendingIiziExactSpeechCleared=true lineId=${action.lineId} callId=${callId}`);
+          }
+          console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
+          return { shouldPause: true, queuePauseReason: "assistant_speaking" };
         }
       case "speak_filler":
         {
           const spoke = speakFillerIizi(action.lineId, action.reason);
           console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=${spoke} callId=${callId}`);
-          return spoke;
+          return { shouldPause: spoke, queuePauseReason: spoke ? "assistant_speaking" : undefined };
         }
       case "mark_occupant_required": {
         const norm = action.normalizedTranscript ?? "";
@@ -1213,7 +1243,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           console.log(`[IIZI-Deterministic] occupantRequiredFlagSet=false callId=${callId}`);
         }
         console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
-        return true;
+        return { shouldPause: false };
       }
       case "send_combined_sms": {
         console.log(`[IIZI-Deterministic] combinedSmsRequested=true callId=${callId}`);
@@ -1230,7 +1260,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
         enqueueIiziDeterministicActions(turn.actions);
         console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
-        return false;
+        return { shouldPause: false };
       }
       case "send_callback_sms": {
         const r = await runIiziBackendSms(CALLBACK_SMS_TEMPLATE_NAME);
@@ -1241,15 +1271,16 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         });
         enqueueIiziDeterministicActions(turn.actions);
         console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
-        return false;
+        return { shouldPause: false };
       }
       default:
         console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
-        return true;
+        return { shouldPause: false };
     }
   };
 
   const deterministicDrainStopReason = (): string => {
+    if (pendingIiziExactSpeech) return "blocked_waiting_for_safe_speech";
     const s = iiziDetRef.current.currentState;
     if (s === "WAITING_FOR_FORM_SUBMITTED") return "waiting_for_form";
     if (s === "WAITING_FOR_VEHICLE_LOOKUP") return "waiting_for_vehicle_lookup";
@@ -1267,8 +1298,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       while (iiziDetPendingActions.length > 0 && !activeResponseId && openaiWs?.readyState === WebSocket.OPEN) {
         console.log(`[IIZI-Deterministic] activeResponseBeforeAction=${activeResponseId || "none"} callId=${callId}`);
         const action = iiziDetPendingActions.shift()!;
-        const spoke = await processOneIiziDeterministicAction(action);
-        if (spoke) break;
+        const result = await processOneIiziDeterministicAction(action);
+        if (result.shouldPause) {
+          if (result.queuePauseReason) {
+            console.log(`[IIZI-Deterministic] queuePausedReason=${result.queuePauseReason} callId=${callId}`);
+          }
+          break;
+        }
       }
       const stopReason = deterministicDrainStopReason();
       if (activeResponseId) {
@@ -1310,6 +1346,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   ) => {
     const turn = reduceIiziDeterministicTurn({ callId, bag: iiziDetRef.current, event });
     enqueueIiziDeterministicActions(turn.actions);
+  };
+
+  const retryPendingIiziExactSpeech = (reason: "speech_stopped" | "committed" | "transcript_done" | "no_audio_grace") => {
+    if (!iiziDeterministicInbound() || !pendingIiziExactSpeech) return;
+    console.log(
+      `[IIZI-Deterministic] pendingIiziExactSpeechRetry=true pendingIiziExactSpeechRetryReason=${reason} ` +
+        `lineId=${pendingIiziExactSpeech.lineId} callId=${callId}`,
+    );
+    void drainIiziDeterministicNextActions();
   };
 
   const resetInboundRecoveryPlaybackState = () => {
@@ -1843,6 +1888,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         return false;
       }
     }
+    lastResponseCreateBlockReason = null;
     const committedItemId = opts?.committedItemId ?? lastCommittedUserItemId;
     const blockReason = isUserTurnReason(reason)
       ? getCallerAudioBlockReason(true, {
@@ -1850,6 +1896,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         })
       : null;
     if (blockReason) {
+      lastResponseCreateBlockReason = blockReason;
       console.log(`[TurnGate] blocked response.create reason=${blockReason} source=${reason} callId=${callId}`);
       return false;
     }
@@ -1866,10 +1913,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       return false;
     }
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
+      lastResponseCreateBlockReason = "openai_ws_not_open";
       console.warn(`[Diag] response.create skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`);
       return false;
     }
     if (activeResponseId) {
+      lastResponseCreateBlockReason = "active_response";
       console.warn(`[Diag] response.create skipped reason=${reason} skip=active_response activeResponseBefore=${activeResponseId} (callId=${callId})`);
       return false;
     }
@@ -3780,6 +3829,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 console.log(
                   `[IIZI-Deterministic] skip_model_user_transcript_response=true iiziBrainNextActionControl=false callId=${callId} itemId=${transcriptItemId}`,
                 );
+                retryPendingIiziExactSpeech("transcript_done");
               }
               if (activeResponseId && !responseHasAudio && activeResponseReason !== "initial-greeting") {
                 console.warn(`[Diag-InboundTurn] new user transcript while previous response has no usable audio; resetting stale response state activeResponse=${activeResponseId} seq=${fallbackSeq} previousSeq=${activeResponseInboundTranscriptSeq} (callId=${callId})`);
@@ -5094,6 +5144,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             callerSpeechActive = false;
             clearCallerSpeechWatchdog();
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
+            retryPendingIiziExactSpeech("speech_stopped");
+            setTimeout(() => retryPendingIiziExactSpeech("no_audio_grace"), 220);
             if (callDirection !== "inbound") {
               tryCommitCallerAudio("speech-stopped", 120);
             }
@@ -5113,6 +5165,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             if (runtimeOwnsPostGreetingResponses() && committedItemId) {
               registerPendingCommittedTurn(committedItemId, framesForPendingCommit);
+              retryPendingIiziExactSpeech("committed");
             } else if (callDirection !== "inbound" && committedItemId && !vadServerCreateResponseEnabled) {
               console.log(
                 `[TurnGate] pending_user_audio_turn itemId=${committedItemId} transcript_len=0 frames=${framesForPendingCommit} callId=${callId}`
