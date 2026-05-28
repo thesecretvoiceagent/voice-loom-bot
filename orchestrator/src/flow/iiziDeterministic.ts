@@ -69,9 +69,6 @@ export type IiziDeterministicState =
   | "WAITING_FOR_CALLBACK_FORM"
   | "READY_FOR_HANDOFF"
   | "CLOSING_ASKED"
-  | "WAITING_FOR_ADDITIONAL_INFO_DECISION"
-  | "WAITING_FOR_ADDITIONAL_INFO_TEXT"
-  | "CLOSING_END_PENDING"
   | "CLOSED";
 
 export type IiziClassificationMethod =
@@ -120,10 +117,6 @@ export interface IiziDeterministicRuntimeFlags {
   pendingLocationConfirmed: boolean;
   pendingLocationAddress: string;
   lastSubmittedReg: string;
-  callbackQuestionAsked: boolean;
-  callbackClarifyCount: number;
-  additionalInfoNote: string;
-  pendingEndCallAfterLine: string | null;
 }
 
 export type IiziLanguageDetectionMethod = "script" | "exact" | "keyword" | "default";
@@ -155,7 +148,6 @@ export interface IiziDeterministicStateBag {
   lastSubCategoryCandidate: IiziRoadsideCategory | null;
   lastUnclearTranscript: string;
   unclearCount: number;
-  speechEpoch: number;
 }
 
 export function createInitialIiziDeterministicState(): IiziDeterministicStateBag {
@@ -186,10 +178,6 @@ export function createInitialIiziDeterministicState(): IiziDeterministicStateBag
       pendingLocationConfirmed: false,
       pendingLocationAddress: "",
       lastSubmittedReg: "",
-      callbackQuestionAsked: false,
-      callbackClarifyCount: 0,
-      additionalInfoNote: "",
-      pendingEndCallAfterLine: null,
     },
     iiziLanguage: "et",
     previousIiziLanguage: null,
@@ -198,7 +186,6 @@ export function createInitialIiziDeterministicState(): IiziDeterministicStateBag
     lastSubCategoryCandidate: null,
     lastUnclearTranscript: "",
     unclearCount: 0,
-    speechEpoch: 0,
   };
 }
 
@@ -492,9 +479,8 @@ function transition(
 ): { actions: IiziDeterministicAction[]; transitionReason: string } {
   const prev = bag.currentState;
   bag.currentState = next;
-  bag.speechEpoch += 1;
   console.log(
-    `[IIZI-Deterministic] currentState=${prev} nextState=${next} transitionReason=${reason} speechEpoch=${bag.speechEpoch} callId=${callId || "?"}`,
+    `[IIZI-Deterministic] currentState=${prev} nextState=${next} transitionReason=${reason} callId=${callId || "?"}`,
   );
   return { actions, transitionReason: reason };
 }
@@ -564,7 +550,6 @@ function withOccupantThenCallback(
       reason: "vehicle_location_then_occupant",
     };
   }
-  bag.flags.callbackQuestionAsked = true;
   return {
     actions: postVehicleLocationReadbackActions([
       { type: "speak_exact", lineId: "callback.ask_same_number" },
@@ -597,89 +582,49 @@ const FORM_WAITING_HELP_PATTERNS = [
   "was muss ich tun",
 ];
 
-const CALLBACK_NEGATIVE_PATTERNS = [
-  "ei ole",
-  "ei number ei ole sama",
-  "number ei ole sama",
-  "number pole sama",
-  "tagasihelistamise number pole sama",
-  "pole sama",
-  "soovin teist numbrit",
-  "soovin teist tagasihelistamise numbrit",
-  "tahan teist numbrit",
-  "tahan uut numbrit",
-  "tahan uut tagasihelistamise numbrit",
+const CALLBACK_DIFFERENT_NUMBER_PATTERNS = [
   "teine number",
   "muu number",
-  "teisele numbrile",
-  "negatiivne",
-  "noup",
-  "nope",
-  "mkm",
-  "mkmm",
+  "monda muud",
+  "mõnda muud",
+  "mõni muu number",
+  "teist numbrit",
+  "muu numbri",
+  "soovin teist numbrit",
+  "soovin teist tagasihelistamise numbrit",
+  "tahan uut tagasihelistamise numbrit",
+  "tahan uue tagasihelistamise",
+  "soovin mõnda muud",
+  "soovin monda muud",
+  "tagasihelistamise numbrit",
+  "uut tagasihelistamise",
+  "helistage teisele numbrile",
+  "mitte sellele numbrile",
+  "another number",
+  "different number",
+  "other number",
+  "not this number",
 ];
 
-const CALLBACK_POSITIVE_PHRASES = [
-  "sobib",
-  "õige",
-  "oige",
-  "sama",
-  "number on sama",
-  "tagasihelistamise number on sama",
-  "jah number on sama",
-  "jaa number on sama",
-  "helistage samale",
-  "samale numbrile",
+const CALLBACK_SAME_NUMBER_PATTERNS = [
   "jah sobib",
-  "sobib jah",
-];
-
-const CALLBACK_SHORT_YES = new Set([
   "jah",
   "jaa",
-  "ja",
-  "jep",
-  "jap",
-  "mhm",
   "sobib",
-  "õige",
-  "oige",
-  "sama",
-  "yep",
-  "yap",
-  "ok",
+  "sama number",
+  "sama numbri",
   "okei",
-]);
-
-const ADDITIONAL_INFO_NEGATIVE_PATTERNS = [
-  "ei soovi",
-  "ei ole",
-  "pole vaja",
-  "ei midagi",
-  "midagi ei ole",
-  "rohkem mitte",
-  "kõik hästi",
-  "kõik",
-  "ei taha lisada",
-  "ei soovi lisada",
+  "ok",
+  "yes",
 ];
 
-const ADDITIONAL_INFO_YES_ONLY = new Set(["jah", "jaa", "ja", "soovin", "yes"]);
-
-function isPostCombinedSmsAwaitingForm(
-  state: IiziDeterministicState,
-  bag: IiziDeterministicStateBag,
-): boolean {
-  return bag.flags.combinedSmsSuccess && !bag.flags.formSubmitted && state === "WAITING_FOR_FORM_SUBMITTED";
-}
-
-function hasMeaningfulCallerTranscript(normalized: string): boolean {
-  return normalized.replace(/\s/g, "").length >= 2;
+function isFormWaitingHelpQuestion(normalized: string): boolean {
+  return FORM_WAITING_HELP_PATTERNS.some((p) => normalized.includes(p));
 }
 
 export function isCallbackDifferentNumberRequest(normalized: string): boolean {
-  if (CALLBACK_NEGATIVE_PATTERNS.some((p) => normalized.includes(p))) return true;
-  if (/\b(ei)\b/.test(normalized) && !CALLBACK_POSITIVE_PHRASES.some((p) => normalized.includes(p))) {
+  if (CALLBACK_DIFFERENT_NUMBER_PATTERNS.some((p) => normalized.includes(p))) return true;
+  if (/\b(ei)\b/.test(normalized) && !/\b(jah|jaa|yes)\b/.test(normalized) && normalized.length <= 40) {
     return true;
   }
   return false;
@@ -687,39 +632,7 @@ export function isCallbackDifferentNumberRequest(normalized: string): boolean {
 
 export function isCallbackSameNumberConfirmation(normalized: string): boolean {
   if (isCallbackDifferentNumberRequest(normalized)) return false;
-  if (CALLBACK_POSITIVE_PHRASES.some((p) => normalized.includes(p))) return true;
-  const tokens = normalized.split(/\s+/).filter(Boolean);
-  if (tokens.length === 1 && CALLBACK_SHORT_YES.has(tokens[0])) return true;
-  if (tokens.length === 2 && CALLBACK_SHORT_YES.has(tokens[0]) && CALLBACK_SHORT_YES.has(tokens[1])) return true;
-  return false;
-}
-
-function isAdditionalInfoNegative(normalized: string): boolean {
-  if (ADDITIONAL_INFO_NEGATIVE_PATTERNS.some((p) => normalized.includes(p))) return true;
-  if (/\b(ei)\b/.test(normalized) && !/\b(jah|jaa)\b/.test(normalized)) return true;
-  return false;
-}
-
-function isAdditionalInfoYesOnly(normalized: string): boolean {
-  const tokens = normalized.split(/\s+/).filter(Boolean);
-  return tokens.length <= 2 && tokens.every((t) => ADDITIONAL_INFO_YES_ONLY.has(t) || t === "soovin");
-}
-
-function hasSubstantiveAdditionalInfo(normalized: string): boolean {
-  const stripped = normalized.replace(/\b(jah|jaa|ja|soovin|yes|palun)\b/g, " ").trim();
-  return stripped.replace(/\s/g, "").length >= 8;
-}
-
-function handoffLineId(bag: IiziDeterministicStateBag): string {
-  return bag.flags.incidentCategory === "tow_needed" ? "handoff.tow_partner" : "handoff.normal_partner";
-}
-
-function handoffThenAskAdditionalInfoActions(bag: IiziDeterministicStateBag): IiziDeterministicAction[] {
-  bag.flags.handoffSpoken = true;
-  return [
-    { type: "speak_exact", lineId: handoffLineId(bag) },
-    { type: "speak_exact", lineId: "closing.ask_additional_info" },
-  ];
+  return CALLBACK_SAME_NUMBER_PATTERNS.some((p) => normalized.includes(p));
 }
 
 function postVehicleLocationReadbackActions(
@@ -782,22 +695,21 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     const norm = normalizeIiziTranscript(event.text);
     const state = bag.currentState;
 
-    if (isPostCombinedSmsAwaitingForm(state, bag)) {
-      if (hasMeaningfulCallerTranscript(norm)) {
+    if (isWaitingForFormPipelineState(state)) {
+      if (bag.flags.combinedSmsSuccess && !bag.flags.formSubmitted && isFormWaitingHelpQuestion(norm)) {
         console.log(
-          `[IIZI-Deterministic] smsHelpRequestedWhileWaiting=true smsHelpLineQueued=true smsHelpFallbackAggressive=true callId=${callId || "?"}`,
+          `[IIZI-Deterministic] smsHelpRequestedWhileWaiting=true smsHelpLineQueued=true callId=${callId || "?"}`,
         );
         return {
           actions: [{ type: "speak_exact", lineId: "form.waiting_sms_help" }],
-          transitionReason: "waiting_for_form_sms_help_fallback",
+          transitionReason: "waiting_for_form_sms_help",
         };
       }
-      return { actions: [{ type: "none" }], transitionReason: "waiting_for_form_empty_turn" };
-    }
-
-    if (isWaitingForFormPipelineState(state)) {
       if (state === "WAITING_FOR_FORM_SUBMITTED") {
-        return { actions: [{ type: "none" }], transitionReason: "waiting_for_form_silent" };
+        return {
+          actions: [{ type: "speak_exact", lineId: "form.not_received_yet" }],
+          transitionReason: "waiting_for_form",
+        };
       }
       if (state === "WAITING_FOR_VEHICLE_LOOKUP") {
         return {
@@ -947,9 +859,6 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     }
 
     if (state === "ASK_CALLBACK_SAME_NUMBER") {
-      if (!hasMeaningfulCallerTranscript(norm)) {
-        return { actions: [{ type: "none" }], transitionReason: "callback_awaiting_transcript" };
-      }
       const different = isCallbackDifferentNumberRequest(norm);
       const same = isCallbackSameNumberConfirmation(norm);
       console.log(
@@ -957,12 +866,18 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       );
       if (same) {
         bag.flags.callbackSameNumber = true;
-        console.log(`[IIZI-Deterministic] callbackSameNumberConfirmed=true callId=${callId || "?"}`);
+        const handoffLine =
+          bag.flags.incidentCategory === "tow_needed" ? "handoff.tow_partner" : "handoff.normal_partner";
+        bag.flags.handoffSpoken = true;
         return transition(
           bag,
-          "WAITING_FOR_ADDITIONAL_INFO_DECISION",
+          "CLOSING_ASKED",
           "callback_same_number_then_handoff",
-          handoffThenAskAdditionalInfoActions(bag),
+          [
+            { type: "speak_exact", lineId: "callback.same_number_confirmed" },
+            { type: "speak_exact", lineId: handoffLine },
+            { type: "speak_exact", lineId: "closing.anything_else" },
+          ],
           callId,
         );
       }
@@ -977,78 +892,7 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
           callId,
         );
       }
-      if (bag.flags.callbackClarifyCount < 1) {
-        bag.flags.callbackClarifyCount += 1;
-        console.log(
-          `[IIZI-Deterministic] callbackClarifyCount=${bag.flags.callbackClarifyCount} callId=${callId || "?"}`,
-        );
-        return transition(
-          bag,
-          "ASK_CALLBACK_SAME_NUMBER",
-          "callback_clarify_once",
-          [{ type: "speak_exact", lineId: "callback.ask_same_number" }],
-          callId,
-        );
-      }
-      return transition(
-        bag,
-        "NON_ROADSIDE_HUMAN_ROUTE",
-        "callback_unclear_handoff",
-        [{ type: "speak_exact", lineId: "handoff.human_followup" }],
-        callId,
-      );
-    }
-
-    if (state === "WAITING_FOR_ADDITIONAL_INFO_DECISION") {
-      if (isAdditionalInfoNegative(norm) || (/\b(aitah|aitäh)\b/.test(norm) && !hasSubstantiveAdditionalInfo(norm))) {
-        bag.flags.pendingEndCallAfterLine = "closing.additional_info_declined";
-        return transition(
-          bag,
-          "CLOSING_END_PENDING",
-          "additional_info_declined",
-          [{ type: "speak_exact", lineId: "closing.additional_info_declined" }],
-          callId,
-        );
-      }
-      if (isAdditionalInfoYesOnly(norm)) {
-        return transition(
-          bag,
-          "WAITING_FOR_ADDITIONAL_INFO_TEXT",
-          "additional_info_ask_text",
-          [{ type: "speak_exact", lineId: "closing.ask_what_to_add" }],
-          callId,
-        );
-      }
-      if (hasSubstantiveAdditionalInfo(norm)) {
-        bag.flags.additionalInfoNote = event.text.trim();
-        bag.flags.pendingEndCallAfterLine = "closing.additional_info_acknowledged";
-        console.log(
-          `[IIZI-Deterministic] additionalInfoNoteCaptured=true noteLen=${bag.flags.additionalInfoNote.length} callId=${callId || "?"}`,
-        );
-        return transition(
-          bag,
-          "CLOSING_END_PENDING",
-          "additional_info_with_content",
-          [{ type: "speak_exact", lineId: "closing.additional_info_acknowledged" }],
-          callId,
-        );
-      }
-      return { actions: [{ type: "none" }], transitionReason: "additional_info_awaiting" };
-    }
-
-    if (state === "WAITING_FOR_ADDITIONAL_INFO_TEXT") {
-      bag.flags.additionalInfoNote = event.text.trim();
-      bag.flags.pendingEndCallAfterLine = "closing.additional_info_acknowledged";
-      console.log(
-        `[IIZI-Deterministic] additionalInfoNoteCaptured=true noteLen=${bag.flags.additionalInfoNote.length} callId=${callId || "?"}`,
-      );
-      return transition(
-        bag,
-        "CLOSING_END_PENDING",
-        "additional_info_text_received",
-        [{ type: "speak_exact", lineId: "closing.additional_info_acknowledged" }],
-        callId,
-      );
+      return { actions: [{ type: "none" }], transitionReason: "callback_awaiting_clear_answer" };
     }
 
     if (state === "WAITING_FOR_OCCUPANT_COUNT" || state === "OCCUPANT_COUNT_REQUIRED") {
@@ -1056,7 +900,6 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       if (n != null && n > 0) {
         bag.flags.occupantCountConfirmed = true;
         console.log(`[IIZI-Deterministic] occupantCountParsed=true count=${n} callId=${callId || "?"}`);
-        bag.flags.callbackQuestionAsked = true;
         return transition(
           bag,
           "ASK_CALLBACK_SAME_NUMBER",
@@ -1087,8 +930,18 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       );
     }
 
-    if (state === "CLOSING_ASKED" || state === "CLOSING_END_PENDING") {
-      return { actions: [{ type: "none" }], transitionReason: "closing_in_progress" };
+    if (state === "CLOSING_ASKED") {
+      const yn = parseYesNo(norm);
+      if (yn === false || /\b(aitah|head|kõik|kõik korras)\b/.test(norm)) {
+        return transition(
+          bag,
+          "CLOSED",
+          "closing_goodbye",
+          [{ type: "speak_exact", lineId: "closing.goodbye" }],
+          callId,
+        );
+      }
+      return { actions: [{ type: "none" }], transitionReason: "closing_still_needs_help" };
     }
 
     return {
@@ -1282,11 +1135,12 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     bag.flags.handoffSpoken = true;
     return transition(
       bag,
-      "WAITING_FOR_ADDITIONAL_INFO_DECISION",
+      "CLOSING_ASKED",
       "callback_form_then_handoff",
       [
         { type: "speak_exact", lineId: "callback.form_received" },
-        ...handoffThenAskAdditionalInfoActions(bag),
+        { type: "speak_exact", lineId: handoffLine },
+        { type: "speak_exact", lineId: "closing.anything_else" },
       ],
       callId,
     );
@@ -1329,11 +1183,11 @@ export function advanceIiziDeterministicHandoff(
   console.log(`[IIZI-Deterministic] handoffReady=true line_id=${lineId} callId=${callId || "?"}`);
   return transition(
     bag,
-    "WAITING_FOR_ADDITIONAL_INFO_DECISION",
+    "CLOSING_ASKED",
     "handoff_ready",
     [
       { type: "speak_exact", lineId },
-      { type: "speak_exact", lineId: "closing.ask_additional_info" },
+      { type: "speak_exact", lineId: "closing.anything_else" },
     ],
     callId,
   );
@@ -1383,7 +1237,6 @@ export function maybeSpeakIiziFiller(input: MaybeSpeakFillerInput): {
 /** Terminal FSM states where model-initiated end_call is permitted (backend owns closure until then). */
 const IIZI_TERMINAL_STATES_ALLOW_MODEL_END_CALL: readonly IiziDeterministicState[] = [
   "CLOSED",
-  "CLOSING_END_PENDING",
   "NON_ROADSIDE_HUMAN_ROUTE",
   "UNSAFE_HUMAN_ROUTE",
   "VEHICLE_MISMATCH_HUMAN_ROUTE",
