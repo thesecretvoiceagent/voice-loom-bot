@@ -533,6 +533,25 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     const norm = normalizeIiziTranscript(event.text);
     const state = bag.currentState;
 
+    if (state === "WAITING_FOR_FORM_SUBMITTED") {
+      return {
+        actions: [{ type: "speak_exact", lineId: "form.not_received_yet" }],
+        transitionReason: "waiting_for_form",
+      };
+    }
+    if (state === "WAITING_FOR_VEHICLE_LOOKUP") {
+      return {
+        actions: [{ type: "speak_filler", lineId: "filler.processing_1", reason: "safe_transition_pause" }],
+        transitionReason: "waiting_for_vehicle_lookup",
+      };
+    }
+    if (state === "VEHICLE_MATCHED_ACTIVE" || state === "WAITING_FOR_LOCATION_CONFIRMED") {
+      return {
+        actions: [{ type: "speak_exact", lineId: "location.not_received_yet" }],
+        transitionReason: "waiting_for_location",
+      };
+    }
+
     if (state === "UNCLEAR_CLARIFY_ONCE") {
       const c = classifyIiziTranscript(event.text, bag, callId);
       logClassification(callId, c, state);
@@ -540,6 +559,10 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
         const category = c.triggerCategory ?? c.subCategory ?? "generic_roadside";
         bag.flags.incidentCategory = category;
         bag.flags.occupantCountRequired = c.occupantCountRequired;
+        console.log(
+          `[IIZI-Deterministic] roadsideStartChain=true incidentLineSpoken=true crmLineSpoken=true ` +
+            `combinedSmsRequested=true callId=${callId || "?"}`,
+        );
         return transition(
           bag,
           "ROADSIDE_CONFIRMED",
@@ -757,16 +780,19 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       `[IIZI-Deterministic] smsTemplateSelected=Registreerimisnumbri ja asukoha SMS sendSmsSuccess=${event.success} ` +
         `smsConfirmationAllowed=${event.success} line_id=${lineId} callId=${cid}`,
     );
+    console.log(`[IIZI-Deterministic] combinedSmsSuccess=${event.success} callId=${cid}`);
     if (!event.success) {
       return transition(bag, bag.currentState, "combined_sms_failed", [{ type: "speak_exact", lineId }], callId);
     }
-    return transition(
+    const t = transition(
       bag,
       "WAITING_FOR_FORM_SUBMITTED",
       "combined_sms_sent",
       [{ type: "speak_exact", lineId }],
       callId,
     );
+    console.log(`[IIZI-Deterministic] stateAfterRoadsideStart=${bag.currentState} callId=${cid}`);
+    return t;
   }
 
   if (event.type === "form_submitted") {

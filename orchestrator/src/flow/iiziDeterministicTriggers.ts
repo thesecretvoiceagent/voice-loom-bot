@@ -30,6 +30,7 @@ export const IIZI_ROADSIDE_TRIGGER_DATA: Record<IiziRoadsideCategory, LangPhrase
       "auto ei käivitu", "auto ei kaivitu", "ei käivitu", "ei kaivitu", "käima ei lähe",
       "kaima ei lahe", "auto ei lähe käima", "auto ei lahe kaima", "aku tühi", "aku tyhi",
       "aku on tühi", "aku on tyhi", "starter ei tööta", "starter ei toota", "mootor ei käivitu",
+      "käivitusabi", "kaivitusabi", "vajan käivitusabi", "vajan kaivitusabi",
       "mootor ei kaivitu",
     ],
     en: [

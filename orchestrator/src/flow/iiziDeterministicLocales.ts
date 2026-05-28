@@ -5,7 +5,7 @@ export type LocalizedLineMap = Record<string, Record<IiziLanguage, string>>;
 /** Backend-owned exact speech — Realtime must not translate. */
 export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
   "greeting.initial": {
-    et: "Tere. Kõik meie vabad agendid on hetkel hõivatud. Mina olen IIZI automaatne kõneassistent Maarika. Kõne salvestatakse. Võite rääkida eesti, vene või inglise keeles. Palun öelge lühidalt, mis juhtus.",
+    et: "Tere!  Kahjuks kõik klienditeenindajad on hetkel hõivatud ning mina olen Iizi A-I kõnerobot Jaanika. Oskan aidata ainult autoabiga seoses. Kõne salvestatakse. Rääkige Teile sobivas keeles. Kuidas saame Teile abiks olla?",
     en: "Hello. All of our agents are busy at the moment. I am Maarika, the IIZI automated call assistant. This call is being recorded. You may speak Estonian, Russian, or English. Please briefly tell me what happened.",
     ru: "Здравствуйте. Все наши операторы сейчас заняты. Я Маарика, автоматический ассистент IIZI. Разговор записывается. Вы можете говорить на эстонском, русском или английском. Кратко скажите, что произошло.",
   },
@@ -93,6 +93,11 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     et: "Sain registreerimisnumbri kätte.",
     en: "I received the registration number.",
     ru: "Я получила регистрационный номер.",
+  },
+  "form.not_received_yet": {
+    et: "Mul ei ole registreerimisnumbrit veel kätte tulnud.",
+    en: "I have not received the registration number yet.",
+    ru: "Я еще не получила регистрационный номер.",
   },
   "vehicle.match_false.handoff": {
     et: "Sain registreerimisnumbri kätte, aga ma ei leidnud selle numbriga sõidukit meie andmetest. Edastan info meie töötajale, kes võtab Teiega ühendust viie kuni kümne minuti jooksul.",

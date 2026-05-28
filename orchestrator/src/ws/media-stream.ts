@@ -1083,10 +1083,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const enqueueIiziDeterministicActions = (actions: IiziDeterministicAction[]) => {
+    const queued: string[] = [];
     for (const a of actions) {
-      if (a.type !== "none") iiziDetPendingActions.push(a);
+      if (a.type !== "none") {
+        iiziDetPendingActions.push(a);
+        queued.push(a.type === "speak_exact" ? `speak_exact:${a.lineId}` : a.type);
+      }
     }
-    void drainIiziDeterministicQueue();
+    if (queued.length > 0) {
+      console.log(`[IIZI-Deterministic] actionQueueStarted=true queuedActions=[${queued.join(",")}] callId=${callId}`);
+    }
+    void drainIiziDeterministicNextActions();
   };
 
   const runIiziBackendSms = async (
@@ -1135,11 +1142,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const processOneIiziDeterministicAction = async (action: IiziDeterministicAction): Promise<boolean> => {
+    const actionName = action.type === "speak_exact" ? `speak_exact:${action.lineId}` : action.type;
+    console.log(`[IIZI-Deterministic] actionDequeued=${actionName} callId=${callId}`);
     switch (action.type) {
       case "speak_exact":
-        return speakExactIizi(action.lineId, action.vars);
+        {
+          const spoke = speakExactIizi(action.lineId, action.vars);
+          console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=${spoke} callId=${callId}`);
+          return spoke;
+        }
       case "speak_filler":
-        return speakFillerIizi(action.lineId, action.reason);
+        {
+          const spoke = speakFillerIizi(action.lineId, action.reason);
+          console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=${spoke} callId=${callId}`);
+          return spoke;
+        }
       case "mark_occupant_required": {
         const norm = action.normalizedTranscript ?? "";
         const occ = action.category
@@ -1155,10 +1172,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               `triggerCategory=${action.category ?? "null"} callId=${callId}`,
           );
         }
+        console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
         return true;
       }
       case "send_combined_sms": {
+        console.log(`[IIZI-Deterministic] combinedSmsRequested=true callId=${callId}`);
         const r = await runIiziBackendSms(COMBINED_SMS_TEMPLATE_NAME);
+        console.log(`[IIZI-Deterministic] combinedSmsSuccess=${r.ok} callId=${callId}`);
         const turn = reduceIiziDeterministicTurn({
           callId,
           bag: iiziDetRef.current,
@@ -1169,6 +1189,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           },
         });
         enqueueIiziDeterministicActions(turn.actions);
+        console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
         return false;
       }
       case "send_callback_sms": {
@@ -1179,14 +1200,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           event: { type: "callback_sms_result", success: r.ok },
         });
         enqueueIiziDeterministicActions(turn.actions);
+        console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
         return false;
       }
       default:
+        console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
         return true;
     }
   };
 
-  const drainIiziDeterministicQueue = async () => {
+  const deterministicDrainStopReason = (): string => {
+    const s = iiziDetRef.current.currentState;
+    if (s === "WAITING_FOR_FORM_SUBMITTED") return "waiting_for_form";
+    if (s === "WAITING_FOR_VEHICLE_LOOKUP") return "waiting_for_vehicle_lookup";
+    if (s === "WAITING_FOR_LOCATION_CONFIRMED" || s === "VEHICLE_MATCHED_ACTIVE") return "waiting_for_location";
+    if (s === "OCCUPANT_COUNT_REQUIRED") return "waiting_for_occupant";
+    if (s === "ASK_CALLBACK_SAME_NUMBER" || s === "WAITING_FOR_CALLBACK_FORM") return "waiting_for_callback";
+    if (s === "CLOSED" || s === "NON_ROADSIDE_HUMAN_ROUTE" || s === "UNSAFE_HUMAN_ROUTE" || s === "VEHICLE_MISMATCH_HUMAN_ROUTE" || s === "INSURANCE_INACTIVE_HUMAN_ROUTE") return "terminal";
+    return "waiting_for_user";
+  };
+
+  const drainIiziDeterministicNextActions = async () => {
     if (iiziDetDraining || !iiziDeterministicInbound()) return;
     iiziDetDraining = true;
     try {
@@ -1195,6 +1229,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         const spoke = await processOneIiziDeterministicAction(action);
         if (spoke) break;
       }
+      console.log(`[IIZI-Deterministic] drainStoppedReason=${deterministicDrainStopReason()} callId=${callId}`);
     } finally {
       iiziDetDraining = false;
       iiziDetCriticalLineQueued = false;
@@ -1202,20 +1237,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   };
 
   const runIiziDeterministicUserTranscript = (text: string) => {
-    const filler = maybeSpeakIiziFiller({
-      bag: iiziDetRef.current,
-      reason: "transcript_processing",
-      now: Date.now(),
-      assistantSpeaking: aiIsSpeaking || Boolean(activeResponseId),
-      criticalLineQueued: iiziDetCriticalLineQueued,
-    });
-    if (filler.lineId && !activeResponseId) {
-      speakFillerIizi(filler.lineId, "transcript_processing");
-    } else if (filler.suppressedReason) {
-      console.log(
-        `[IIZI-Deterministic] fillerUsed=false fillerSuppressedReason=${filler.suppressedReason} callId=${callId}`,
-      );
-    }
     const turn = reduceIiziDeterministicTurn({
       callId,
       bag: iiziDetRef.current,
@@ -2206,7 +2227,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
     console.log(`[MediaStream] AI playback complete via ${source} (callId=${callId}, responseId=${completedResponseId})`);
     if (iiziDeterministicInbound()) {
-      void drainIiziDeterministicQueue();
+      void drainIiziDeterministicNextActions();
     }
   };
 
@@ -3690,6 +3711,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
               if (iiziDeterministicInbound()) {
                 runIiziDeterministicUserTranscript(transcriptText);
+                console.log(
+                  `[IIZI-Deterministic] skip_model_user_transcript_response=true iiziBrainNextActionControl=false callId=${callId} itemId=${transcriptItemId}`,
+                );
               }
               if (activeResponseId && !responseHasAudio && activeResponseReason !== "initial-greeting") {
                 console.warn(`[Diag-InboundTurn] new user transcript while previous response has no usable audio; resetting stale response state activeResponse=${activeResponseId} seq=${fallbackSeq} previousSeq=${activeResponseInboundTranscriptSeq} (callId=${callId})`);
