@@ -237,24 +237,55 @@ function run(): void {
     });
     assert.deepEqual(diffTurn.actions, [{ type: "send_callback_sms" }], "different -> send_callback_sms");
 
-    const bagNoise = createInitialIiziDeterministicState();
-    bagNoise.currentState = "ASK_CALLBACK_SAME_NUMBER";
-    const noiseTurn = reduceIiziDeterministicTurn({
-      callId: "cb-noise",
-      bag: bagNoise,
+    for (const text of ["Nüüd on täma.", "halloo", "ma ei saanud aru"]) {
+      const bagUnknown = createInitialIiziDeterministicState();
+      bagUnknown.currentState = "ASK_CALLBACK_SAME_NUMBER";
+      const unknownTurn = reduceIiziDeterministicTurn({
+        callId: `cb-unknown-${text.slice(0, 8)}`,
+        bag: bagUnknown,
+        event: { type: "user_transcript", text },
+      });
+      assert.deepEqual(
+        lineIds(unknownTurn.actions),
+        ["callback.ask_same_number_clarify"],
+        `unknown clarify: ${text}`,
+      );
+      assert.equal(bagUnknown.currentState, "ASK_CALLBACK_SAME_NUMBER", `unknown stays in ask: ${text}`);
+      assert.equal(unknownTurn.actions.some((a) => a.type === "send_callback_sms"), false, `no SMS: ${text}`);
+      assert.equal(lineIds(unknownTurn.actions).includes("handoff.normal_partner"), false, `no handoff: ${text}`);
+      assert.equal(bagUnknown.flags.callbackClarifyCount, 1, `clarify count 1: ${text}`);
+    }
+
+    const bagSecondUnknown = createInitialIiziDeterministicState();
+    bagSecondUnknown.currentState = "ASK_CALLBACK_SAME_NUMBER";
+    bagSecondUnknown.flags.callbackClarifyCount = 1;
+    const secondUnknown = reduceIiziDeterministicTurn({
+      callId: "cb-unknown-2",
+      bag: bagSecondUnknown,
       event: { type: "user_transcript", text: "halloo" },
     });
-    assert.deepEqual(noiseTurn.actions, [{ type: "none" }], "halloo -> no progress");
-    assert.equal(bagNoise.currentState, "ASK_CALLBACK_SAME_NUMBER", "halloo stays in ask state");
+    assert.deepEqual(
+      lineIds(secondUnknown.actions),
+      ["callback.ask_same_number_clarify"],
+      "second unknown -> clarify repeat",
+    );
+    assert.equal(bagSecondUnknown.currentState, "ASK_CALLBACK_SAME_NUMBER", "second unknown stays in ask");
+    assert.equal(bagSecondUnknown.flags.callbackClarifyCount, 2, "clarify count 2");
 
-    const bagUnclear = createInitialIiziDeterministicState();
-    bagUnclear.currentState = "ASK_CALLBACK_SAME_NUMBER";
-    const unclearTurn = reduceIiziDeterministicTurn({
-      callId: "cb-unclear",
-      bag: bagUnclear,
-      event: { type: "user_transcript", text: "ma ei kuulnud" },
+    const bagThirdUnknown = createInitialIiziDeterministicState();
+    bagThirdUnknown.currentState = "ASK_CALLBACK_SAME_NUMBER";
+    bagThirdUnknown.flags.callbackClarifyCount = 2;
+    const thirdUnknown = reduceIiziDeterministicTurn({
+      callId: "cb-unknown-3",
+      bag: bagThirdUnknown,
+      event: { type: "user_transcript", text: "mis" },
     });
-    assert.deepEqual(unclearTurn.actions, [{ type: "none" }], "ma ei kuulnud -> no progress");
+    assert.equal(
+      lineIds(thirdUnknown.actions).includes("handoff.human_followup"),
+      true,
+      "third unknown -> human handoff",
+    );
+    assert.equal(bagThirdUnknown.flags.callbackClarifyCount, 3, "clarify count 3");
   }
 
   // E: occupant ask once then parse üks

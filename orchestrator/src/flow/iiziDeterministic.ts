@@ -1136,7 +1136,28 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
           callId,
         );
       }
-      return { actions: [{ type: "none" }], transitionReason: "callback_awaiting_clear_answer" };
+
+      bag.flags.callbackClarifyCount += 1;
+      const callbackUnknownCount = bag.flags.callbackClarifyCount;
+      console.log(
+        `[IIZI-Deterministic] callbackIntent=unknown callbackClarifyQueued=true callbackUnknownCount=${callbackUnknownCount} callId=${callId || "?"}`,
+      );
+      if (callbackUnknownCount > 2) {
+        return transition(
+          bag,
+          "NON_ROADSIDE_HUMAN_ROUTE",
+          "callback_unknown_after_clarify",
+          [{ type: "speak_exact", lineId: "handoff.human_followup" }],
+          callId,
+        );
+      }
+      return transition(
+        bag,
+        "ASK_CALLBACK_SAME_NUMBER",
+        "callback_unknown_clarify",
+        [{ type: "speak_exact", lineId: "callback.ask_same_number_clarify" }],
+        callId,
+      );
     }
 
     if (state === "WAITING_FOR_ADDITIONAL_INFO_DECISION") {

@@ -154,6 +154,11 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     en: "Should we use the same number you are calling from for the callback?",
     ru: "Для обратного звонка использовать тот же номер, с которого вы звоните?",
   },
+  "callback.ask_same_number_clarify": {
+    et: "Ma ei saanud aru. Kas tagasihelistamise number on sama? Palun vastake: number on sama või soovin teist numbrit.",
+    en: "I did not understand. Is the callback number the same as the number you are calling from? Please answer: same number or I want a different number.",
+    ru: "Я не поняла. Использовать для обратного звонка тот же номер? Ответьте: тот же номер или другой номер.",
+  },
   "callback.same_number_confirmed": {
     et: "Okei, helistame tagasi samale numbrile.",
     en: "Okay, we will call you back on the same number.",
