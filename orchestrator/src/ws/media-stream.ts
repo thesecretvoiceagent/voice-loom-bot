@@ -594,8 +594,19 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let activeIiziExactSpeechLineId: string | null = null;
   let activeIiziExactSpeechDedupeKey: string | null = null;
   let iiziExactSpeechAwaitingPlayback:
-    | { lineId: string; dedupeKey: string; actionId: string; vars?: Record<string, string> }
+    | { lineId: string; dedupeKey: string; actionId: string; vars?: Record<string, string>; expectedText?: string }
     | null = null;
+  // Speech-drift guard: enforce that the realtime model speaks the scripted exact line
+  // verbatim. If it drifts (improvises, mirrors the caller, translates, hallucinates),
+  // we flush the unplayed audio and re-issue the correct line. Kill-switch via env.
+  const IIZI_SPEECH_GUARD_ENABLED =
+    (process.env.IIZI_SPEECH_GUARD || "").toLowerCase() !== "0" &&
+    (process.env.IIZI_SPEECH_GUARD || "").toLowerCase() !== "off";
+  const IIZI_SPEECH_GUARD_MAX_RETRIES = 2;
+  // Transcript captured for the currently active response (set at audio_transcript.done).
+  let activeResponseAssistantTranscript = "";
+  // Per-line drift re-issue counter, so a stubbornly drifting model cannot loop forever.
+  const iiziExactSpeechDriftRetries = new Map<string, number>();
   let trustedVehicleReadbackText: string = "";
   let trustedLocationReadbackText: string = "";
   let trustedRawLocationAddress: string = "";
@@ -1256,7 +1267,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     lineId: string,
     vars?: Record<string, string>,
     opts?: { actionId?: string; dedupeKey?: string; committedItemId?: string | null; exactText?: string | null },
-  ): { sent: boolean; blockedReason: string | null } => {
+  ): { sent: boolean; blockedReason: string | null; text?: string } => {
     let text: string | null = null;
     if (opts?.exactText && opts.exactText.trim()) {
       text = opts.exactText.trim();
@@ -1312,7 +1323,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       iiziExactSpeechActionId: opts?.actionId ?? null,
       iiziExactSpeechDedupeKey: opts?.dedupeKey ?? null,
     });
-    return { sent, blockedReason: sent ? null : lastResponseCreateBlockReason || "unknown_block" };
+    return { sent, blockedReason: sent ? null : lastResponseCreateBlockReason || "unknown_block", text };
   };
 
   const speakFillerIizi = (lineId: string, reason: IiziFillerReason): boolean => {
@@ -1501,6 +1512,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               dedupeKey,
               actionId,
               vars: action.vars,
+              expectedText: speak.text,
             };
             activeIiziExactSpeechDedupeKey = dedupeKey;
             console.log(
@@ -2453,6 +2465,51 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       .toLowerCase()
       .replace(/[^\p{L}\p{N}]+/gu, " ")
       .trim();
+
+  // Conservative check: did the model actually speak the scripted exact line, or did it
+  // drift (improvise / mirror the caller / translate / hallucinate)? We compare token
+  // multisets. The spoken transcript must contain (nearly) all the scripted words AND must
+  // not contain a meaningful amount of extra words that were not in the script. We bias
+  // toward NOT flagging (fail open) when we cannot confidently tell, so we never re-issue
+  // a line that was actually fine.
+  const detectIiziExactSpeechDrift = (
+    expected: string,
+    actual: string,
+  ): { drift: boolean; reason: string; coverage: number; extras: number } => {
+    const expTokens = normalizeTranscript(expected).split(" ").filter(Boolean);
+    const actTokens = normalizeTranscript(actual).split(" ").filter(Boolean);
+    // No transcript to verify against -> cannot judge -> do not flag.
+    if (expTokens.length === 0 || actTokens.length === 0) {
+      return { drift: false, reason: "no_transcript", coverage: 1, extras: 0 };
+    }
+    const expCounts = new Map<string, number>();
+    for (const t of expTokens) expCounts.set(t, (expCounts.get(t) || 0) + 1);
+    const actCounts = new Map<string, number>();
+    for (const t of actTokens) actCounts.set(t, (actCounts.get(t) || 0) + 1);
+    // How many scripted tokens are present in the spoken output (coverage).
+    let covered = 0;
+    for (const [tok, need] of expCounts) {
+      covered += Math.min(need, actCounts.get(tok) || 0);
+    }
+    const coverage = covered / expTokens.length;
+    // How many spoken tokens were NOT part of the script (extra/improvised words).
+    let extra = 0;
+    for (const [tok, have] of actCounts) {
+      extra += Math.max(0, have - (expCounts.get(tok) || 0));
+    }
+    const extraRatio = extra / actTokens.length;
+    // Drift if the model dropped a meaningful chunk of the script, OR padded the line
+    // with a meaningful chunk of unscripted words (the classic mirror/hallucination).
+    const missingChunk = coverage < 0.7;
+    const extraChunk = extraRatio > 0.35 && extra >= 3;
+    const drift = missingChunk || extraChunk;
+    const reason = missingChunk
+      ? `missing_script_words coverage=${coverage.toFixed(2)}`
+      : extraChunk
+        ? `extra_words extraRatio=${extraRatio.toFixed(2)} extra=${extra}`
+        : "match";
+    return { drift, reason, coverage, extras: extra };
+  };
 
   const startInboundAudioCooldown = (ms: number, reason: string) => {
     inboundAudioCooldownUntil = Math.max(inboundAudioCooldownUntil, Date.now() + ms);
@@ -3990,6 +4047,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             clearPendingUserResponseTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
+            activeResponseAssistantTranscript = "";
             if (lastCommittedUserItemId) {
               responseCreateSentForItemIds.add(lastCommittedUserItemId);
             }
@@ -4203,6 +4261,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.warn(`[Diag] OpenAI beta transcript event type=${event.type} — GA expects response.output_audio_transcript.done (callId=${callId})`);
             }
             const assistantTranscript = (event.transcript || "").toString();
+            activeResponseAssistantTranscript = assistantTranscript;
             console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
             transcriptLines.push(`[Agent]: ${assistantTranscript}`);
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
@@ -5613,6 +5672,43 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 failIiziExactSpeechPlayback("max_output_tokens_cut", finishReason, outputTokens);
               } else if (!hasUsableAudio) {
                 failIiziExactSpeechPlayback("no_audio");
+              } else if (
+                IIZI_SPEECH_GUARD_ENABLED &&
+                iiziExactSpeechAwaitingPlayback?.expectedText &&
+                (() => {
+                  const lineId = iiziExactSpeechAwaitingPlayback!.lineId;
+                  const expected = iiziExactSpeechAwaitingPlayback!.expectedText!;
+                  const verdict = detectIiziExactSpeechDrift(expected, activeResponseAssistantTranscript);
+                  if (!verdict.drift) {
+                    iiziExactSpeechDriftRetries.delete(lineId);
+                    return false;
+                  }
+                  const attempts = iiziExactSpeechDriftRetries.get(lineId) || 0;
+                  if (attempts >= IIZI_SPEECH_GUARD_MAX_RETRIES) {
+                    console.warn(
+                      `[IIZI-SpeechGuard] driftDetected=true lineId=${lineId} reason=${verdict.reason} ` +
+                        `attempts=${attempts} action=give_up (max retries reached, accepting output) callId=${callId}`,
+                    );
+                    iiziExactSpeechDriftRetries.delete(lineId);
+                    return false;
+                  }
+                  iiziExactSpeechDriftRetries.set(lineId, attempts + 1);
+                  console.warn(
+                    `[IIZI-SpeechGuard] driftDetected=true lineId=${lineId} reason=${verdict.reason} ` +
+                      `attempt=${attempts + 1}/${IIZI_SPEECH_GUARD_MAX_RETRIES} ` +
+                      `expected="${expected.slice(0, 120)}" actual="${activeResponseAssistantTranscript.slice(0, 120)}" ` +
+                      `action=flush_and_reissue callId=${callId}`,
+                  );
+                  // Flush any unplayed (drifted) audio still buffered on Twilio's side.
+                  if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+                    aiIsSpeaking = false;
+                    twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+                  }
+                  return true;
+                })()
+              ) {
+                // Drift confirmed and within retry budget: re-issue the scripted line.
+                failIiziExactSpeechPlayback("output_drift");
               } else {
                 confirmIiziExactSpeechPlayback();
               }

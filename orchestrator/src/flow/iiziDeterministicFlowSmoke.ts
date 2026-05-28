@@ -12,7 +12,7 @@ import {
 import { resolveIiziLocalizedLine } from "./iiziDeterministicConfig.js";
 
 const CALLBACK_DIFFERENT_NUMBER_SMS_SENT_ET =
-  "Saatsin Teile SMS-i tagasihelistamise numbri sisestamiseks. Palun avage link ja sisestage sinna sobiv tagasihelistamise number.";
+  "Saatsin Teile uue SMS-i, kuhu saate sisestada oma tagasihelistamise numbri. Palun avage sõnum, sisestage oma tagasihelistamise number ja vajutage Kinnita.";
 
 const CALLBACK_VERBAL_ASK_LINE_IDS = new Set([
   "callback.ask_same_number",
