@@ -167,7 +167,12 @@ function run(): void {
       bag: bagJaa,
       event: { type: "user_transcript", text: "Jaa" },
     });
-    assert.equal(lineIds(jaaTurn.actions).includes("callback.same_number_confirmed"), true, "Jaa confirms same");
+    const jaaLines = lineIds(jaaTurn.actions);
+    assert.equal(jaaLines.includes("callback.same_number_confirmed"), true, "Jaa confirms same");
+    assert.equal(jaaLines.includes("handoff.normal_partner"), true, "Jaa handoff");
+    assert.equal(jaaLines.includes("closing.ask_additional_info"), true, "Jaa closing ask");
+    assert.equal(jaaLines.includes("closing.anything_else"), false, "Jaa no anything_else");
+    assert.equal(bagJaa.currentState, "WAITING_FOR_ADDITIONAL_INFO_DECISION", "Jaa closing state");
     assert.equal(jaaTurn.actions.some((a) => a.type === "send_callback_sms"), false, "Jaa no callback SMS");
   }
 
@@ -255,7 +260,85 @@ function run(): void {
     assert.equal(lineIds(unclear2.actions).includes("occupants.ask"), false, "F no more occupant ask");
   }
 
-  console.log("[iizi-deterministic-flow-smoke] OK (0601116 SMS-help + callback A-E)");
+  // Closing FSM after handoff
+  {
+    const bagClose = createInitialIiziDeterministicState();
+    bagClose.currentState = "WAITING_FOR_ADDITIONAL_INFO_DECISION";
+    bagClose.flags.handoffSpoken = true;
+
+    const declineEi = reduceIiziDeterministicTurn({
+      callId: "close-ei",
+      bag: bagClose,
+      event: { type: "user_transcript", text: "ei" },
+    });
+    assert.deepEqual(lineIds(declineEi.actions), ["closing.additional_info_declined"], "ei -> declined");
+    assert.equal(bagClose.currentState, "CLOSING_END_PENDING", "ei -> end pending");
+    assert.equal(bagClose.flags.pendingEndCallAfterLine, "closing.additional_info_declined", "ei pending end");
+
+    const bagDeclineLong = createInitialIiziDeterministicState();
+    bagDeclineLong.currentState = "WAITING_FOR_ADDITIONAL_INFO_DECISION";
+    const declineLong = reduceIiziDeterministicTurn({
+      callId: "close-decline",
+      bag: bagDeclineLong,
+      event: { type: "user_transcript", text: "ei soovi midagi lisada" },
+    });
+    assert.deepEqual(
+      lineIds(declineLong.actions),
+      ["closing.additional_info_declined"],
+      "ei soovi midagi lisada -> declined",
+    );
+    assert.equal(bagDeclineLong.currentState, "CLOSING_END_PENDING", "decline long -> end pending");
+
+    const bagYesContent = createInitialIiziDeterministicState();
+    bagYesContent.currentState = "WAITING_FOR_ADDITIONAL_INFO_DECISION";
+    const yesContent = reduceIiziDeterministicTurn({
+      callId: "close-yes-content",
+      bag: bagYesContent,
+      event: { type: "user_transcript", text: "jah, lisage et ma olen maja ees" },
+    });
+    assert.deepEqual(
+      lineIds(yesContent.actions),
+      ["closing.additional_info_acknowledged"],
+      "jah with content -> acknowledged",
+    );
+    assert.equal(bagYesContent.currentState, "CLOSING_END_PENDING", "yes content -> end pending");
+    assert.ok(bagYesContent.flags.additionalInfoNote.length > 0, "yes content note stored");
+
+    const bagYesOnly = createInitialIiziDeterministicState();
+    bagYesOnly.currentState = "WAITING_FOR_ADDITIONAL_INFO_DECISION";
+    const yesOnly = reduceIiziDeterministicTurn({
+      callId: "close-yes-only",
+      bag: bagYesOnly,
+      event: { type: "user_transcript", text: "jah" },
+    });
+    assert.deepEqual(lineIds(yesOnly.actions), ["closing.ask_what_to_add"], "jah only -> ask what");
+    assert.equal(bagYesOnly.currentState, "WAITING_FOR_ADDITIONAL_INFO_TEXT", "jah only -> wait text");
+    const followUp = reduceIiziDeterministicTurn({
+      callId: "close-yes-only",
+      bag: bagYesOnly,
+      event: { type: "user_transcript", text: "ma olen maja ees" },
+    });
+    assert.deepEqual(
+      lineIds(followUp.actions),
+      ["closing.additional_info_acknowledged"],
+      "follow-up content -> acknowledged",
+    );
+    assert.equal(bagYesOnly.currentState, "CLOSING_END_PENDING", "follow-up -> end pending");
+
+    const bagJaaClose = createInitialIiziDeterministicState();
+    bagJaaClose.currentState = "ASK_CALLBACK_SAME_NUMBER";
+    const jaaClose = reduceIiziDeterministicTurn({
+      callId: "close-cb",
+      bag: bagJaaClose,
+      event: { type: "user_transcript", text: "Jaa" },
+    });
+    const jaaCloseLines = lineIds(jaaClose.actions);
+    assert.equal(jaaCloseLines.includes("handoff.normal_partner"), true, "callback Jaa handoff");
+    assert.equal(jaaCloseLines.includes("closing.ask_additional_info"), true, "callback Jaa closing ask");
+    assert.equal(jaaCloseLines.includes("closing.anything_else"), false, "normal path no anything_else");
+  }
+
+  console.log("[iizi-deterministic-flow-smoke] OK (SMS-help + callback + closing)");
 }
 
 run();
