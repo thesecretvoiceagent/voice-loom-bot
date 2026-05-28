@@ -583,6 +583,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     | null = null;
   let pendingIiziExactSpeechRetryTimer: ReturnType<typeof setTimeout> | null = null;
   const iiziExactSpeechSentKeys = new Set<string>();
+  let pendingIiziExactSpeechLineIdForCreate: string | null = null;
+  let activeIiziExactSpeechLineId: string | null = null;
+  let trustedVehicleReadbackText: string = "";
+  let trustedLocationReadbackText: string = "";
+  let trustedRawLocationAddress: string = "";
+  let trustedVehicleFields: Record<string, string> = {};
 
   const touchIiziBrainLog = (reason: string) => {
     if (!useCombinedRegLocationSms || callDirection !== "inbound") return;
@@ -1075,13 +1081,76 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const allowedIiziResponseReason = (reason: string): boolean =>
     reason === "initial-greeting" || reason === "iizi-exact-speech" || reason === "iizi-filler";
 
+  const normalizeTrustedLocationAddress = (raw: string): string => {
+    const parts = raw
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const withoutPostcode = parts.filter((p) => !/^\d{5}$/.test(p));
+    const street = withoutPostcode.find((p) => /\d/.test(p) && /[A-Za-zÀ-ž]/.test(p)) || "";
+    const city = withoutPostcode.find((p) => /tallinn/i.test(p)) || withoutPostcode[withoutPostcode.length - 2] || "";
+    const county = withoutPostcode.find((p) => /maakond/i.test(p)) || "";
+    const merged = [street, city, county].filter(Boolean);
+    return merged.length > 0 ? merged.join(", ") : withoutPostcode.join(", ");
+  };
+
+  const buildTrustedVehicleReadbackText = (): string => {
+    const make = (trustedVehicleFields.make || "").trim();
+    const model = (trustedVehicleFields.model || "").trim();
+    const year = (trustedVehicleFields.year || "").trim();
+    const insurer = (trustedVehicleFields.insurer || "").trim();
+    const coverType = (trustedVehicleFields.cover_type || "").trim();
+    const coverStatus = (trustedVehicleFields.cover_status || "").trim().toLowerCase();
+    const vehicleCore = [make, model, year].filter(Boolean).join(" ").trim();
+    const core = vehicleCore
+      ? `Sain teie andmed kätte. Auto on ${vehicleCore}. Kindlustus on aktiivne.`
+      : "Sain teie andmed kätte. Kindlustus on aktiivne.";
+    const optional: string[] = [];
+    if (insurer) optional.push(`Kindlustusandja on ${insurer}.`);
+    if (coverType) optional.push(`Kaitse liik on ${coverType}.`);
+    const text = `${core}${optional.length > 0 ? ` ${optional.join(" ")}` : ""}`.trim();
+    console.log(
+      `[IIZI-Deterministic] trustedVehicleReadbackBuilt=true vehicleReadbackText="${text}" ` +
+        `vehicleReadbackFields=${JSON.stringify({
+          make,
+          model,
+          year,
+          insurer,
+          cover_type: coverType,
+          cover_status: coverStatus,
+        })} vehicleReadbackUsesTrustedLookup=true vehicleReadbackUsedFallback=false callId=${callId}`,
+    );
+    return text;
+  };
+
+  const buildTrustedLocationReadbackText = (): string => {
+    const normalized = normalizeTrustedLocationAddress(trustedRawLocationAddress || "");
+    const text = `Asukoht on ${normalized}.`;
+    console.log(
+      `[IIZI-Deterministic] trustedLocationReadbackBuilt=true locationReadbackText="${text}" ` +
+        `locationReadbackUsesTrustedEvent=true locationReadbackUsedFallback=false rawTrustedAddress="${trustedRawLocationAddress}" callId=${callId}`,
+    );
+    return text;
+  };
+
   const speakExactIizi = (
     lineId: string,
     vars?: Record<string, string>,
-    opts?: { actionId?: string; dedupeKey?: string; committedItemId?: string | null },
+    opts?: { actionId?: string; dedupeKey?: string; committedItemId?: string | null; exactText?: string | null },
   ): { sent: boolean; blockedReason: string | null } => {
     const lang = iiziDetRef.current.iiziLanguage;
-    const text = resolveIiziLocalizedLine(lineId, lang, vars, callId);
+    let text: string | null = null;
+    if (opts?.exactText && opts.exactText.trim()) {
+      text = opts.exactText.trim();
+    } else if (lineId === "sms.combined.sent_success") {
+      text = "Saatsin Teile SMS-i. Avage link, sisestage auto registreerimismärk, kinnitage asukoht ja vajutage Kinnita.";
+    } else if (lineId === "vehicle.match_active.readback") {
+      text = trustedVehicleReadbackText || buildTrustedVehicleReadbackText();
+    } else if (lineId === "location.received.readback") {
+      text = trustedLocationReadbackText || buildTrustedLocationReadbackText();
+    } else {
+      text = resolveIiziLocalizedLine(lineId, lang, vars, callId);
+    }
     if (!text) {
       console.warn(`[IIZI-Deterministic] unknown line_id=${lineId} callId=${callId}`);
       return { sent: false, blockedReason: "unknown_line_id" };
@@ -1184,6 +1253,23 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     switch (action.type) {
       case "speak_exact":
         {
+          if (action.lineId === "callback.ask_same_number") {
+            const callbackBlockReasons: string[] = [];
+            if (iiziDetRef.current.flags.vehicleMatch !== true || iiziDetRef.current.flags.coverActive !== true) {
+              callbackBlockReasons.push("vehicle_not_ready");
+            }
+            if (!iiziDetVehicleReadbackSpoken) callbackBlockReasons.push("vehicle_readback_not_spoken");
+            if (!iiziDetRef.current.flags.locationConfirmed) callbackBlockReasons.push("location_not_ready");
+            if (!iiziDetLocationReadbackSpoken) callbackBlockReasons.push("location_readback_not_spoken");
+            if (callbackBlockReasons.length > 0) {
+              console.log(
+                `[IIZI-Deterministic] callbackBlockedReason=${callbackBlockReasons.join("|")} callId=${callId}`,
+              );
+              iiziDetPendingActions.unshift(action);
+              return { shouldPause: true, queuePauseReason: "blocked_waiting_for_safe_speech" };
+            }
+            console.log(`[IIZI-Deterministic] callbackAskQueued=true callId=${callId}`);
+          }
           if (action.lineId === "occupants.ask") {
             const waitingReasons: string[] = [];
             if (!iiziDetRef.current.flags.combinedSmsSuccess) waitingReasons.push("waiting_for_sms");
@@ -1209,24 +1295,39 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               return { shouldPause: false };
             }
           }
+          let lineIdToSpeak = action.lineId;
+          let exactTextOverride: string | null = null;
+          if (
+            action.lineId === "vehicle.match_active.readback" &&
+            iiziDetRef.current.flags.locationConfirmed &&
+            trustedLocationReadbackText
+          ) {
+            lineIdToSpeak = "vehicle.match_active.readback";
+            exactTextOverride = `${buildTrustedVehicleReadbackText().replace(/\.$/, "")}. ${trustedLocationReadbackText}`;
+            iiziDetLocationReadbackSpoken = true;
+            if (iiziDetPendingActions[0]?.type === "speak_exact" && iiziDetPendingActions[0].lineId === "location.received.readback") {
+              iiziDetPendingActions.shift();
+            }
+          }
           const actionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           const dedupeItemId = lastCommittedUserItemId || "no_item";
-          const dedupeKey = `${actionId}:${action.lineId}:${dedupeItemId}`;
-          const speak = speakExactIizi(action.lineId, action.vars, {
+          const dedupeKey = `${actionId}:${lineIdToSpeak}:${dedupeItemId}`;
+          const speak = speakExactIizi(lineIdToSpeak, action.vars, {
             actionId,
             dedupeKey,
             committedItemId: lastCommittedUserItemId,
+            exactText: exactTextOverride,
           });
           if (!speak.sent) {
             const blockedReason = speak.blockedReason || "unknown_block";
-            pendingIiziExactSpeech = { lineId: action.lineId, vars: action.vars, actionId, blockedReason };
+            pendingIiziExactSpeech = { lineId: lineIdToSpeak, vars: action.vars, actionId, blockedReason };
             iiziDetPendingActions.unshift(action);
             console.log(
-              `[IIZI-Deterministic] iiziExactSpeechBlocked=true blockedLineId=${action.lineId} ` +
+              `[IIZI-Deterministic] iiziExactSpeechBlocked=true blockedLineId=${lineIdToSpeak} ` +
                 `blockedReason=${blockedReason} actionCompleted=false actionRequeued=true callId=${callId}`,
             );
             console.log(
-              `[IIZI-Deterministic] pendingIiziExactSpeechSet=true actionId=${actionId} lineId=${action.lineId} ` +
+              `[IIZI-Deterministic] pendingIiziExactSpeechSet=true actionId=${actionId} lineId=${lineIdToSpeak} ` +
                 `blockedReason=${blockedReason} callId=${callId}`,
             );
             if (blockedReason === "post_playback_cooldown") {
@@ -1238,11 +1339,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             return { shouldPause: true, queuePauseReason: "blocked_waiting_for_safe_speech" };
           }
-          if (speak.sent && action.lineId === "vehicle.match_active.readback") iiziDetVehicleReadbackSpoken = true;
-          if (speak.sent && action.lineId === "location.received.readback") iiziDetLocationReadbackSpoken = true;
-          if (speak.sent && action.lineId === "sms.combined.sent_success") {
-            console.log(`[IIZI-Deterministic] smsSuccessLineSpoken=true callId=${callId}`);
-          }
+          if (speak.sent && lineIdToSpeak === "vehicle.match_active.readback") iiziDetVehicleReadbackSpoken = true;
+          if (speak.sent && lineIdToSpeak === "location.received.readback") iiziDetLocationReadbackSpoken = true;
           if (pendingIiziExactSpeech && pendingIiziExactSpeech.lineId === action.lineId) {
             console.log(
               `[IIZI-Deterministic] pendingIiziExactSpeechSent=true actionId=${pendingIiziExactSpeech.actionId} ` +
@@ -2086,6 +2184,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     responseCreateSentCount += 1;
     if (reason !== "initial-greeting") userResponseCreateSentCount += 1;
     lastResponseCreateReason = reason;
+    pendingIiziExactSpeechLineIdForCreate =
+      iiziDeterministicInbound() && reason === "iizi-exact-speech"
+        ? (iiziExactSpeechLineId || null)
+        : null;
     if (committedItemId && reason !== "iizi-exact-speech") {
       responseCreateSentForItemIds.add(committedItemId);
       const turn = pendingCommittedUserTurns.get(committedItemId);
@@ -2351,6 +2453,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const resetResponseState = () => {
     activeResponseId = null;
+    activeIiziExactSpeechLineId = null;
     responsePlaybackMarkName = null;
     responseHasAudio = false;
     responseAudioDone = false;
@@ -3000,6 +3103,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   row.location_confirmed === true && prev?.location_confirmed !== true;
                 if (justLocationConfirmed) {
                   const addr = (row.location_address || "").toString().slice(0, 300);
+                  trustedRawLocationAddress = addr;
+                  trustedLocationReadbackText = buildTrustedLocationReadbackText();
                   console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
                   if (useCombinedRegLocationSms) {
                     console.log(`[IIZI-CombinedSMS] location confirmed callId=${callId}`);
@@ -3118,6 +3223,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     const lookup = await strictLookupVehicleBySubmittedReg(reg);
                     if (lookup.match) {
                         const v = lookup.vehicle as Record<string, unknown>;
+                        trustedVehicleFields = {
+                          make: String(v.make || "").trim(),
+                          model: String(v.model || "").trim(),
+                          year: String(v.year_of_built || "").trim(),
+                          insurer: String(v.insurer || "").trim(),
+                          cover_type: String(v.cover_type || "").trim(),
+                          cover_status: String(lookup.cover_status || "").trim(),
+                        };
+                        trustedVehicleReadbackText = buildTrustedVehicleReadbackText();
                         const vehicleEvent =
                           `[SYSTEM EVENT: vehicle_lookup_result] ` +
                           `match=true submitted_reg="${lookup.submitted_reg}" reg_no="${String(v.reg_no || "")}" ` +
@@ -3723,6 +3837,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               resolvedResponseReason = "inbound-auto-vad";
             }
             activeResponseReason = resolvedResponseReason;
+            activeIiziExactSpeechLineId =
+              resolvedResponseReason === "iizi-exact-speech" ? pendingIiziExactSpeechLineIdForCreate : null;
+            pendingIiziExactSpeechLineIdForCreate = null;
             const runtimeUnexpectedAuto =
               runtimeOwnsPostGreetingResponses() &&
               (resolvedResponseReason === "(none)" ||
@@ -5292,6 +5409,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(
               `[Diag] response.done #${responseDoneCount} responseId=${responseId} finish=${finishReason} output_tokens=${outputTokens} hasAudio=${responseHasAudio} audioDeltas=${assistantAudioDeltaCount} (callId=${callId})`
             );
+            if (activeResponseReason === "iizi-exact-speech" && activeIiziExactSpeechLineId === "sms.combined.sent_success") {
+              if (finishReason === "max_output_tokens") {
+                console.log(`[IIZI-Deterministic] smsSuccessLineCut=true callId=${callId}`);
+              } else {
+                console.log(`[IIZI-Deterministic] smsSuccessLineSpoken=true callId=${callId}`);
+              }
+            }
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
               console.log(`[Diag-InboundTurn] response.done responseId=${responseId} seq=${activeResponseInboundTranscriptSeq} hasAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} twilioBytes=${activeResponseTwilioBytes} finish=${finishReason} output_tokens=${outputTokens} (callId=${callId})`);
               if (activeResponseTwilioChunks === 0) {
