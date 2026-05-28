@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  buildCallbackDifferentNumberHygiene,
   classifyCallbackSameNumberIntent,
   createInitialIiziDeterministicState,
   isCallbackDifferentNumberRequest,
@@ -10,6 +11,7 @@ import {
   type IiziDeterministicAction,
 } from "./iiziDeterministic.js";
 import { resolveIiziLocalizedLine } from "./iiziDeterministicConfig.js";
+import { normalizeIiziTranscript } from "./iiziDeterministicNormalize.js";
 
 const CALLBACK_DIFFERENT_NUMBER_SMS_SENT_ET =
   "Saatsin Teile SMS-i tagasihelistamise numbri sisestamiseks. Palun avage link ja sisestage sinna sobiv tagasihelistamise number.";
@@ -43,6 +45,13 @@ function assertDifferentNumberSmsOnlyFlow(
   assert.deepEqual(askTurn.actions, [{ type: "send_callback_sms" }], `${callId}: different -> SMS only`);
   assert.equal(bag.currentState, "SEND_CALLBACK_SMS", `${callId}: SEND_CALLBACK_SMS`);
   assertNoVerbalCallbackAskLines(askTurn.actions, callId);
+  assert.equal(askTurn.actions.some((a) => a.type === "speak_filler"), false, `${callId}: no filler before SMS`);
+  assert.equal(askTurn.actions.some((a) => a.type === "speak_exact"), false, `${callId}: no speak_exact before SMS`);
+  assert.deepEqual(
+    askTurn.callbackDifferentNumberHygiene,
+    buildCallbackDifferentNumberHygiene(),
+    `${callId}: hygiene metadata`,
+  );
   assert.equal(lineIds(askTurn.actions).includes("handoff.normal_partner"), false, `${callId}: no handoff`);
 
   const smsTurn = reduceIiziDeterministicTurn({
@@ -71,7 +80,6 @@ function assertDifferentNumberSmsOnlyFlow(
   assert.deepEqual(duringForm.actions, [{ type: "none" }], `${callId}: ignore transcript while waiting form`);
   assertNoVerbalCallbackAskLines(duringForm.actions, callId);
 }
-import { normalizeIiziTranscript } from "./iiziDeterministicNormalize.js";
 
 function lineIds(actions: IiziDeterministicAction[]): string[] {
   return actions
@@ -303,6 +311,11 @@ function run(): void {
       createInitialIiziDeterministicState(),
       "number pole sama",
       "cb-diff-pole",
+    );
+    assertDifferentNumberSmsOnlyFlow(
+      createInitialIiziDeterministicState(),
+      "ei, number pole sama",
+      "cb-diff-ei-pole",
     );
 
     for (const text of ["Nüüd on täma.", "halloo", "ma ei saanud aru"]) {

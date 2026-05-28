@@ -597,6 +597,24 @@ const FORM_WAITING_HELP_PATTERNS = [
   "was muss ich tun",
 ];
 
+/** Lines that ask the caller to answer same/different — must not play before callback SMS. */
+export const CALLBACK_VERBAL_PROMPT_LINE_IDS = [
+  "callback.ask_same_number",
+  "callback.ask_same_number_clarify",
+] as const;
+
+export interface CallbackDifferentNumberHygiene {
+  suppressQueuedSpeakExactLineIds: readonly string[];
+  prioritizeSendCallbackSms: boolean;
+}
+
+export function buildCallbackDifferentNumberHygiene(): CallbackDifferentNumberHygiene {
+  return {
+    suppressQueuedSpeakExactLineIds: CALLBACK_VERBAL_PROMPT_LINE_IDS,
+    prioritizeSendCallbackSms: true,
+  };
+}
+
 export type IiziCallbackSameNumberIntent = "same_number" | "different_number" | "unknown";
 
 export interface IiziCallbackIntentClassification {
@@ -911,6 +929,7 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
   transitionReason: string;
   lineId?: string;
   remainingModelOwnedDecision?: string;
+  callbackDifferentNumberHygiene?: CallbackDifferentNumberHygiene;
 } {
   const { bag, event, callId } = input;
   const actions: IiziDeterministicAction[] = [];
@@ -1132,15 +1151,19 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       if (different) {
         bag.flags.callbackSameNumber = false;
         console.log(
-          `[IIZI-Deterministic] callbackSmsRequested=true callbackDifferentNumberSmsOnly=true callId=${callId || "?"}`,
+          `[IIZI-Deterministic] callbackSmsRequested=true callbackDifferentNumberSmsOnly=true ` +
+            `callbackDifferentNumberNoPreamble=true callId=${callId || "?"}`,
         );
-        return transition(
-          bag,
-          "SEND_CALLBACK_SMS",
-          "callback_different_number",
-          [{ type: "send_callback_sms" }],
-          callId,
-        );
+        return {
+          ...transition(
+            bag,
+            "SEND_CALLBACK_SMS",
+            "callback_different_number",
+            [{ type: "send_callback_sms" }],
+            callId,
+          ),
+          callbackDifferentNumberHygiene: buildCallbackDifferentNumberHygiene(),
+        };
       }
 
       bag.flags.callbackClarifyCount += 1;
