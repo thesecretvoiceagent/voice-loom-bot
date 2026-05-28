@@ -46,6 +46,8 @@ import {
   reduceIiziDeterministicTurn,
   resolveIiziExactLine,
   resolveIiziLocalizedLine,
+  resolveIiziDeterministicExactLine,
+  IIZI_GENERIC_ROADSIDE_INCIDENT_ET,
   computeOccupantRequirement,
   resolveIiziFillerLine,
   maybeSpeakIiziFiller,
@@ -986,6 +988,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     incidentNeedsOccupantCount && occupantCountStatus !== "confirmed";
 
   const emitOccupantCountRequiredSystemEvent = (source: string) => {
+    if (iiziDeterministicInbound()) {
+      console.log(
+        `[IIZI-Occupants] skip model occupant prompt backend_owns_occupant_ask=true source=${source} callId=${callId}`,
+      );
+      return;
+    }
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
     if (
       useCombinedRegLocationSms &&
@@ -1249,7 +1257,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     vars?: Record<string, string>,
     opts?: { actionId?: string; dedupeKey?: string; committedItemId?: string | null; exactText?: string | null },
   ): { sent: boolean; blockedReason: string | null } => {
-    const lang = iiziDetRef.current.iiziLanguage;
     let text: string | null = null;
     if (opts?.exactText && opts.exactText.trim()) {
       text = opts.exactText.trim();
@@ -1269,8 +1276,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         );
         return { sent: false, blockedReason: "duplicate_location_readback" };
       }
+    } else if (lineId === "incident.generic_roadside") {
+      text = IIZI_GENERIC_ROADSIDE_INCIDENT_ET;
     } else {
-      text = resolveIiziLocalizedLine(lineId, lang, vars, callId);
+      text = resolveIiziDeterministicExactLine(
+        lineId,
+        iiziDetRef.current.flags.explicitCallerLanguage,
+        vars,
+        callId,
+      );
     }
     if (!text) {
       console.warn(`[IIZI-Deterministic] unknown line_id=${lineId} callId=${callId}`);
@@ -1395,6 +1409,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             console.log(`[IIZI-Deterministic] callbackAskQueued=true callId=${callId}`);
           }
           if (action.lineId === "occupants.ask") {
+            if (iiziDetRef.current.flags.occupantQuestionAsked && !iiziDetRef.current.flags.occupantCountConfirmed) {
+              console.log(
+                `[IIZI-Deterministic] occupantAskSuppressedAlreadyAsked=true callId=${callId}`,
+              );
+              console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
+              return { shouldPause: false };
+            }
             const waitingReasons: string[] = [];
             if (!iiziDetRef.current.flags.combinedSmsSuccess) waitingReasons.push("waiting_for_sms");
             if (!iiziDetRef.current.flags.formSubmitted) waitingReasons.push("waiting_for_form");
@@ -1467,6 +1488,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             return { shouldPause: true, queuePauseReason: "blocked_waiting_for_safe_speech" };
           }
           if (speak.sent) {
+            if (lineIdToSpeak === "occupants.ask") {
+              iiziDetRef.current.flags.occupantQuestionAsked = true;
+              console.log(`[IIZI-Deterministic] occupantAskQueued=true callId=${callId}`);
+            }
             iiziExactSpeechAwaitingPlayback = {
               lineId: lineIdToSpeak,
               dedupeKey,
@@ -1550,7 +1575,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (s === "WAITING_FOR_FORM_SUBMITTED") return "waiting_for_form";
     if (s === "WAITING_FOR_VEHICLE_LOOKUP") return "waiting_for_vehicle_lookup";
     if (s === "WAITING_FOR_LOCATION_CONFIRMED" || s === "VEHICLE_MATCHED_ACTIVE") return "waiting_for_location";
-    if (s === "OCCUPANT_COUNT_REQUIRED") return "waiting_for_occupant";
+    if (s === "OCCUPANT_COUNT_REQUIRED" || s === "WAITING_FOR_OCCUPANT_COUNT") return "waiting_for_occupant";
     if (s === "ASK_CALLBACK_SAME_NUMBER" || s === "WAITING_FOR_CALLBACK_FORM") return "waiting_for_callback";
     if (s === "CLOSED" || s === "NON_ROADSIDE_HUMAN_ROUTE" || s === "UNSAFE_HUMAN_ROUTE" || s === "VEHICLE_MISMATCH_HUMAN_ROUTE" || s === "INSURANCE_INACTIVE_HUMAN_ROUTE") return "terminal";
     return "waiting_for_user";
@@ -3072,7 +3097,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     iiziDeterministicMode = detGuard.active;
     logIiziDeterministicGuard(callId, detGuard);
     if (iiziDeterministicInbound()) {
-      const exactGreeting = resolveIiziLocalizedLine("greeting.initial", iiziDetRef.current.iiziLanguage, undefined, callId);
+      const exactGreeting = resolveIiziDeterministicExactLine(
+        "greeting.initial",
+        iiziDetRef.current.flags.explicitCallerLanguage,
+        undefined,
+        callId,
+      );
       if (exactGreeting) greeting = exactGreeting;
       instructions = IIZI_MINIMAL_REALTIME_PROMPT;
       reduceIiziDeterministicTurn({

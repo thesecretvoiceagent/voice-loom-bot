@@ -100,7 +100,7 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     ru: "Я еще не получила регистрационный номер.",
   },
   "form.waiting_sms_help": {
-    et: "Mul ei ole Teie andmeid veel kätte saanud. Saatsin Teile SMS-i. Palun vajutage lingile, kerige alla, sisestage auto registreerimismärk, kinnitage asukoht ja vajutage Kinnita.",
+    et: "Mul ei ole Teie andmeid veel kätte tulnud. Saatsin Teile SMS-i. Palun avage sõnumite rakendus, vajutage lingile, kerige alla, sisestage auto registreerimismärk, kinnitage asukoht ja vajutage Kinnita.",
     en: "I do not have your details yet. I sent you an SMS. Please tap the link, scroll down, enter your registration number, confirm your location, and press Confirm.",
     ru: "У меня пока нет ваших данных. Я отправила вам SMS. Пожалуйста, откройте ссылку, прокрутите вниз, введите регистрационный номер, подтвердите местоположение и нажмите Подтвердить.",
   },
@@ -160,7 +160,7 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     ru: "Хорошо, мы перезвоним на этот же номер.",
   },
   "callback.different_number_sms_sent": {
-    et: "Saatsin Teile SMS-i tagasihelistamise numbri sisestamiseks. Palun avage link ja sisestage number, millele soovite tagasihelistamist.",
+    et: "Saatsin Teile SMS-i, kuhu saate sisestada tagasihelistamise numbri. Palun avage oma sõnumite rakendus, vajutage lingile ning sisestage tagasihelistamise number.",
     en: "I sent you an SMS to enter your callback number. Please open the link and enter the number you want us to call back.",
     ru: "Я отправила вам SMS для ввода номера обратного звонка. Пожалуйста, откройте ссылку и введите номер, на который вы хотите получить звонок.",
   },

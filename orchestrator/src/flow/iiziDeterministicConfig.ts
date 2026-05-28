@@ -178,6 +178,23 @@ export function resolveIiziLocalizedLine(
   return text.replace(/\{(\w+)\}/g, (_, key: string) => vars[key] ?? "");
 }
 
+/** Exact deterministic speech: ET registry unless caller explicitly switched language (ru/en). */
+export function resolveIiziDeterministicExactLine(
+  lineId: string,
+  explicitCallerLanguage: IiziLanguage | null | undefined,
+  vars?: Record<string, string>,
+  callId?: string | null,
+): string | null {
+  const lang: IiziLanguage = explicitCallerLanguage ?? "et";
+  console.log(
+    `[IIZI-Deterministic] deterministicLanguageForced=${lang} line_id=${lineId} callId=${callId ?? "?"}`,
+  );
+  return resolveIiziLocalizedLine(lineId, lang, vars, callId);
+}
+
+export const IIZI_GENERIC_ROADSIDE_INCIDENT_ET =
+  "Sain aru, et vajate autoabi." as const;
+
 /** Backward-compatible: Estonian only */
 export function resolveIiziExactLine(lineId: string, vars?: Record<string, string>): string | null {
   return resolveIiziLocalizedLine(lineId, "et", vars);

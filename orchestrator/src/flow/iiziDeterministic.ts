@@ -13,12 +13,16 @@ import {
   computeOccupantRequirement,
   incidentLineId,
   resolveIiziLocalizedLine,
+  resolveIiziDeterministicExactLine,
+  IIZI_GENERIC_ROADSIDE_INCIDENT_ET,
   type IiziFillerReason,
 } from "./iiziDeterministicConfig.js";
 export type { IiziFillerReason } from "./iiziDeterministicConfig.js";
 export {
   normalizeIiziTranscript,
   resolveIiziLocalizedLine,
+  resolveIiziDeterministicExactLine,
+  IIZI_GENERIC_ROADSIDE_INCIDENT_ET,
   resolveIiziExactLine,
   computeOccupantRequirement,
 } from "./iiziDeterministicConfig.js";
@@ -57,6 +61,7 @@ export type IiziDeterministicState =
   | "WAITING_FOR_LOCATION_CONFIRMED"
   | "LOCATION_CONFIRMED"
   | "OCCUPANT_COUNT_REQUIRED"
+  | "WAITING_FOR_OCCUPANT_COUNT"
   | "OCCUPANT_COUNT_CONFIRMED"
   | "ASK_CALLBACK_SAME_NUMBER"
   | "CALLBACK_SAME_NUMBER_CONFIRMED"
@@ -101,6 +106,9 @@ export interface IiziDeterministicRuntimeFlags {
   locationAddress: string;
   occupantCountConfirmed: boolean;
   occupantCountRequired: boolean;
+  occupantQuestionAsked: boolean;
+  occupantClarifyCount: number;
+  explicitCallerLanguage: IiziLanguage | null;
   callbackSameNumber: boolean | null;
   callbackFormReceived: boolean;
   handoffSpoken: boolean;
@@ -159,6 +167,9 @@ export function createInitialIiziDeterministicState(): IiziDeterministicStateBag
       locationAddress: "",
       occupantCountConfirmed: false,
       occupantCountRequired: false,
+      occupantQuestionAsked: false,
+      occupantClarifyCount: 0,
+      explicitCallerLanguage: null,
       callbackSameNumber: null,
       callbackFormReceived: false,
       handoffSpoken: false,
@@ -335,6 +346,11 @@ function applyLanguageFromClassification(
     triggerIndexSource = "default";
   }
 
+  const explicitSwitch = isExplicitCallerLanguageSwitch(normalizedTranscript, rawTranscript);
+  if (explicitSwitch) {
+    bag.flags.explicitCallerLanguage = explicitSwitch;
+  }
+
   const languageSwitch = detectedLanguage !== prev;
   if (languageSwitch) {
     bag.previousIiziLanguage = prev;
@@ -345,6 +361,7 @@ function applyLanguageFromClassification(
     `[IIZI-Deterministic] iiziLanguage=${bag.iiziLanguage} previousIiziLanguage=${bag.previousIiziLanguage ?? "null"} ` +
       `detectedLanguage=${detectedLanguage} languageDetectionMethod=${languageDetectionMethod} ` +
       `languageSwitch=${languageSwitch} languageSwitchReason=${languageSwitchReason ?? "null"} ` +
+      `explicitCallerLanguage=${bag.flags.explicitCallerLanguage ?? "null"} ` +
       `matchedAliasLanguage=${matchedAliasLanguage ?? "null"} triggerIndexSource=${triggerIndexSource} ` +
       `callId=${callId || "?"}`,
   );
@@ -476,11 +493,70 @@ function parseYesNo(normalized: string): boolean | null {
 
 function parseOccupantCount(normalized: string): number | null {
   const m = normalized.match(/\b(\d{1,2})\b/);
-  if (m) return parseInt(m[1], 10);
-  if (/\b(kaks|2)\b/.test(normalized)) return 2;
-  if (/\b(uks|1|uks)\b/.test(normalized)) return 1;
-  if (/\b(kolm|3)\b/.test(normalized)) return 3;
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (n >= 1 && n <= 8) return n;
+  }
+  const wordCounts: [RegExp, number][] = [
+    [/\b(üks|uks|yks|1)\b/, 1],
+    [/\b(kaks|2|kahekesi)\b/, 2],
+    [/\b(kolm|3)\b/, 3],
+    [/\b(neli|4)\b/, 4],
+    [/\b(viis|5)\b/, 5],
+    [/\b(kuus|6)\b/, 6],
+    [/\b(seitse|7)\b/, 7],
+    [/\b(kaheksa|8)\b/, 8],
+  ];
+  for (const [re, n] of wordCounts) {
+    if (re.test(normalized)) return n;
+  }
+  if (/\b(olen\s+)?(üksi|uksi|yksi|yks|üks|mina\s+üksi)\b/.test(normalized)) return 1;
+  if (
+    /\b(mina\s+ja|ja\s+(tüdruk|tydruk|naine|mees|sõber|sober|laps|poeg|tütar))\b/.test(normalized)
+  ) {
+    return 2;
+  }
   return null;
+}
+
+function isExplicitCallerLanguageSwitch(normalized: string, raw: string): IiziLanguage | null {
+  if (transcriptHasCyrillic(raw)) return "ru";
+  if (/\b(in english|speak english|english please|inglise\s+keeles|räägi\s+inglise)\b/i.test(normalized)) {
+    return "en";
+  }
+  if (/\b(po russki|na russkom|russian please|vene\s+keeles|räägi\s+vene)\b/i.test(normalized)) {
+    return "ru";
+  }
+  return null;
+}
+
+function occupantAskAction(bag: IiziDeterministicStateBag): IiziDeterministicAction | null {
+  if (!bag.flags.occupantCountRequired || bag.flags.occupantCountConfirmed) return null;
+  if (bag.flags.occupantQuestionAsked) return null;
+  return { type: "speak_exact", lineId: "occupants.ask" };
+}
+
+function withOccupantThenCallback(
+  bag: IiziDeterministicStateBag,
+  callId: string | null,
+): { actions: IiziDeterministicAction[]; next: IiziDeterministicState; reason: string } {
+  const occAsk = occupantAskAction(bag);
+  if (occAsk) {
+    bag.flags.occupantQuestionAsked = true;
+    console.log(`[IIZI-Deterministic] occupantAskQueued=true callId=${callId || "?"}`);
+    return {
+      actions: postVehicleLocationReadbackActions([occAsk]),
+      next: "WAITING_FOR_OCCUPANT_COUNT",
+      reason: "vehicle_location_then_occupant",
+    };
+  }
+  return {
+    actions: postVehicleLocationReadbackActions([
+      { type: "speak_exact", lineId: "callback.ask_same_number" },
+    ]),
+    next: "ASK_CALLBACK_SAME_NUMBER",
+    reason: "vehicle_location_then_callback",
+  };
 }
 
 function stripPostcode(address: string): string {
@@ -515,8 +591,13 @@ const CALLBACK_DIFFERENT_NUMBER_PATTERNS = [
   "teist numbrit",
   "muu numbri",
   "soovin teist numbrit",
+  "soovin teist tagasihelistamise numbrit",
+  "tahan uut tagasihelistamise numbrit",
+  "tahan uue tagasihelistamise",
   "soovin mõnda muud",
   "soovin monda muud",
+  "tagasihelistamise numbrit",
+  "uut tagasihelistamise",
   "helistage teisele numbrile",
   "mitte sellele numbrile",
   "another number",
@@ -673,11 +754,14 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
         );
       }
       if (bag.lastWeakRoadsideEvidenceCategory && bag.unclearCount >= 1) {
+        const category = bag.lastWeakRoadsideEvidenceCategory;
+        bag.flags.incidentCategory = category;
+        bag.flags.occupantCountRequired = computeOccupantRequirement(category, norm).required;
         return transition(
           bag,
-          "UNCLEAR_CLARIFY_ONCE",
-          "confirm_flat_tire_after_clarify",
-          [{ type: "speak_exact", lineId: "intent.confirm_flat_tire" }],
+          "ROADSIDE_CONFIRMED",
+          "weak_roadside_after_clarify",
+          roadsideClassifiedActions(bag, category, norm),
           callId,
         );
       }
@@ -715,21 +799,6 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       }
       if (c.finalBackendIntent === "roadside_assistance") {
         const category = c.triggerCategory ?? c.subCategory ?? "generic_roadside";
-        if (
-          c.suggestConfirmFlatTire &&
-          c.classificationMethod !== "context_followup" &&
-          c.subCategoryConfidence < 0.75 &&
-          !bag.flags.clarifyUsed
-        ) {
-          bag.flags.clarifyUsed = true;
-          return transition(
-            bag,
-            "UNCLEAR_CLARIFY_ONCE",
-            "confirm_flat_tire_weak_evidence",
-            [{ type: "speak_exact", lineId: "intent.confirm_flat_tire" }],
-            callId,
-          );
-        }
         bag.flags.incidentCategory = category;
         bag.flags.occupantCountRequired = c.occupantCountRequired;
         console.log(
@@ -745,13 +814,15 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
         );
       }
       if (c.finalBackendIntent === "unclear") {
-        if (c.suggestConfirmFlatTire || (bag.unclearCount >= 2 && bag.lastWeakRoadsideEvidenceCategory)) {
-          bag.flags.clarifyUsed = true;
+        if (bag.unclearCount >= 2 && bag.lastWeakRoadsideEvidenceCategory) {
+          const category = bag.lastWeakRoadsideEvidenceCategory;
+          bag.flags.incidentCategory = category;
+          bag.flags.occupantCountRequired = computeOccupantRequirement(category, norm).required;
           return transition(
             bag,
-            "UNCLEAR_CLARIFY_ONCE",
-            "confirm_flat_tire_unclear_repeat",
-            [{ type: "speak_exact", lineId: "intent.confirm_flat_tire" }],
+            "ROADSIDE_CONFIRMED",
+            "weak_roadside_unclear_repeat",
+            roadsideClassifiedActions(bag, category, norm),
             callId,
           );
         }
@@ -766,11 +837,14 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
           );
         }
         if (bag.lastWeakRoadsideEvidenceCategory) {
+          const category = bag.lastWeakRoadsideEvidenceCategory;
+          bag.flags.incidentCategory = category;
+          bag.flags.occupantCountRequired = computeOccupantRequirement(category, norm).required;
           return transition(
             bag,
-            "UNCLEAR_CLARIFY_ONCE",
-            "confirm_flat_tire_before_handoff",
-            [{ type: "speak_exact", lineId: "intent.confirm_flat_tire" }],
+            "ROADSIDE_CONFIRMED",
+            "weak_roadside_before_handoff",
+            roadsideClassifiedActions(bag, category, norm),
             callId,
           );
         }
@@ -821,26 +895,39 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       return { actions: [{ type: "none" }], transitionReason: "callback_awaiting_clear_answer" };
     }
 
-    if (state === "OCCUPANT_COUNT_REQUIRED") {
+    if (state === "WAITING_FOR_OCCUPANT_COUNT" || state === "OCCUPANT_COUNT_REQUIRED") {
       const n = parseOccupantCount(norm);
       if (n != null && n > 0) {
         bag.flags.occupantCountConfirmed = true;
-        const speakLines: IiziDeterministicAction[] = [{ type: "speak_exact", lineId: "occupants.received" }];
-        if (n === 2) {
-          speakLines.unshift({ type: "speak_exact", lineId: "occupants.confirm_two" });
-        }
+        console.log(`[IIZI-Deterministic] occupantCountParsed=true count=${n} callId=${callId || "?"}`);
         return transition(
           bag,
           "ASK_CALLBACK_SAME_NUMBER",
           "occupant_confirmed",
-          [...speakLines, { type: "speak_exact", lineId: "callback.ask_same_number" }],
+          [
+            { type: "speak_exact", lineId: "occupants.received" },
+            { type: "speak_exact", lineId: "callback.ask_same_number" },
+          ],
           callId,
         );
       }
-      return {
-        actions: [{ type: "speak_exact", lineId: "occupants.ask" }],
-        transitionReason: "occupant_reask",
-      };
+      if (bag.flags.occupantClarifyCount < 1) {
+        bag.flags.occupantClarifyCount += 1;
+        console.log(
+          `[IIZI-Deterministic] occupantClarifyCount=${bag.flags.occupantClarifyCount} callId=${callId || "?"}`,
+        );
+        return {
+          actions: [{ type: "none" }],
+          transitionReason: "occupant_answer_unclear_retry_once",
+        };
+      }
+      return transition(
+        bag,
+        "NON_ROADSIDE_HUMAN_ROUTE",
+        "occupant_unclear_after_clarify",
+        [{ type: "speak_exact", lineId: "handoff.human_followup" }],
+        callId,
+      );
     }
 
     if (state === "CLOSING_ASKED") {
@@ -968,24 +1055,8 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       bag.flags.locationAddress = addr;
       bag.flags.pendingLocationConfirmed = false;
       bag.flags.pendingLocationAddress = "";
-      if (bag.flags.occupantCountRequired && !bag.flags.occupantCountConfirmed) {
-        const t = transition(
-          bag,
-          "OCCUPANT_COUNT_REQUIRED",
-          "vehicle_match_then_pending_location_then_occupants",
-          postVehicleLocationReadbackActions([{ type: "speak_exact", lineId: "occupants.ask" }]),
-          callId,
-        );
-        console.log(`[IIZI-Deterministic] currentStateAfter=${bag.currentState} callId=${cid}`);
-        return t;
-      }
-      const t = transition(
-        bag,
-        "ASK_CALLBACK_SAME_NUMBER",
-        "vehicle_match_then_pending_location_then_callback",
-        postVehicleLocationReadbackActions([{ type: "speak_exact", lineId: "callback.ask_same_number" }]),
-        callId,
-      );
+      const occFlow = withOccupantThenCallback(bag, callId);
+      const t = transition(bag, occFlow.next, occFlow.reason, occFlow.actions, callId);
       console.log(`[IIZI-Deterministic] currentStateAfter=${bag.currentState} callId=${cid}`);
       return t;
     }
@@ -1020,22 +1091,8 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     bag.flags.locationConfirmed = true;
     bag.flags.locationAddress = addr;
     console.log(`[IIZI-Deterministic] locationConfirmed=true callId=${cid}`);
-    if (bag.flags.occupantCountRequired && !bag.flags.occupantCountConfirmed) {
-      return transition(
-        bag,
-        "OCCUPANT_COUNT_REQUIRED",
-        "location_then_occupants",
-        postVehicleLocationReadbackActions([{ type: "speak_exact", lineId: "occupants.ask" }]),
-        callId,
-      );
-    }
-    return transition(
-      bag,
-      "ASK_CALLBACK_SAME_NUMBER",
-      "location_then_callback",
-      postVehicleLocationReadbackActions([{ type: "speak_exact", lineId: "callback.ask_same_number" }]),
-      callId,
-    );
+    const occFlow = withOccupantThenCallback(bag, callId);
+    return transition(bag, occFlow.next, occFlow.reason, occFlow.actions, callId);
   }
 
   if (event.type === "callback_sms_result") {
