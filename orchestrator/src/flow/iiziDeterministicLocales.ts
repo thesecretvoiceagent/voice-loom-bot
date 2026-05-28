@@ -100,9 +100,14 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     ru: "Я еще не получила регистрационный номер.",
   },
   "form.waiting_sms_help": {
-    et: "Mul ei ole veel teie andmeid käes. Saatsin Teile SMS-i. Avage link, sisestage auto registreerimismärk, kinnitage asukoht ja vajutage Kinnita.",
-    en: "I do not have your details yet. I sent you an SMS. Please open the link, enter your registration mark, confirm your location, and press Confirm.",
-    ru: "У меня пока нет ваших данных. Я отправила вам SMS. Откройте ссылку, введите регистрационный номер, подтвердите местоположение и нажмите Подтвердить.",
+    et: "Mul ei ole Teie andmeid veel kätte saanud. Saatsin Teile SMS-i. Palun vajutage lingile, kerige alla, sisestage auto registreerimismärk, kinnitage asukoht ja vajutage Kinnita.",
+    en: "I do not have your details yet. I sent you an SMS. Please tap the link, scroll down, enter your registration number, confirm your location, and press Confirm.",
+    ru: "У меня пока нет ваших данных. Я отправила вам SMS. Пожалуйста, откройте ссылку, прокрутите вниз, введите регистрационный номер, подтвердите местоположение и нажмите Подтвердить.",
+  },
+  "vehicle_location.combined.readback": {
+    et: "Sain Teie andmed kätte.",
+    en: "I received your details.",
+    ru: "Я получила ваши данные.",
   },
   "vehicle.match_false.handoff": {
     et: "Sain registreerimisnumbri kätte, aga ma ei leidnud selle numbriga sõidukit meie andmetest. Edastan info meie töötajale, kes võtab Teiega ühendust viie kuni kümne minuti jooksul.",
@@ -155,9 +160,9 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     ru: "Хорошо, мы перезвоним на этот же номер.",
   },
   "callback.different_number_sms_sent": {
-    et: "Saatsin Teile uuesti SMS-i, et saaksite oma tagasihelistamise numbri sinna sisse panna.",
-    en: "I sent you another SMS so you can enter your callback number there.",
-    ru: "Я отправила вам еще одно SMS, чтобы вы могли указать номер для обратного звонка.",
+    et: "Saatsin Teile SMS-i tagasihelistamise numbri sisestamiseks. Palun avage link ja sisestage number, millele soovite tagasihelistamist.",
+    en: "I sent you an SMS to enter your callback number. Please open the link and enter the number you want us to call back.",
+    ru: "Я отправила вам SMS для ввода номера обратного звонка. Пожалуйста, откройте ссылку и введите номер, на который вы хотите получить звонок.",
   },
   "callback.sms_failed": {
     et: "Tagasihelistamise numbri SMS-i saatmist ei saanud kinnitada.",

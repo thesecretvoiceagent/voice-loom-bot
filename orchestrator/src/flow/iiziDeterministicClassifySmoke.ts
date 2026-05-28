@@ -109,6 +109,11 @@ function run(): void {
   expectClassify("out of fuel", { category: "out_of_fuel", lang: "en" }, "en out of fuel");
   expectClassify("bensiin otsas", { category: "out_of_fuel", lang: "et" }, "et bensiin otsas");
   expectClassify(
+    "Mul sai bensiin otsa tee peal",
+    { category: "out_of_fuel", lang: "et" },
+    "et mul sai bensiin otsa tee peal",
+  );
+  expectClassify(
     "Oleks bensiinsajotsa tee peal.",
     { category: "out_of_fuel", lang: "et" },
     "et ASR bensiinsajotsa tee peal",

@@ -1115,13 +1115,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (lineId === "sms.combined.sent_success") {
       console.log(`[IIZI-Deterministic] smsSuccessLineSpoken=true callId=${callId}`);
     }
+    if (lineId === "vehicle_location.combined.readback") {
+      iiziDetVehicleReadbackSpoken = true;
+      iiziDetLocationReadbackSpoken = true;
+    }
     if (lineId === "vehicle.match_active.readback") {
       iiziDetVehicleReadbackSpoken = true;
-      if (iiziDetRef.current.flags.locationConfirmed && trustedLocationReadbackText) {
-        iiziDetLocationReadbackSpoken = true;
-      }
     }
     if (lineId === "location.received.readback") iiziDetLocationReadbackSpoken = true;
+    if (lineId === "form.waiting_sms_help") {
+      console.log(`[IIZI-Deterministic] smsHelpLineSpoken=true callId=${callId}`);
+    }
+    if (lineId === "callback.different_number_sms_sent") {
+      console.log(`[IIZI-Deterministic] callbackSmsLineSpoken=true callId=${callId}`);
+    }
     if (pendingIiziExactSpeech?.lineId === lineId && pendingIiziExactSpeech.actionId === actionId) {
       pendingIiziExactSpeech = null;
       if (pendingIiziExactSpeechRetryTimer) {
@@ -1157,54 +1164,82 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     schedulePendingIiziExactSpeechAutoRetry("active_response_cleared");
   };
 
-  const normalizeTrustedLocationAddress = (raw: string): string => {
-    const parts = raw
+  type LocationAddressCompleteness = "full" | "partial" | "coordinates_only" | "missing";
+
+  const assessLocationAddressCompleteness = (raw: string): LocationAddressCompleteness => {
+    const trimmed = raw.trim();
+    if (!trimmed) return "missing";
+    if (/^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$/.test(trimmed.replace(/\s/g, ""))) {
+      return "coordinates_only";
+    }
+    const parts = trimmed
       .split(",")
       .map((p) => p.trim())
-      .filter(Boolean);
-    const withoutPostcode = parts.filter((p) => !/^\d{5}$/.test(p));
-    const street = withoutPostcode.find((p) => /\d/.test(p) && /[A-Za-zÀ-ž]/.test(p)) || "";
-    const city = withoutPostcode.find((p) => /tallinn/i.test(p)) || withoutPostcode[withoutPostcode.length - 2] || "";
-    const county = withoutPostcode.find((p) => /maakond/i.test(p)) || "";
-    const merged = [street, city, county].filter(Boolean);
-    return merged.length > 0 ? merged.join(", ") : withoutPostcode.join(", ");
+      .filter(Boolean)
+      .filter((p) => !/^\d{5}$/.test(p));
+    const hasStreetNumber = parts.some((p) => /\d/.test(p) && /[A-Za-zÀ-ž]/i.test(p));
+    const hasCity = parts.some((p) =>
+      /(?:tallinn|tartu|pärnu|narva|viljandi|rakvere|maardu|linn\b)/i.test(p),
+    );
+    const hasCounty = parts.some((p) => /maakond/i.test(p));
+    if (hasStreetNumber && parts.length >= 2 && (hasCity || hasCounty || parts.length >= 3)) {
+      return "full";
+    }
+    if (parts.length >= 3) return "full";
+    if (parts.length >= 2) return "partial";
+    return "partial";
   };
 
-  const buildTrustedVehicleReadbackText = (): string => {
+  const formatTrustedLocationAddressForReadback = (
+    raw: string,
+  ): { phrase: string; completeness: LocationAddressCompleteness; fullPresent: boolean } => {
+    const completeness = assessLocationAddressCompleteness(raw);
+    const withoutPostcode = raw
+      .replace(/\b\d{5}\b/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const fullPresent = completeness === "full";
+    console.log(
+      `[IIZI-Deterministic] trustedFullAddressPresent=${fullPresent} locationAddressCompleteness=${completeness} ` +
+        `rawTrustedAddress="${raw.slice(0, 200)}" callId=${callId}`,
+    );
+    if (fullPresent) {
+      return { phrase: withoutPostcode, completeness, fullPresent: true };
+    }
+    return { phrase: "kinnitatud", completeness, fullPresent: false };
+  };
+
+  const buildTrustedLocationReadbackText = (): string => {
+    const loc = formatTrustedLocationAddressForReadback(trustedRawLocationAddress || "");
+    const text = loc.phrase === "kinnitatud" ? "Asukoht on kinnitatud." : `Asukoht on ${loc.phrase}.`;
+    console.log(
+      `[IIZI-Deterministic] trustedLocationReadbackBuilt=true locationReadbackText="${text}" ` +
+        `locationReadbackUsesTrustedEvent=true locationReadbackUsedFallback=${!loc.fullPresent} callId=${callId}`,
+    );
+    return text;
+  };
+
+  const buildCombinedVehicleLocationReadbackText = (): string => {
     const make = (trustedVehicleFields.make || "").trim();
     const model = (trustedVehicleFields.model || "").trim();
     const year = (trustedVehicleFields.year || "").trim();
     const insurer = (trustedVehicleFields.insurer || "").trim();
     const coverType = (trustedVehicleFields.cover_type || "").trim();
-    const coverStatus = (trustedVehicleFields.cover_status || "").trim().toLowerCase();
+    const rawAddr =
+      trustedRawLocationAddress || iiziDetRef.current.flags.locationAddress || "";
+    const loc = formatTrustedLocationAddressForReadback(rawAddr);
+    const segments: string[] = ["Sain Teie andmed kätte."];
     const vehicleCore = [make, model, year].filter(Boolean).join(" ").trim();
-    const core = vehicleCore
-      ? `Sain teie andmed kätte. Auto on ${vehicleCore}. Kindlustus on aktiivne.`
-      : "Sain teie andmed kätte. Kindlustus on aktiivne.";
-    const optional: string[] = [];
-    if (insurer) optional.push(`Kindlustusandja on ${insurer}.`);
-    if (coverType) optional.push(`Kaitse liik on ${coverType}.`);
-    const text = `${core}${optional.length > 0 ? ` ${optional.join(" ")}` : ""}`.trim();
+    if (vehicleCore) segments.push(`Auto on ${vehicleCore}.`);
+    segments.push("Kindlustus on aktiivne.");
+    if (insurer) segments.push(`Kindlustusandja on ${insurer}.`);
+    if (coverType) segments.push(`Kaitse liik on ${coverType}.`);
+    segments.push(loc.phrase === "kinnitatud" ? "Asukoht on kinnitatud." : `Asukoht on ${loc.phrase}.`);
+    const text = segments.join(" ");
+    trustedLocationReadbackText = loc.phrase === "kinnitatud" ? "Asukoht on kinnitatud." : `Asukoht on ${loc.phrase}.`;
     console.log(
-      `[IIZI-Deterministic] trustedVehicleReadbackBuilt=true vehicleReadbackText="${text}" ` +
-        `vehicleReadbackFields=${JSON.stringify({
-          make,
-          model,
-          year,
-          insurer,
-          cover_type: coverType,
-          cover_status: coverStatus,
-        })} vehicleReadbackUsesTrustedLookup=true vehicleReadbackUsedFallback=false callId=${callId}`,
-    );
-    return text;
-  };
-
-  const buildTrustedLocationReadbackText = (): string => {
-    const normalized = normalizeTrustedLocationAddress(trustedRawLocationAddress || "");
-    const text = `Asukoht on ${normalized}.`;
-    console.log(
-      `[IIZI-Deterministic] trustedLocationReadbackBuilt=true locationReadbackText="${text}" ` +
-        `locationReadbackUsesTrustedEvent=true locationReadbackUsedFallback=false rawTrustedAddress="${trustedRawLocationAddress}" callId=${callId}`,
+      `[IIZI-Deterministic] combinedVehicleLocationReadbackBuilt=true combinedVehicleLocationReadbackText="${text}" ` +
+        `duplicateDataReceivedLineSuppressed=true callId=${callId}`,
     );
     return text;
   };
@@ -1218,10 +1253,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     let text: string | null = null;
     if (opts?.exactText && opts.exactText.trim()) {
       text = opts.exactText.trim();
+    } else if (lineId === "vehicle_location.combined.readback") {
+      text = buildCombinedVehicleLocationReadbackText();
     } else if (lineId === "vehicle.match_active.readback") {
-      text = trustedVehicleReadbackText || buildTrustedVehicleReadbackText();
+      console.log(
+        `[IIZI-Deterministic] duplicateDataReceivedLineSuppressed=true reason=legacy_vehicle_readback_use_combined callId=${callId}`,
+      );
+      text = buildCombinedVehicleLocationReadbackText();
     } else if (lineId === "location.received.readback") {
-      text = trustedLocationReadbackText || buildTrustedLocationReadbackText();
+      if (iiziDetVehicleReadbackSpoken && !iiziDetLocationReadbackSpoken) {
+        text = trustedLocationReadbackText || buildTrustedLocationReadbackText();
+      } else {
+        console.log(
+          `[IIZI-Deterministic] duplicateDataReceivedLineSuppressed=true reason=location_readback_after_combined callId=${callId}`,
+        );
+        return { sent: false, blockedReason: "duplicate_location_readback" };
+      }
     } else {
       text = resolveIiziLocalizedLine(lineId, lang, vars, callId);
     }
@@ -1373,17 +1420,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
           }
           let lineIdToSpeak = action.lineId;
-          let exactTextOverride: string | null = null;
           if (
-            action.lineId === "vehicle.match_active.readback" &&
-            iiziDetRef.current.flags.locationConfirmed &&
-            trustedLocationReadbackText
+            action.lineId === "location.received.readback" &&
+            (iiziDetVehicleReadbackSpoken || iiziDetLocationReadbackSpoken)
           ) {
-            lineIdToSpeak = "vehicle.match_active.readback";
-            exactTextOverride = `${buildTrustedVehicleReadbackText().replace(/\.$/, "")}. ${trustedLocationReadbackText}`;
-            if (iiziDetPendingActions[0]?.type === "speak_exact" && iiziDetPendingActions[0].lineId === "location.received.readback") {
-              iiziDetPendingActions.shift();
-            }
+            console.log(
+              `[IIZI-Deterministic] duplicateDataReceivedLineSuppressed=true reason=location_readback_skipped callId=${callId}`,
+            );
+            console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
+            return { shouldPause: false };
+          }
+          if (action.lineId === "form.registration.received") {
+            console.log(
+              `[IIZI-Deterministic] duplicateDataReceivedLineSuppressed=true reason=form_registration_line callId=${callId}`,
+            );
+            console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
+            return { shouldPause: false };
           }
           const actionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           const dedupeItemId = lastCommittedUserItemId || "no_item";
@@ -1392,7 +1444,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             actionId,
             dedupeKey,
             committedItemId: lastCommittedUserItemId,
-            exactText: exactTextOverride,
           });
           if (!speak.sent) {
             const blockedReason = speak.blockedReason || "unknown_block";
@@ -1475,7 +1526,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         return { shouldPause: false };
       }
       case "send_callback_sms": {
+        console.log(`[IIZI-Deterministic] callbackSmsRequested=true callId=${callId}`);
         const r = await runIiziBackendSms(CALLBACK_SMS_TEMPLATE_NAME);
+        console.log(`[IIZI-Deterministic] callbackSmsSuccess=${r.ok} callId=${callId}`);
         const turn = reduceIiziDeterministicTurn({
           callId,
           bag: iiziDetRef.current,
@@ -3307,7 +3360,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           cover_type: String(v.cover_type || "").trim(),
                           cover_status: String(lookup.cover_status || "").trim(),
                         };
-                        trustedVehicleReadbackText = buildTrustedVehicleReadbackText();
+                        trustedVehicleReadbackText = "";
                         const vehicleEvent =
                           `[SYSTEM EVENT: vehicle_lookup_result] ` +
                           `match=true submitted_reg="${lookup.submitted_reg}" reg_no="${String(v.reg_no || "")}" ` +

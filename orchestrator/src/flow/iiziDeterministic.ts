@@ -488,20 +488,76 @@ function stripPostcode(address: string): string {
 }
 
 const FORM_WAITING_HELP_PATTERNS = [
-  "mis ma teen",
+  "mida ma tegema pean",
+  "mis ma tegema pean",
   "mida ma teen",
+  "mis ma teen",
   "mis edasi",
   "mida edasi",
+  "kuhu ma vajutan",
   "kuhu vajutan",
+  "ei saa aru",
   "ma ei saanud aru",
+  "mis link",
+  "mida teha",
   "what do i do",
   "what now",
   "what should i do",
   "was muss ich tun",
 ];
 
+const CALLBACK_DIFFERENT_NUMBER_PATTERNS = [
+  "teine number",
+  "muu number",
+  "monda muud",
+  "mõnda muud",
+  "mõni muu number",
+  "teist numbrit",
+  "muu numbri",
+  "soovin teist numbrit",
+  "soovin mõnda muud",
+  "soovin monda muud",
+  "helistage teisele numbrile",
+  "mitte sellele numbrile",
+  "another number",
+  "different number",
+  "other number",
+  "not this number",
+];
+
+const CALLBACK_SAME_NUMBER_PATTERNS = [
+  "jah sobib",
+  "jah",
+  "jaa",
+  "sobib",
+  "sama number",
+  "sama numbri",
+  "okei",
+  "ok",
+  "yes",
+];
+
 function isFormWaitingHelpQuestion(normalized: string): boolean {
   return FORM_WAITING_HELP_PATTERNS.some((p) => normalized.includes(p));
+}
+
+export function isCallbackDifferentNumberRequest(normalized: string): boolean {
+  if (CALLBACK_DIFFERENT_NUMBER_PATTERNS.some((p) => normalized.includes(p))) return true;
+  if (/\b(ei)\b/.test(normalized) && !/\b(jah|jaa|yes)\b/.test(normalized) && normalized.length <= 40) {
+    return true;
+  }
+  return false;
+}
+
+export function isCallbackSameNumberConfirmation(normalized: string): boolean {
+  if (isCallbackDifferentNumberRequest(normalized)) return false;
+  return CALLBACK_SAME_NUMBER_PATTERNS.some((p) => normalized.includes(p));
+}
+
+function postVehicleLocationReadbackActions(
+  trailing: IiziDeterministicAction[],
+): IiziDeterministicAction[] {
+  return [{ type: "speak_exact", lineId: "vehicle_location.combined.readback" }, ...trailing];
 }
 
 function isWaitingForFormPipelineState(state: IiziDeterministicState): boolean {
@@ -559,7 +615,10 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     const state = bag.currentState;
 
     if (isWaitingForFormPipelineState(state)) {
-      if (bag.flags.combinedSmsSuccess && isFormWaitingHelpQuestion(norm)) {
+      if (bag.flags.combinedSmsSuccess && !bag.flags.formSubmitted && isFormWaitingHelpQuestion(norm)) {
+        console.log(
+          `[IIZI-Deterministic] smsHelpRequestedWhileWaiting=true smsHelpLineQueued=true callId=${callId || "?"}`,
+        );
         return {
           actions: [{ type: "speak_exact", lineId: "form.waiting_sms_help" }],
           transitionReason: "waiting_for_form_sms_help",
@@ -726,8 +785,12 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     }
 
     if (state === "ASK_CALLBACK_SAME_NUMBER") {
-      const yn = parseYesNo(norm);
-      if (yn === true) {
+      const different = isCallbackDifferentNumberRequest(norm);
+      const same = isCallbackSameNumberConfirmation(norm);
+      console.log(
+        `[IIZI-Deterministic] callbackDifferentNumberDetected=${different} callbackSameNumberConfirmed=${same} callId=${callId || "?"}`,
+      );
+      if (same) {
         bag.flags.callbackSameNumber = true;
         const handoffLine =
           bag.flags.incidentCategory === "tow_needed" ? "handoff.tow_partner" : "handoff.normal_partner";
@@ -744,8 +807,9 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
           callId,
         );
       }
-      if (yn === false) {
+      if (different) {
         bag.flags.callbackSameNumber = false;
+        console.log(`[IIZI-Deterministic] callbackSmsRequested=true callId=${callId || "?"}`);
         return transition(
           bag,
           "SEND_CALLBACK_SMS",
@@ -848,13 +912,10 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
         `vehicleLookupRequested=${vehicleLookupRequested} vehicleLookupRequestReason=${vehicleLookupRequestReason} ` +
         `callId=${cid}`,
     );
-    return transition(
-      bag,
-      "WAITING_FOR_VEHICLE_LOOKUP",
-      "form_submitted",
-      [{ type: "speak_exact", lineId: "form.registration.received" }],
-      callId,
+    console.log(
+      `[IIZI-Deterministic] duplicateDataReceivedLineSuppressed=true reason=await_combined_vehicle_location_readback callId=${cid}`,
     );
+    return transition(bag, "WAITING_FOR_VEHICLE_LOOKUP", "form_submitted", [{ type: "none" }], callId);
   }
 
   if (event.type === "vehicle_lookup_result") {
@@ -901,31 +962,38 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       console.log(`[IIZI-Deterministic] currentStateAfter=${bag.currentState} callId=${cid}`);
       return t;
     }
-    const actionsAfterVehicle: IiziDeterministicAction[] = [];
     if (bag.flags.pendingLocationConfirmed && bag.flags.pendingLocationAddress.trim()) {
       const addr = bag.flags.pendingLocationAddress.trim();
       bag.flags.locationConfirmed = true;
       bag.flags.locationAddress = addr;
       bag.flags.pendingLocationConfirmed = false;
       bag.flags.pendingLocationAddress = "";
-      actionsAfterVehicle.push({ type: "speak_exact", lineId: "vehicle.match_active.readback" });
-      actionsAfterVehicle.push({ type: "speak_exact", lineId: "location.received.readback", vars: { address: addr } });
       if (bag.flags.occupantCountRequired && !bag.flags.occupantCountConfirmed) {
-        actionsAfterVehicle.push({ type: "speak_exact", lineId: "occupants.ask" });
-        const t = transition(bag, "OCCUPANT_COUNT_REQUIRED", "vehicle_match_then_pending_location_then_occupants", actionsAfterVehicle, callId);
+        const t = transition(
+          bag,
+          "OCCUPANT_COUNT_REQUIRED",
+          "vehicle_match_then_pending_location_then_occupants",
+          postVehicleLocationReadbackActions([{ type: "speak_exact", lineId: "occupants.ask" }]),
+          callId,
+        );
         console.log(`[IIZI-Deterministic] currentStateAfter=${bag.currentState} callId=${cid}`);
         return t;
       }
-      actionsAfterVehicle.push({ type: "speak_exact", lineId: "callback.ask_same_number" });
-      const t = transition(bag, "ASK_CALLBACK_SAME_NUMBER", "vehicle_match_then_pending_location_then_callback", actionsAfterVehicle, callId);
+      const t = transition(
+        bag,
+        "ASK_CALLBACK_SAME_NUMBER",
+        "vehicle_match_then_pending_location_then_callback",
+        postVehicleLocationReadbackActions([{ type: "speak_exact", lineId: "callback.ask_same_number" }]),
+        callId,
+      );
       console.log(`[IIZI-Deterministic] currentStateAfter=${bag.currentState} callId=${cid}`);
       return t;
     }
     const t = transition(
       bag,
       "VEHICLE_MATCHED_ACTIVE",
-      "vehicle_match_active",
-      [{ type: "speak_exact", lineId: "vehicle.match_active.readback" }],
+      "vehicle_match_active_awaiting_location",
+      [{ type: "none" }],
       callId,
     );
     console.log(`[IIZI-Deterministic] currentStateAfter=${bag.currentState} callId=${cid}`);
@@ -952,15 +1020,12 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     bag.flags.locationConfirmed = true;
     bag.flags.locationAddress = addr;
     console.log(`[IIZI-Deterministic] locationConfirmed=true callId=${cid}`);
-    const afterLocation: IiziDeterministicAction[] = [
-      { type: "speak_exact", lineId: "location.received.readback", vars: { address: addr } },
-    ];
     if (bag.flags.occupantCountRequired && !bag.flags.occupantCountConfirmed) {
       return transition(
         bag,
         "OCCUPANT_COUNT_REQUIRED",
         "location_then_occupants",
-        [...afterLocation, { type: "speak_exact", lineId: "occupants.ask" }],
+        postVehicleLocationReadbackActions([{ type: "speak_exact", lineId: "occupants.ask" }]),
         callId,
       );
     }
@@ -968,7 +1033,7 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       bag,
       "ASK_CALLBACK_SAME_NUMBER",
       "location_then_callback",
-      [...afterLocation, { type: "speak_exact", lineId: "callback.ask_same_number" }],
+      postVehicleLocationReadbackActions([{ type: "speak_exact", lineId: "callback.ask_same_number" }]),
       callId,
     );
   }
@@ -980,9 +1045,21 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       return { actions: [{ type: "none" }], transitionReason: "duplicate_callback_sms" };
     }
     const lineId = event.success ? "callback.different_number_sms_sent" : "callback.sms_failed";
+    console.log(
+      `[IIZI-Deterministic] callbackSmsSuccess=${event.success} callbackSmsLineQueued=true line_id=${lineId} callId=${cid}`,
+    );
+    if (!event.success) {
+      return transition(
+        bag,
+        "NON_ROADSIDE_HUMAN_ROUTE",
+        "callback_sms_failed_handoff",
+        [{ type: "speak_exact", lineId: "callback.sms_failed" }, { type: "speak_exact", lineId: "handoff.human_followup" }],
+        callId,
+      );
+    }
     return transition(
       bag,
-      event.success ? "WAITING_FOR_CALLBACK_FORM" : bag.currentState,
+      "WAITING_FOR_CALLBACK_FORM",
       "callback_sms_result",
       [{ type: "speak_exact", lineId }],
       callId,

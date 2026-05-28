@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {
   createInitialIiziDeterministicState,
+  isCallbackDifferentNumberRequest,
+  isCallbackSameNumberConfirmation,
   reduceIiziDeterministicTurn,
   type IiziDeterministicAction,
 } from "./iiziDeterministic.js";
@@ -85,7 +87,7 @@ function run(): void {
     bag,
     event: { type: "form_submitted", submittedReg: "111AAA" },
   });
-  assert.deepEqual(lineIds(formTurn.actions), ["form.registration.received"], "form line spoken once");
+  assert.deepEqual(lineIds(formTurn.actions), [], "form registration line suppressed before combined readback");
   assert.equal(bag.currentState, "WAITING_FOR_VEHICLE_LOOKUP", "form -> waiting vehicle lookup");
 
   const vehicleTurn = reduceIiziDeterministicTurn({
@@ -93,11 +95,15 @@ function run(): void {
     bag,
     event: { type: "vehicle_lookup_result", match: true, coverageInvalid: false },
   });
-  assert.deepEqual(
-    lineIds(vehicleTurn.actions),
-    ["vehicle.match_active.readback", "location.received.readback", "callback.ask_same_number"],
-    "vehicle match then pending location then callback gate",
+  const vehicleLines = lineIds(vehicleTurn.actions);
+  assert.equal(
+    vehicleLines.filter((id) => id === "vehicle_location.combined.readback").length,
+    1,
+    "single combined vehicle+location readback",
   );
+  assert.equal(vehicleLines.includes("vehicle.match_active.readback"), false, "no separate vehicle readback");
+  assert.equal(vehicleLines.includes("location.received.readback"), false, "no separate location readback");
+  assert.equal(vehicleLines.includes("callback.ask_same_number"), true, "callback ask after combined readback");
   assert.equal(bag.flags.locationConfirmed, true, "pending location consumed after vehicle");
 
   // Test 4/5: callback ask is mandatory when no occupant gate remains
@@ -125,6 +131,49 @@ function run(): void {
   });
   assert.deepEqual(lineIds(closingNo.actions), ["closing.goodbye"], "E close only after caller no");
 
+  // Test 2: waiting-for-SMS help exact line
+  {
+    const bagHelp = createInitialIiziDeterministicState();
+    reduceIiziDeterministicTurn({ callId: "help", bag: bagHelp, event: { type: "combined_sms_result", success: true } });
+    const helpTurn = reduceIiziDeterministicTurn({
+      callId: "help",
+      bag: bagHelp,
+      event: { type: "user_transcript", text: "mida ma tegema pean" },
+    });
+    assert.deepEqual(lineIds(helpTurn.actions), ["form.waiting_sms_help"], "waiting SMS help line");
+    assert.equal(
+      resolveIiziLocalizedLine("form.waiting_sms_help", "et"),
+      "Mul ei ole Teie andmeid veel kätte saanud. Saatsin Teile SMS-i. Palun vajutage lingile, kerige alla, sisestage auto registreerimismärk, kinnitage asukoht ja vajutage Kinnita.",
+      "waiting SMS help exact ET text",
+    );
+  }
+
+  // Test 5/6: callback different vs same number
+  {
+    const bagCb = createInitialIiziDeterministicState();
+    bagCb.currentState = "ASK_CALLBACK_SAME_NUMBER";
+    bagCb.flags.incidentCategory = "flat_tire";
+    assert.equal(isCallbackDifferentNumberRequest("soovin mõnda muud numbrit"), true, "different number detect");
+    const diffTurn = reduceIiziDeterministicTurn({
+      callId: "cb-diff",
+      bag: bagCb,
+      event: { type: "user_transcript", text: "soovin mõnda muud numbrit" },
+    });
+    assert.deepEqual(diffTurn.actions, [{ type: "send_callback_sms" }], "different number sends callback SMS only");
+    assert.equal(bagCb.currentState, "SEND_CALLBACK_SMS", "transition to send callback SMS");
+
+    const bagSame = createInitialIiziDeterministicState();
+    bagSame.currentState = "ASK_CALLBACK_SAME_NUMBER";
+    assert.equal(isCallbackSameNumberConfirmation("jah sobib"), true, "same number detect");
+    const sameTurn = reduceIiziDeterministicTurn({
+      callId: "cb-same",
+      bag: bagSame,
+      event: { type: "user_transcript", text: "jah sobib" },
+    });
+    assert.equal(sameTurn.actions.some((a) => a.type === "send_callback_sms"), false, "same number no callback SMS");
+    assert.equal(lineIds(sameTurn.actions).includes("callback.same_number_confirmed"), true, "same number confirmed line");
+  }
+
   const bag2 = createInitialIiziDeterministicState();
   reduceIiziDeterministicTurn({ callId: "flow-smoke-2", bag: bag2, event: { type: "combined_sms_result", success: true } });
   reduceIiziDeterministicTurn({ callId: "flow-smoke-2", bag: bag2, event: { type: "form_submitted" } });
@@ -133,11 +182,7 @@ function run(): void {
     bag: bag2,
     event: { type: "form_submitted", submittedReg: "222BBB" },
   });
-  assert.equal(
-    lineIds(secondForm.actions).includes("form.registration.received"),
-    true,
-    "reg payload form is not deduped by generic key",
-  );
+  assert.equal(lineIds(secondForm.actions).includes("form.registration.received"), false, "form line suppressed on resubmit");
 
   // Test 3: waiting states must never ask occupant/callback early
   const waitFormTurn = reduceIiziDeterministicTurn({
@@ -147,7 +192,7 @@ function run(): void {
   });
   assert.equal(lineIds(waitFormTurn.actions).includes("occupants.ask"), false, "No early occupants ask in waiting flow smoke");
 
-  console.log("[iizi-deterministic-flow-smoke] OK (P0 chain)");
+  console.log("[iizi-deterministic-flow-smoke] OK (P0 chain + UX fixes)");
 }
 
 run();
