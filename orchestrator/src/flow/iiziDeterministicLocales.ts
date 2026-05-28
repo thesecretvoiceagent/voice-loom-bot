@@ -104,6 +104,11 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     en: "I received the vehicle details, but the insurance status is not active. I will pass this to our agent, who will contact you within five to ten minutes.",
     ru: "Я получила данные автомобиля, но страховка не активна. Передам информацию нашему сотруднику, который свяжется с вами в течение пяти–десяти минут.",
   },
+  "vehicle.match_active.readback": {
+    et: "Sain sõiduki ja aktiivse kindlustuse kinnituse kätte.",
+    en: "I received confirmation of the vehicle and active insurance coverage.",
+    ru: "Я получила подтверждение автомобиля и активного страхового покрытия.",
+  },
   "location.received.readback": {
     et: "Sain asukoha kätte: {address}.",
     en: "I received the location: {address}.",

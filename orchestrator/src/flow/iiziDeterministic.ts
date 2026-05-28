@@ -106,6 +106,9 @@ export interface IiziDeterministicRuntimeFlags {
   handoffSpoken: boolean;
   clarifyUsed: boolean;
   incidentCategory: IiziRoadsideCategory | null;
+  pendingLocationConfirmed: boolean;
+  pendingLocationAddress: string;
+  lastSubmittedReg: string;
 }
 
 export type IiziLanguageDetectionMethod = "script" | "exact" | "keyword" | "default";
@@ -161,6 +164,9 @@ export function createInitialIiziDeterministicState(): IiziDeterministicStateBag
       handoffSpoken: false,
       clarifyUsed: false,
       incidentCategory: null,
+      pendingLocationConfirmed: false,
+      pendingLocationAddress: "",
+      lastSubmittedReg: "",
     },
     iiziLanguage: "et",
     previousIiziLanguage: null,
@@ -488,7 +494,7 @@ export interface IiziDeterministicTurnInput {
     | { type: "greeting_complete" }
     | { type: "user_transcript"; text: string }
     | { type: "combined_sms_result"; success: boolean; alreadySent?: boolean }
-    | { type: "form_submitted" }
+    | { type: "form_submitted"; submittedReg?: string }
     | { type: "vehicle_lookup_result"; match: boolean; coverageInvalid?: boolean }
     | { type: "location_confirmed"; address: string }
     | { type: "callback_sms_result"; success: boolean }
@@ -764,12 +770,21 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
   }
 
   if (event.type === "form_submitted") {
-    const key = eventKey(cid, "form_submitted", "1");
+    const submittedReg = (event.submittedReg || "").trim().toUpperCase();
+    const key = eventKey(cid, "form_submitted", submittedReg || "no_reg");
     if (isDuplicateEvent(bag, key)) {
       console.log(`[IIZI-Deterministic] duplicate_event_ignored key=${key} callId=${cid}`);
       return { actions: [{ type: "none" }], transitionReason: "duplicate_form" };
     }
     bag.flags.formSubmitted = true;
+    bag.flags.lastSubmittedReg = submittedReg;
+    const vehicleLookupRequested = submittedReg.length > 0;
+    const vehicleLookupRequestReason = vehicleLookupRequested ? "submitted_reg_present" : "submitted_reg_missing";
+    console.log(
+      `[IIZI-Deterministic] formSubmittedReceived=true submittedReg="${submittedReg}" ` +
+        `vehicleLookupRequested=${vehicleLookupRequested} vehicleLookupRequestReason=${vehicleLookupRequestReason} ` +
+        `callId=${cid}`,
+    );
     return transition(
       bag,
       "WAITING_FOR_VEHICLE_LOOKUP",
@@ -780,37 +795,78 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
   }
 
   if (event.type === "vehicle_lookup_result") {
+    const stateBefore = bag.currentState;
     const pk = `${event.match}:${event.coverageInvalid ?? false}`;
     const key = eventKey(cid, "vehicle_lookup_result", pk);
     if (isDuplicateEvent(bag, key)) {
-      console.log(`[IIZI-Deterministic] duplicate_event_ignored key=${key} callId=${cid}`);
+      console.log(
+        `[IIZI-Deterministic] duplicate_event_ignored key=${key} vehicleLookupResultReceived=true ` +
+          `vehicleLookupResultRoutedToFSM=false currentStateBefore=${stateBefore} currentStateAfter=${bag.currentState} callId=${cid}`,
+      );
       return { actions: [{ type: "none" }], transitionReason: "duplicate_vehicle" };
     }
     bag.flags.vehicleMatch = event.match;
     bag.flags.coverActive = event.coverageInvalid === true ? false : event.match ? true : null;
+    const pendingLocationAlreadyReceived = bag.flags.pendingLocationConfirmed;
+    const pendingLocationAddressPresent = Boolean(bag.flags.pendingLocationAddress.trim());
     console.log(
-      `[IIZI-Deterministic] vehicleLookupMatch=${event.match} coverStatus=${bag.flags.coverActive} ` +
-        `vehicleSpeechAllowed=${event.match && bag.flags.coverActive !== false} callId=${cid}`,
+      `[IIZI-Deterministic] vehicleLookupResultReceived=true vehicleLookupResultRoutedToFSM=true ` +
+        `vehicleLookupMatch=${event.match} coverStatus=${bag.flags.coverActive} ` +
+        `vehicleSpeechAllowed=${event.match && bag.flags.coverActive !== false} currentStateBefore=${stateBefore} ` +
+        `pendingLocationAlreadyReceived=${pendingLocationAlreadyReceived} ` +
+        `pendingLocationAddressPresent=${pendingLocationAddressPresent} callId=${cid}`,
     );
     if (!event.match) {
-      return transition(
+      const t = transition(
         bag,
         "VEHICLE_MISMATCH_HUMAN_ROUTE",
         "vehicle_no_match",
         [{ type: "speak_exact", lineId: "vehicle.match_false.handoff" }],
         callId,
       );
+      console.log(`[IIZI-Deterministic] currentStateAfter=${bag.currentState} callId=${cid}`);
+      return t;
     }
     if (event.coverageInvalid) {
-      return transition(
+      const t = transition(
         bag,
         "INSURANCE_INACTIVE_HUMAN_ROUTE",
         "insurance_inactive",
         [{ type: "speak_exact", lineId: "vehicle.insurance_inactive.handoff" }],
         callId,
       );
+      console.log(`[IIZI-Deterministic] currentStateAfter=${bag.currentState} callId=${cid}`);
+      return t;
     }
-    return transition(bag, "VEHICLE_MATCHED_ACTIVE", "vehicle_match_active", [{ type: "none" }], callId);
+    const actionsAfterVehicle: IiziDeterministicAction[] = [];
+    if (bag.flags.pendingLocationConfirmed && bag.flags.pendingLocationAddress.trim()) {
+      const addr = bag.flags.pendingLocationAddress.trim();
+      bag.flags.locationConfirmed = true;
+      bag.flags.locationAddress = addr;
+      bag.flags.pendingLocationConfirmed = false;
+      bag.flags.pendingLocationAddress = "";
+      actionsAfterVehicle.push({ type: "speak_exact", lineId: "vehicle.match_active.readback" });
+      actionsAfterVehicle.push({ type: "speak_exact", lineId: "location.received.readback", vars: { address: addr } });
+      if (bag.flags.occupantCountRequired && !bag.flags.occupantCountConfirmed) {
+        actionsAfterVehicle.push({ type: "speak_exact", lineId: "occupants.ask" });
+        const t = transition(bag, "OCCUPANT_COUNT_REQUIRED", "vehicle_match_then_pending_location_then_occupants", actionsAfterVehicle, callId);
+        console.log(`[IIZI-Deterministic] currentStateAfter=${bag.currentState} callId=${cid}`);
+        return t;
+      }
+      actionsAfterVehicle.push({ type: "speak_exact", lineId: "callback.ask_same_number" });
+      const t = transition(bag, "ASK_CALLBACK_SAME_NUMBER", "vehicle_match_then_pending_location_then_callback", actionsAfterVehicle, callId);
+      console.log(`[IIZI-Deterministic] currentStateAfter=${bag.currentState} callId=${cid}`);
+      return t;
+    }
+    const t = transition(
+      bag,
+      "VEHICLE_MATCHED_ACTIVE",
+      "vehicle_match_active",
+      [{ type: "speak_exact", lineId: "vehicle.match_active.readback" }],
+      callId,
+    );
+    console.log(`[IIZI-Deterministic] currentStateAfter=${bag.currentState} callId=${cid}`);
+    return t;
   }
 
   if (event.type === "location_confirmed") {
@@ -821,6 +877,13 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       return { actions: [{ type: "none" }], transitionReason: "duplicate_location" };
     }
     if (bag.flags.vehicleMatch !== true || bag.flags.coverActive === false) {
+      const alreadyPending = bag.flags.pendingLocationConfirmed;
+      bag.flags.pendingLocationConfirmed = true;
+      bag.flags.pendingLocationAddress = addr;
+      console.log(
+        `[IIZI-Deterministic] pendingLocationAlreadyReceived=${alreadyPending} pendingLocationAddressPresent=${Boolean(addr)} ` +
+          `vehicleLookupResultReceived=false callId=${cid}`,
+      );
       return { actions: [{ type: "none" }], transitionReason: "location_before_vehicle_gate" };
     }
     bag.flags.locationConfirmed = true;

@@ -1231,7 +1231,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
 
   const runIiziDeterministicSystemEvent = (
     event:
-      | { type: "form_submitted" }
+      | { type: "form_submitted"; submittedReg?: string }
       | { type: "vehicle_lookup_result"; match: boolean; coverageInvalid?: boolean }
       | { type: "location_confirmed"; address: string }
       | { type: "callback_form_received" },
@@ -2715,13 +2715,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     },
                     stateRef: iiziShadowStateRef,
                   });
-                  if (useCombinedRegLocationSms && callDirection === "inbound") {
+                  if (useCombinedRegLocationSms && callDirection === "inbound" && !iiziDeterministicInbound()) {
                     try {
                       ingestIiziBrainFlow(iiziBrainRef.current, "location_confirmed");
                       touchIiziBrainLog("location_confirmed");
                     } catch (err) {
                       console.error(`[IIZI-Brain] location_flow_failed callId=${callId}`, err);
                     }
+                  } else if (useCombinedRegLocationSms && callDirection === "inbound" && iiziDeterministicInbound()) {
+                    console.log(`[IIZI-Brain] deterministic_mode_observe_only skip_ingest=location_confirmed callId=${callId}`);
                   }
                 }
 
@@ -2740,13 +2742,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                     payload: { reg, callback_phone: phone },
                     stateRef: iiziShadowStateRef,
                   });
-                  if (useCombinedRegLocationSms && callDirection === "inbound") {
+                  if (useCombinedRegLocationSms && callDirection === "inbound" && !iiziDeterministicInbound()) {
                     try {
                       ingestIiziBrainFlow(iiziBrainRef.current, "form_submitted");
                       touchIiziBrainLog("form_submitted");
                     } catch (err) {
                       console.error(`[IIZI-Brain] form_flow_failed callId=${callId}`, err);
                     }
+                  } else if (useCombinedRegLocationSms && callDirection === "inbound" && iiziDeterministicInbound()) {
+                    console.log(`[IIZI-Brain] deterministic_mode_observe_only skip_ingest=form_submitted callId=${callId}`);
                   }
                   if (useCombinedRegLocationSms && reg) {
                     console.log(`[IIZI-CombinedSMS] form registration received callId=${callId}`);
@@ -2759,7 +2763,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                   }
                   transcriptLines.push(`[Form submitted]: reg=${reg} phone=${phone}`);
                   if (iiziDeterministicInbound() && reg) {
-                    runIiziDeterministicSystemEvent({ type: "form_submitted" });
+                    runIiziDeterministicSystemEvent({ type: "form_submitted", submittedReg: reg });
                   }
                   if (iiziDeterministicInbound() && phone.trim()) {
                     runIiziDeterministicSystemEvent({ type: "callback_form_received" });
@@ -2779,10 +2783,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                       },
                     }));
                     scheduleUserResponseCreate("system-event", 50);
+                  }
 
-                    if (reg) {
-                      const lookup = await strictLookupVehicleBySubmittedReg(reg);
-                      if (lookup.match) {
+                  if (reg) {
+                    const lookup = await strictLookupVehicleBySubmittedReg(reg);
+                    if (lookup.match) {
                         const v = lookup.vehicle as Record<string, unknown>;
                         const vehicleEvent =
                           `[SYSTEM EVENT: vehicle_lookup_result] ` +
@@ -2818,7 +2823,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                             match: true,
                             coverageInvalid: lookup.coverage_invalid,
                           });
-                        } else {
+                        } else if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                           openaiWs.send(
                             JSON.stringify({
                               type: "conversation.item.create",
@@ -2844,7 +2849,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           },
                           stateRef: iiziShadowStateRef,
                         });
-                        if (useCombinedRegLocationSms && callDirection === "inbound") {
+                        if (useCombinedRegLocationSms && callDirection === "inbound" && !iiziDeterministicInbound()) {
                           try {
                             ingestIiziBrainFlow(iiziBrainRef.current, "vehicle_lookup_result", {
                               match: true,
@@ -2855,6 +2860,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           } catch (err) {
                             console.error(`[IIZI-Brain] vehicle_flow_failed callId=${callId}`, err);
                           }
+                        } else if (useCombinedRegLocationSms && callDirection === "inbound" && iiziDeterministicInbound()) {
+                          console.log(`[IIZI-Brain] deterministic_mode_observe_only skip_ingest=vehicle_lookup_match callId=${callId}`);
                         }
                         if (
                           useCombinedRegLocationSms &&
@@ -2898,7 +2905,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                             match: false,
                             coverageInvalid: false,
                           });
-                        } else {
+                        } else if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                           openaiWs.send(
                             JSON.stringify({
                               type: "conversation.item.create",
@@ -2923,7 +2930,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           },
                           stateRef: iiziShadowStateRef,
                         });
-                        if (useCombinedRegLocationSms && callDirection === "inbound") {
+                        if (useCombinedRegLocationSms && callDirection === "inbound" && !iiziDeterministicInbound()) {
                           try {
                             ingestIiziBrainFlow(iiziBrainRef.current, "vehicle_lookup_result", {
                               match: false,
@@ -2933,9 +2940,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                           } catch (err) {
                             console.error(`[IIZI-Brain] vehicle_flow_failed callId=${callId}`, err);
                           }
+                        } else if (useCombinedRegLocationSms && callDirection === "inbound" && iiziDeterministicInbound()) {
+                          console.log(`[IIZI-Brain] deterministic_mode_observe_only skip_ingest=vehicle_lookup_nomatch callId=${callId}`);
                         }
                       }
-                    }
                   }
                 }
               },

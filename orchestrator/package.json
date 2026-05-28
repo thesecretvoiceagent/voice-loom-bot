@@ -10,7 +10,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "intent-classify-smoke": "tsx src/flow/iiziBrainIntentSmoke.ts",
-    "iizi-deterministic-smoke": "tsx src/flow/iiziDeterministicClassifySmoke.ts"
+    "iizi-deterministic-smoke": "tsx src/flow/iiziDeterministicClassifySmoke.ts && tsx src/flow/iiziDeterministicFlowSmoke.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.103.3",
