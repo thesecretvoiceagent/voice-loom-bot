@@ -150,7 +150,7 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     ru: "Понятно, записала.",
   },
   "callback.ask_same_number": {
-    et: "Kas tagasihelistamiseks kasutame sama numbrit, millelt praegu helistate?",
+    et: "Kas tagasihelistamise number on sama? Palun vasta täislausega.",
     en: "Should we use the same number you are calling from for the callback?",
     ru: "Для обратного звонка использовать тот же номер, с которого вы звоните?",
   },
@@ -198,5 +198,25 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     et: "Aitäh. Lõpetan kõne. Head aega.",
     en: "Thank you. I will end the call now. Goodbye.",
     ru: "Спасибо. Завершаю звонок. До свидания.",
+  },
+  "closing.ask_additional_info": {
+    et: "Kas Te soovite midagi lisada omalt poolt enne kui kõne lõpetame?",
+    en: "Would you like to add anything before we end the call?",
+    ru: "Хотите ли вы что-то добавить, прежде чем мы завершим звонок?",
+  },
+  "closing.additional_info_declined": {
+    et: "Okei, aitäh. Helistame peatselt tagasi.",
+    en: "Okay, thank you. We will call you back shortly.",
+    ru: "Хорошо, спасибо. Мы скоро перезвоним.",
+  },
+  "closing.ask_what_to_add": {
+    et: "Mida soovite lisada?",
+    en: "What would you like to add?",
+    ru: "Что вы хотите добавить?",
+  },
+  "closing.additional_info_acknowledged": {
+    et: "Aitäh. Meie klienditeenindaja võtab selle arvesse ja võtab Teiega ühendust peatselt. Nägemist.",
+    en: "Thank you. Our agent will take this into account and contact you shortly. Goodbye.",
+    ru: "Спасибо. Наш сотрудник учтёт это и свяжется с вами в ближайшее время. До свидания.",
   },
 };

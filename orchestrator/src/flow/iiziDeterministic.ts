@@ -563,25 +563,6 @@ function stripPostcode(address: string): string {
   return address.replace(/\b\d{5}\b/g, "").replace(/\s+/g, " ").trim();
 }
 
-const FORM_WAITING_HELP_PATTERNS = [
-  "mida ma tegema pean",
-  "mis ma tegema pean",
-  "mida ma teen",
-  "mis ma teen",
-  "mis edasi",
-  "mida edasi",
-  "kuhu ma vajutan",
-  "kuhu vajutan",
-  "ei saa aru",
-  "ma ei saanud aru",
-  "mis link",
-  "mida teha",
-  "what do i do",
-  "what now",
-  "what should i do",
-  "was muss ich tun",
-];
-
 const CALLBACK_DIFFERENT_NUMBER_PATTERNS = [
   "teine number",
   "muu number",
@@ -618,8 +599,21 @@ const CALLBACK_SAME_NUMBER_PATTERNS = [
   "yes",
 ];
 
-function isFormWaitingHelpQuestion(normalized: string): boolean {
-  return FORM_WAITING_HELP_PATTERNS.some((p) => normalized.includes(p));
+function hasMeaningfulCallerTranscript(normalized: string): boolean {
+  return normalized.replace(/\s/g, "").length >= 2;
+}
+
+function isWaitingForCombinedSmsFormHelp(
+  state: IiziDeterministicState,
+  bag: IiziDeterministicStateBag,
+  normalized: string,
+): boolean {
+  return (
+    bag.flags.combinedSmsSuccess &&
+    !bag.flags.formSubmitted &&
+    state === "WAITING_FOR_FORM_SUBMITTED" &&
+    hasMeaningfulCallerTranscript(normalized)
+  );
 }
 
 export function isCallbackDifferentNumberRequest(normalized: string): boolean {
@@ -695,17 +689,21 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     const norm = normalizeIiziTranscript(event.text);
     const state = bag.currentState;
 
+    if (isWaitingForCombinedSmsFormHelp(state, bag, norm)) {
+      console.log(
+        `[IIZI-Deterministic] smsHelpRequestedWhileWaiting=true smsHelpLineQueued=true smsHelpFallbackAggressive=true callId=${callId || "?"}`,
+      );
+      return {
+        actions: [{ type: "speak_exact", lineId: "form.waiting_sms_help" }],
+        transitionReason: "waiting_for_form_sms_help_fallback",
+      };
+    }
+
     if (isWaitingForFormPipelineState(state)) {
-      if (bag.flags.combinedSmsSuccess && !bag.flags.formSubmitted && isFormWaitingHelpQuestion(norm)) {
-        console.log(
-          `[IIZI-Deterministic] smsHelpRequestedWhileWaiting=true smsHelpLineQueued=true callId=${callId || "?"}`,
-        );
-        return {
-          actions: [{ type: "speak_exact", lineId: "form.waiting_sms_help" }],
-          transitionReason: "waiting_for_form_sms_help",
-        };
-      }
       if (state === "WAITING_FOR_FORM_SUBMITTED") {
+        if (bag.flags.combinedSmsSuccess && !bag.flags.formSubmitted) {
+          return { actions: [{ type: "none" }], transitionReason: "waiting_for_form_empty_turn" };
+        }
         return {
           actions: [{ type: "speak_exact", lineId: "form.not_received_yet" }],
           transitionReason: "waiting_for_form",

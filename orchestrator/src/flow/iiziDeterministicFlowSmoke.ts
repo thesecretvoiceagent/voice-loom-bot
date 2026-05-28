@@ -64,6 +64,66 @@ function run(): void {
     assert.deepEqual(lineIds(smsTurn.actions), ["sms.combined.sent_success"], "A sms success line queued");
   }
 
+  const SMS_HELP_ET =
+    "Mul ei ole Teie andmeid veel kätte tulnud. Saatsin Teile SMS-i. Palun avage sõnumite rakendus, vajutage lingile, kerige alla, sisestage auto registreerimismärk, kinnitage asukoht ja vajutage Kinnita.";
+
+  // SMS-help fallback after combined SMS, before form_submitted (tests A–E)
+  {
+    const bagHelp = createInitialIiziDeterministicState();
+    reduceIiziDeterministicTurn({ callId: "help", bag: bagHelp, event: { type: "combined_sms_result", success: true } });
+    assert.equal(bagHelp.currentState, "WAITING_FOR_FORM_SUBMITTED");
+
+    const helpA = reduceIiziDeterministicTurn({
+      callId: "help",
+      bag: bagHelp,
+      event: { type: "user_transcript", text: "mis ma tegema pean?" },
+    });
+    assert.deepEqual(lineIds(helpA.actions), ["form.waiting_sms_help"], "A SMS help line");
+    assert.equal(
+      helpA.actions.some((a) => a.type === "speak_exact" && a.lineId === "form.not_received_yet"),
+      false,
+      "A no form.not_received_yet",
+    );
+
+    const helpB = reduceIiziDeterministicTurn({
+      callId: "help",
+      bag: bagHelp,
+      event: { type: "user_transcript", text: "kuhu vajutan?" },
+    });
+    assert.deepEqual(lineIds(helpB.actions), ["form.waiting_sms_help"], "B SMS help line");
+    assert.equal(
+      helpB.actions.some((a) => a.type === "speak_exact" && a.lineId === "form.not_received_yet"),
+      false,
+      "B no form.not_received_yet",
+    );
+
+    const helpC = reduceIiziDeterministicTurn({
+      callId: "help",
+      bag: bagHelp,
+      event: { type: "user_transcript", text: "No hea, ootame isma tegema beale" },
+    });
+    assert.deepEqual(lineIds(helpC.actions), ["form.waiting_sms_help"], "C SMS help line");
+    assert.equal(
+      helpC.actions.some((a) => a.type === "speak_exact" && a.lineId === "form.not_received_yet"),
+      false,
+      "C no form.not_received_yet",
+    );
+
+    assert.equal(resolveIiziLocalizedLine("form.waiting_sms_help", "et"), SMS_HELP_ET, "D SMS help exact ET text");
+
+    reduceIiziDeterministicTurn({
+      callId: "help",
+      bag: bagHelp,
+      event: { type: "form_submitted", submittedReg: "111AAA" },
+    });
+    const helpE = reduceIiziDeterministicTurn({
+      callId: "help",
+      bag: bagHelp,
+      event: { type: "user_transcript", text: "mis ma tegema pean?" },
+    });
+    assert.equal(lineIds(helpE.actions).includes("form.waiting_sms_help"), false, "E no SMS help after form");
+  }
+
   const bag = createInitialIiziDeterministicState();
   const callId = "flow-smoke";
 
@@ -101,23 +161,6 @@ function run(): void {
     event: { type: "user_transcript", text: "jah" },
   });
   assert.equal(lineIds(callbackYes.actions).includes("callback.same_number_confirmed"), true, "callback yes");
-
-  // C: waiting-for-SMS help exact line
-  {
-    const bagHelp = createInitialIiziDeterministicState();
-    reduceIiziDeterministicTurn({ callId: "help", bag: bagHelp, event: { type: "combined_sms_result", success: true } });
-    const helpTurn = reduceIiziDeterministicTurn({
-      callId: "help",
-      bag: bagHelp,
-      event: { type: "user_transcript", text: "mida ma tegema pean" },
-    });
-    assert.deepEqual(lineIds(helpTurn.actions), ["form.waiting_sms_help"], "waiting SMS help line");
-    assert.equal(
-      resolveIiziLocalizedLine("form.waiting_sms_help", "et"),
-      "Mul ei ole Teie andmeid veel kätte tulnud. Saatsin Teile SMS-i. Palun avage sõnumite rakendus, vajutage lingile, kerige alla, sisestage auto registreerimismärk, kinnitage asukoht ja vajutage Kinnita.",
-      "C waiting SMS help exact ET text",
-    );
-  }
 
   // D: callback different number phrases
   assert.equal(isCallbackDifferentNumberRequest("tahan uut tagasihelistamise numbrit"), true, "D tahan uut");
