@@ -3895,8 +3895,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       greetingTokenLimitRaised = Boolean(greeting);
 
       const gaTranscription = {
-        model: "whisper-1",
-        // Lock STT to Estonian — most callers speak ET. Mixed-language whisper
+        model: "gpt-4o-transcribe",
+        // Lock STT to Estonian — most callers speak ET. Mixed-language STT
         // mangles plates like 484DLC → 484DLT, which breaks CRM lookups.
         language: "et",
         prompt: "Eesti keelne kõne. Auto registreerimismärgid on kujul kolm numbrit ja kolm tähte, näiteks 484DLC, 495BJS, 606BSB, 130XMS.",
