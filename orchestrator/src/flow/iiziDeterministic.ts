@@ -556,7 +556,10 @@ function withOccupantThenCallback(
 ): { actions: IiziDeterministicAction[]; next: IiziDeterministicState; reason: string } {
   const occAsk = occupantAskAction(bag);
   if (occAsk) {
-    bag.flags.occupantQuestionAsked = true;
+    // Do NOT set occupantQuestionAsked here. The runtime flips this flag only when
+    // the occupants.ask line is actually spoken. Setting it at queue time tripped the
+    // runtime's "already asked" suppression guard before the question ever played,
+    // producing dead air after the vehicle/location readback and a premature human handoff.
     console.log(`[IIZI-Deterministic] occupantAskQueued=true callId=${callId || "?"}`);
     return {
       actions: postVehicleLocationReadbackActions([occAsk]),

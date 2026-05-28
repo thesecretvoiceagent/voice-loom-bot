@@ -377,7 +377,11 @@ function run(): void {
     });
     const occLines = lineIds(vTurn.actions);
     assert.equal(occLines.filter((id) => id === "occupants.ask").length, 1, "E occupants.ask once");
-    assert.equal(bagOcc.flags.occupantQuestionAsked, true, "E occupantQuestionAsked set on queue");
+    assert.equal(
+      bagOcc.flags.occupantQuestionAsked,
+      false,
+      "E occupantQuestionAsked NOT set at queue time (runtime sets it when actually spoken)",
+    );
     assert.equal(bagOcc.currentState, "WAITING_FOR_OCCUPANT_COUNT", "E waiting for occupant");
     const ans = reduceIiziDeterministicTurn({
       callId: "occ",
