@@ -26,7 +26,7 @@ export {
   resolveIiziExactLine,
   computeOccupantRequirement,
 } from "./iiziDeterministicConfig.js";
-import { normalizeIiziTranscript, transcriptHasCyrillic } from "./iiziDeterministicNormalize.js";
+import { normalizeIiziTranscript, normalizeTriggerPhrase, transcriptHasCyrillic } from "./iiziDeterministicNormalize.js";
 import {
   classifyTwoStage,
   occupantForClassification,
@@ -597,10 +597,36 @@ const FORM_WAITING_HELP_PATTERNS = [
   "was muss ich tun",
 ];
 
-const CALLBACK_DIFFERENT_NUMBER_PATTERNS = [
-  "ei ole",
+export type IiziCallbackSameNumberIntent = "same_number" | "different_number" | "unknown";
+
+export interface IiziCallbackIntentClassification {
+  intent: IiziCallbackSameNumberIntent;
+  evidence: {
+    callback: string[];
+    number: string[];
+    positive: string[];
+    negative: string[];
+  };
+}
+
+const CALLBACK_CONFUSION_PATTERNS = [
+  "halloo",
+  "halo",
+  "tere",
+  "ma ei kuulnud",
+  "ei kuulnud",
+  "ei saanud aru",
+  "kuulasin halvasti",
+  "mis see oli",
+  "hello",
+  "what did you",
+];
+
+const CALLBACK_DIFFERENT_PHRASES = [
+  "ei ole sama",
   "pole sama",
   "number pole sama",
+  "numbr pole sama",
   "tagasihelistamise number pole sama",
   "teine number",
   "teist numbrit",
@@ -609,16 +635,34 @@ const CALLBACK_DIFFERENT_NUMBER_PATTERNS = [
   "soovin teist numbrit",
   "soovin teist tagasihelistamise numbrit",
   "tahan uut tagasihelistamise numbrit",
-  "mkm",
+  "helistage teisele numbrile",
+  "helistage teisele",
 ];
 
-const CALLBACK_SAME_NUMBER_PATTERNS = [
-  "number on sama",
-  "tagasihelistamise number on sama",
-  "sama number",
-];
+const CALLBACK_EVIDENCE_CALLBACK_TOKENS = [
+  "tagasihelistamise",
+  "tagasihelistamis",
+  "tagasihelistamine",
+  "tagasi",
+  "helistamise",
+  "helistamis",
+  "helistamine",
+  "pelistamise",
+  "pelistamis",
+  "listamise",
+  "listamis",
+].map(normalizeTriggerPhrase);
 
-const CALLBACK_SHORT_YES = new Set([
+const CALLBACK_EVIDENCE_NUMBER_TOKENS = [
+  "number",
+  "numbr",
+  "numbri",
+  "numbril",
+  "telefon",
+  "telefoni",
+].map(normalizeTriggerPhrase);
+
+const CALLBACK_EVIDENCE_POSITIVE_TOKENS = [
   "jah",
   "jaa",
   "ja",
@@ -628,7 +672,137 @@ const CALLBACK_SHORT_YES = new Set([
   "mhm",
   "sobib",
   "sama",
+  "oige",
+  "õige",
+].map(normalizeTriggerPhrase);
+
+const CALLBACK_EVIDENCE_NEGATIVE_TOKENS = [
+  "ei",
+  "pole",
+  "mitte",
+  "mkm",
+  "teine",
+  "teist",
+  "muu",
+  "muud",
+  "uue",
+  "uut",
+  "erinev",
+].map(normalizeTriggerPhrase);
+
+const CALLBACK_SHORT_POSITIVE = new Set([
+  "jah",
+  "jaa",
+  "ja",
+  "jep",
+  "jap",
+  "yep",
+  "mhm",
+  "sobib",
+  "sama",
+  "oige",
+  "õige",
 ]);
+
+const CALLBACK_OTHER_NUMBER_HINTS = ["soovin", "tahan", "helistage", "helistada"];
+
+function collectCallbackMatchingTokens(normalized: string, tokens: readonly string[]): string[] {
+  const found: string[] = [];
+  for (const t of tokens) {
+    if (t && normalized.includes(t)) found.push(t);
+  }
+  return [...new Set(found)];
+}
+
+function collectCallbackIntentEvidence(normalized: string): IiziCallbackIntentClassification["evidence"] {
+  return {
+    callback: collectCallbackMatchingTokens(normalized, CALLBACK_EVIDENCE_CALLBACK_TOKENS),
+    number: collectCallbackMatchingTokens(normalized, CALLBACK_EVIDENCE_NUMBER_TOKENS),
+    positive: collectCallbackMatchingTokens(normalized, CALLBACK_EVIDENCE_POSITIVE_TOKENS),
+    negative: collectCallbackMatchingTokens(normalized, CALLBACK_EVIDENCE_NEGATIVE_TOKENS),
+  };
+}
+
+function hasCallbackPhoneContext(evidence: IiziCallbackIntentClassification["evidence"]): boolean {
+  return evidence.callback.length > 0 || evidence.number.length > 0;
+}
+
+function isCallbackConfusionOrNoise(normalized: string): boolean {
+  if (CALLBACK_CONFUSION_PATTERNS.some((p) => normalized.includes(p))) return true;
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  return tokens.length === 1 && (tokens[0] === "mis" || tokens[0] === "halloo" || tokens[0] === "halo");
+}
+
+function isShortCallbackPositiveOnly(normalized: string): boolean {
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  return tokens.length > 0 && tokens.length <= 2 && tokens.every((t) => CALLBACK_SHORT_POSITIVE.has(t));
+}
+
+export function classifyCallbackSameNumberIntent(normalized: string): IiziCallbackIntentClassification {
+  const emptyEvidence = { callback: [], number: [], positive: [], negative: [] };
+  if (!hasMeaningfulCallerTranscript(normalized)) {
+    return { intent: "unknown", evidence: emptyEvidence };
+  }
+
+  const evidence = collectCallbackIntentEvidence(normalized);
+  const phoneContext = hasCallbackPhoneContext(evidence);
+  const hasSama = evidence.positive.includes("sama");
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+
+  const strongDifferentPhrase = CALLBACK_DIFFERENT_PHRASES.some((p) => normalized.includes(p));
+  const strongSamePhrase = normalized.includes("on sama") && phoneContext && hasSama;
+
+  if (isCallbackConfusionOrNoise(normalized) && !strongDifferentPhrase && !strongSamePhrase) {
+    return { intent: "unknown", evidence };
+  }
+
+  if (strongDifferentPhrase) {
+    return { intent: "different_number", evidence };
+  }
+
+  if (tokens.length === 1 && (tokens[0] === "ei" || tokens[0] === "mkm")) {
+    return { intent: "different_number", evidence };
+  }
+
+  const otherNumberHint = CALLBACK_OTHER_NUMBER_HINTS.some((h) => normalized.includes(h));
+  const negativeOther =
+    evidence.negative.some((t) => ["teine", "teist", "muu", "muud", "uue", "uut", "erinev", "mkm"].includes(t)) &&
+    (phoneContext || otherNumberHint);
+
+  const negativePoleMitte =
+    evidence.negative.some((t) => t === "pole" || t === "mitte") && phoneContext && !hasSama;
+
+  const negativeEiWithPhone =
+    evidence.negative.includes("ei") &&
+    phoneContext &&
+    !evidence.positive.some((t) => ["jah", "jaa", "ja"].includes(t));
+
+  if (negativeOther || negativePoleMitte || negativeEiWithPhone) {
+    return { intent: "different_number", evidence };
+  }
+
+  if (strongSamePhrase || (hasSama && phoneContext)) {
+    return { intent: "same_number", evidence };
+  }
+
+  if (isShortCallbackPositiveOnly(normalized)) {
+    return { intent: "same_number", evidence };
+  }
+
+  if (evidence.positive.length > 0 && phoneContext) {
+    return { intent: "same_number", evidence };
+  }
+
+  return { intent: "unknown", evidence };
+}
+
+export function isCallbackDifferentNumberRequest(normalized: string): boolean {
+  return classifyCallbackSameNumberIntent(normalized).intent === "different_number";
+}
+
+export function isCallbackSameNumberConfirmation(normalized: string): boolean {
+  return classifyCallbackSameNumberIntent(normalized).intent === "same_number";
+}
 
 const ADDITIONAL_INFO_NEGATIVE_PATTERNS = [
   "ei soovi",
@@ -669,25 +843,6 @@ function isPostCombinedSmsAwaitingForm(
 
 function hasMeaningfulCallerTranscript(normalized: string): boolean {
   return normalized.replace(/\s/g, "").length >= 2;
-}
-
-export function isCallbackDifferentNumberRequest(normalized: string): boolean {
-  if (CALLBACK_DIFFERENT_NUMBER_PATTERNS.some((p) => normalized.includes(p))) return true;
-  if (/\b(ei)\b/.test(normalized) && !/\b(jah|jaa|ja)\b/.test(normalized)) {
-    return true;
-  }
-  return false;
-}
-
-export function isCallbackSameNumberConfirmation(normalized: string): boolean {
-  if (isCallbackDifferentNumberRequest(normalized)) return false;
-  if (CALLBACK_SAME_NUMBER_PATTERNS.some((p) => normalized.includes(p))) return true;
-  const tokens = normalized.split(/\s+/).filter(Boolean);
-  if (tokens.length === 1 && CALLBACK_SHORT_YES.has(tokens[0])) return true;
-  if (tokens.length === 2 && CALLBACK_SHORT_YES.has(tokens[0]) && CALLBACK_SHORT_YES.has(tokens[1])) {
-    return true;
-  }
-  return false;
 }
 
 function isAdditionalInfoNegative(normalized: string): boolean {
@@ -948,10 +1103,13 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       if (!hasMeaningfulCallerTranscript(norm)) {
         return { actions: [{ type: "none" }], transitionReason: "callback_awaiting_transcript" };
       }
-      const different = isCallbackDifferentNumberRequest(norm);
-      const same = isCallbackSameNumberConfirmation(norm);
+      const callbackIntent = classifyCallbackSameNumberIntent(norm);
+      const different = callbackIntent.intent === "different_number";
+      const same = callbackIntent.intent === "same_number";
       console.log(
-        `[IIZI-Deterministic] callbackDifferentNumberDetected=${different} callbackSameNumberConfirmed=${same} callId=${callId || "?"}`,
+        `[IIZI-Deterministic] callbackIntent=${callbackIntent.intent} ` +
+          `callbackEvidence=${JSON.stringify(callbackIntent.evidence)} ` +
+          `callbackDifferentNumberDetected=${different} callbackSameNumberConfirmed=${same} callId=${callId || "?"}`,
       );
       if (same) {
         bag.flags.callbackSameNumber = true;

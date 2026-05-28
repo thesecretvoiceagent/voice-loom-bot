@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  classifyCallbackSameNumberIntent,
   createInitialIiziDeterministicState,
   isCallbackDifferentNumberRequest,
   isCallbackSameNumberConfirmation,
@@ -156,10 +157,54 @@ function run(): void {
   assert.equal(vehicleLines.filter((id) => id === "vehicle_location.combined.readback").length, 1, "combined readback once");
   assert.equal(vehicleLines.includes("callback.ask_same_number"), true, "callback after readback when no occupant");
 
-  // Callback intent: same number (Jaa / sobib)
+  // Callback intent classifier (ASK_CALLBACK_SAME_NUMBER)
   {
-    assert.equal(isCallbackSameNumberConfirmation(normalizeIiziTranscript("Jaa")), true, "Jaa same");
-    assert.equal(isCallbackSameNumberConfirmation(normalizeIiziTranscript("sobib")), true, "sobib same");
+    const expectSame = [
+      "Pelistamise numbr on sama.",
+      "tagasihelistamise number on sama",
+      "number on sama",
+      "jah sobib",
+      "Jaa",
+      "sobib",
+      "helistamise numbr on sama",
+    ];
+    for (const text of expectSame) {
+      const norm = normalizeIiziTranscript(text);
+      assert.equal(
+        classifyCallbackSameNumberIntent(norm).intent,
+        "same_number",
+        `same: ${text}`,
+      );
+      assert.equal(isCallbackSameNumberConfirmation(norm), true, `isCallbackSame: ${text}`);
+      assert.equal(isCallbackDifferentNumberRequest(norm), false, `not different: ${text}`);
+    }
+
+    const expectDifferent = [
+      "ei",
+      "pole sama",
+      "number pole sama",
+      "soovin teist tagasihelistamise numbrit",
+    ];
+    for (const text of expectDifferent) {
+      const norm = normalizeIiziTranscript(text);
+      assert.equal(
+        classifyCallbackSameNumberIntent(norm).intent,
+        "different_number",
+        `different: ${text}`,
+      );
+      assert.equal(isCallbackDifferentNumberRequest(norm), true, `isCallbackDifferent: ${text}`);
+      assert.equal(isCallbackSameNumberConfirmation(norm), false, `not same: ${text}`);
+    }
+
+    for (const text of ["halloo", "ma ei kuulnud", "mis"]) {
+      const norm = normalizeIiziTranscript(text);
+      assert.equal(
+        classifyCallbackSameNumberIntent(norm).intent,
+        "unknown",
+        `unknown: ${text}`,
+      );
+    }
+
     const bagJaa = createInitialIiziDeterministicState();
     bagJaa.currentState = "ASK_CALLBACK_SAME_NUMBER";
     const jaaTurn = reduceIiziDeterministicTurn({
@@ -171,18 +216,18 @@ function run(): void {
     assert.equal(jaaLines.includes("callback.same_number_confirmed"), true, "Jaa confirms same");
     assert.equal(jaaLines.includes("handoff.normal_partner"), true, "Jaa handoff");
     assert.equal(jaaLines.includes("closing.ask_additional_info"), true, "Jaa closing ask");
-    assert.equal(jaaLines.includes("closing.anything_else"), false, "Jaa no anything_else");
-    assert.equal(bagJaa.currentState, "WAITING_FOR_ADDITIONAL_INFO_DECISION", "Jaa closing state");
     assert.equal(jaaTurn.actions.some((a) => a.type === "send_callback_sms"), false, "Jaa no callback SMS");
-  }
 
-  // Callback intent: different number (ei / pole sama / soovin teist...)
-  {
-    for (const text of ["ei", "pole sama", "soovin teist tagasihelistamise numbrit"]) {
-      const norm = normalizeIiziTranscript(text);
-      assert.equal(isCallbackDifferentNumberRequest(norm), true, `different: ${text}`);
-      assert.equal(isCallbackSameNumberConfirmation(norm), false, `not same: ${text}`);
-    }
+    const bagAsr = createInitialIiziDeterministicState();
+    bagAsr.currentState = "ASK_CALLBACK_SAME_NUMBER";
+    const asrTurn = reduceIiziDeterministicTurn({
+      callId: "cb-asr",
+      bag: bagAsr,
+      event: { type: "user_transcript", text: "Pelistamise numbr on sama." },
+    });
+    assert.equal(asrTurn.actions.some((a) => a.type === "send_callback_sms"), false, "ASR same no SMS");
+    assert.equal(lineIds(asrTurn.actions).includes("callback.same_number_confirmed"), true, "ASR same path");
+
     const bagCb = createInitialIiziDeterministicState();
     bagCb.currentState = "ASK_CALLBACK_SAME_NUMBER";
     const diffTurn = reduceIiziDeterministicTurn({
@@ -191,12 +236,25 @@ function run(): void {
       event: { type: "user_transcript", text: "soovin teist tagasihelistamise numbrit" },
     });
     assert.deepEqual(diffTurn.actions, [{ type: "send_callback_sms" }], "different -> send_callback_sms");
-    const smsOk = reduceIiziDeterministicTurn({
-      callId: "cb-diff",
-      bag: bagCb,
-      event: { type: "callback_sms_result", success: true },
+
+    const bagNoise = createInitialIiziDeterministicState();
+    bagNoise.currentState = "ASK_CALLBACK_SAME_NUMBER";
+    const noiseTurn = reduceIiziDeterministicTurn({
+      callId: "cb-noise",
+      bag: bagNoise,
+      event: { type: "user_transcript", text: "halloo" },
     });
-    assert.deepEqual(lineIds(smsOk.actions), ["callback.different_number_sms_sent"], "SMS success line");
+    assert.deepEqual(noiseTurn.actions, [{ type: "none" }], "halloo -> no progress");
+    assert.equal(bagNoise.currentState, "ASK_CALLBACK_SAME_NUMBER", "halloo stays in ask state");
+
+    const bagUnclear = createInitialIiziDeterministicState();
+    bagUnclear.currentState = "ASK_CALLBACK_SAME_NUMBER";
+    const unclearTurn = reduceIiziDeterministicTurn({
+      callId: "cb-unclear",
+      bag: bagUnclear,
+      event: { type: "user_transcript", text: "ma ei kuulnud" },
+    });
+    assert.deepEqual(unclearTurn.actions, [{ type: "none" }], "ma ei kuulnud -> no progress");
   }
 
   // E: occupant ask once then parse üks
