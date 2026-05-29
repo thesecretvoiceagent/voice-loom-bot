@@ -210,9 +210,9 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     ru: "Хотите ли вы что-то добавить, прежде чем мы завершим звонок?",
   },
   "closing.additional_info_declined": {
-    et: "Okei, aitäh. Helistame peatselt tagasi.",
-    en: "Okay, thank you. We will call you back shortly.",
-    ru: "Хорошо, спасибо. Мы скоро перезвоним.",
+    et: "Okei, aitäh. Helistame peatselt tagasi. Head aega!",
+    en: "Okay, thank you. We will call you back shortly. Goodbye!",
+    ru: "Хорошо, спасибо. Мы скоро перезвоним. До свидания!",
   },
   "closing.ask_what_to_add": {
     et: "Mida soovite lisada?",
@@ -220,8 +220,8 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     ru: "Что вы хотите добавить?",
   },
   "closing.additional_info_acknowledged": {
-    et: "Aitäh. Meie klienditeenindaja võtab selle arvesse ja võtab Teiega ühendust peatselt. Nägemist.",
-    en: "Thank you. Our agent will take this into account and contact you shortly. Goodbye.",
-    ru: "Спасибо. Наш сотрудник учтёт это и свяжется с вами в ближайшее время. До свидания.",
+    et: "Aitäh. Meie klienditeenindaja võtab selle arvesse ja võtab Teiega ühendust peatselt. Head aega!",
+    en: "Thank you. Our agent will take this into account and contact you shortly. Goodbye!",
+    ru: "Спасибо. Наш сотрудник учтёт это и свяжется с вами в ближайшее время. До свидания!",
   },
 };

@@ -57,6 +57,7 @@ import {
   type IiziDeterministicStateBag,
   type IiziFillerReason,
 } from "../flow/iiziDeterministic.js";
+import { IIZI_LOCALIZED_LINES } from "../flow/iiziDeterministicLocales.js";
 import {
   IIZI_DETERMINISTIC_VOICE_SPEED,
   IIZI_EXACT_SPEECH_TOOL_CHOICE,
@@ -1147,6 +1148,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
     if (lineId === "callback.different_number_sms_sent") {
       console.log(`[IIZI-Deterministic] callbackSmsLineSpoken=true callId=${callId}`);
+    }
+    // Deterministic hang-up: the FSM marks the final closing line. Once it has fully
+    // played (Twilio mark -> maybeCompleteAiTurn), end the call from the backend.
+    if (
+      iiziDetRef.current.flags.pendingEndCallAfterLine &&
+      lineId === iiziDetRef.current.flags.pendingEndCallAfterLine
+    ) {
+      console.log(
+        `[IIZI-Deterministic] backendEndCallAfterLine=true lineId=${lineId} callId=${callId}`,
+      );
+      iiziDetRef.current.flags.pendingEndCallAfterLine = null;
+      if (!pendingEndCall) {
+        pendingEndCall = {
+          reason: "iizi_backend_closing_complete",
+          closeText: "",
+          closeSpeechRequired: false,
+          closeResponseSent: false,
+        };
+        callEndingSource = "end_call_tool";
+        clearEndCallHangupTimer();
+      }
     }
     if (pendingIiziExactSpeech?.lineId === lineId && pendingIiziExactSpeech.actionId === actionId) {
       pendingIiziExactSpeech = null;
@@ -2509,6 +2531,33 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         ? `extra_words extraRatio=${extraRatio.toFixed(2)} extra=${extra}`
         : "match";
     return { drift, reason, coverage, extras: extra };
+  };
+
+  // The full "line base": every scripted sentence the bot is ever allowed to say
+  // (across all languages). The speech guard uses this so that auto-retry / audio
+  // flushing only ever targets genuine off-script hallucinations. If the model
+  // happens to speak a DIFFERENT but still permitted scripted line (e.g. the
+  // handoff line in the closing slot), we must NOT cut it mid-sentence — we let it
+  // finish and simply re-issue the line we actually expected.
+  let cachedAllowedLineTexts: string[] | null = null;
+  const allowedLineTextsNormalized = (): string[] => {
+    if (cachedAllowedLineTexts) return cachedAllowedLineTexts;
+    const out: string[] = [];
+    for (const byLang of Object.values(IIZI_LOCALIZED_LINES)) {
+      for (const text of Object.values(byLang)) {
+        const norm = normalizeTranscript(text);
+        if (norm) out.push(norm);
+      }
+    }
+    cachedAllowedLineTexts = out;
+    return out;
+  };
+  const spokenMatchesAllowedLine = (actual: string): boolean => {
+    if (!normalizeTranscript(actual)) return false;
+    for (const candidate of allowedLineTextsNormalized()) {
+      if (!detectIiziExactSpeechDrift(candidate, actual).drift) return true;
+    }
+    return false;
   };
 
   const startInboundAudioCooldown = (ms: number, reason: string) => {
@@ -5672,17 +5721,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 failIiziExactSpeechPlayback("max_output_tokens_cut", finishReason, outputTokens);
               } else if (!hasUsableAudio) {
                 failIiziExactSpeechPlayback("no_audio");
-              } else if (
-                IIZI_SPEECH_GUARD_ENABLED &&
-                iiziExactSpeechAwaitingPlayback?.expectedText &&
-                (() => {
-                  const lineId = iiziExactSpeechAwaitingPlayback!.lineId;
-                  const expected = iiziExactSpeechAwaitingPlayback!.expectedText!;
-                  const verdict = detectIiziExactSpeechDrift(expected, activeResponseAssistantTranscript);
-                  if (!verdict.drift) {
-                    iiziExactSpeechDriftRetries.delete(lineId);
-                    return false;
-                  }
+              } else if (IIZI_SPEECH_GUARD_ENABLED && iiziExactSpeechAwaitingPlayback?.expectedText) {
+                const lineId = iiziExactSpeechAwaitingPlayback.lineId;
+                const expected = iiziExactSpeechAwaitingPlayback.expectedText;
+                const verdict = detectIiziExactSpeechDrift(expected, activeResponseAssistantTranscript);
+                if (!verdict.drift) {
+                  // The expected scripted line was spoken correctly.
+                  iiziExactSpeechDriftRetries.delete(lineId);
+                  confirmIiziExactSpeechPlayback();
+                } else {
                   const attempts = iiziExactSpeechDriftRetries.get(lineId) || 0;
                   if (attempts >= IIZI_SPEECH_GUARD_MAX_RETRIES) {
                     console.warn(
@@ -5690,25 +5737,39 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                         `attempts=${attempts} action=give_up (max retries reached, accepting output) callId=${callId}`,
                     );
                     iiziExactSpeechDriftRetries.delete(lineId);
-                    return false;
+                    confirmIiziExactSpeechPlayback();
+                  } else {
+                    iiziExactSpeechDriftRetries.set(lineId, attempts + 1);
+                    // Distinguish a genuine off-script hallucination from a permitted
+                    // scripted line spoken in the wrong slot. We only ever flush (cut)
+                    // audio for true hallucinations. A permitted line is left to finish
+                    // playing — we just re-issue the line we actually expected.
+                    const spokeAnotherAllowedLine = spokenMatchesAllowedLine(
+                      activeResponseAssistantTranscript,
+                    );
+                    if (spokeAnotherAllowedLine) {
+                      console.warn(
+                        `[IIZI-SpeechGuard] driftDetected=true lineId=${lineId} reason=${verdict.reason} ` +
+                          `attempt=${attempts + 1}/${IIZI_SPEECH_GUARD_MAX_RETRIES} type=permitted_other_line ` +
+                          `expected="${expected.slice(0, 120)}" actual="${activeResponseAssistantTranscript.slice(0, 120)}" ` +
+                          `action=reissue_no_flush (let the permitted line finish) callId=${callId}`,
+                      );
+                    } else {
+                      console.warn(
+                        `[IIZI-SpeechGuard] driftDetected=true lineId=${lineId} reason=${verdict.reason} ` +
+                          `attempt=${attempts + 1}/${IIZI_SPEECH_GUARD_MAX_RETRIES} type=hallucination ` +
+                          `expected="${expected.slice(0, 120)}" actual="${activeResponseAssistantTranscript.slice(0, 120)}" ` +
+                          `action=flush_and_reissue callId=${callId}`,
+                      );
+                      // Off-script hallucination: flush the unplayed (drifted) audio.
+                      if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+                        aiIsSpeaking = false;
+                        twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+                      }
+                    }
+                    failIiziExactSpeechPlayback("output_drift");
                   }
-                  iiziExactSpeechDriftRetries.set(lineId, attempts + 1);
-                  console.warn(
-                    `[IIZI-SpeechGuard] driftDetected=true lineId=${lineId} reason=${verdict.reason} ` +
-                      `attempt=${attempts + 1}/${IIZI_SPEECH_GUARD_MAX_RETRIES} ` +
-                      `expected="${expected.slice(0, 120)}" actual="${activeResponseAssistantTranscript.slice(0, 120)}" ` +
-                      `action=flush_and_reissue callId=${callId}`,
-                  );
-                  // Flush any unplayed (drifted) audio still buffered on Twilio's side.
-                  if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-                    aiIsSpeaking = false;
-                    twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
-                  }
-                  return true;
-                })()
-              ) {
-                // Drift confirmed and within retry budget: re-issue the scripted line.
-                failIiziExactSpeechPlayback("output_drift");
+                }
               } else {
                 confirmIiziExactSpeechPlayback();
               }
