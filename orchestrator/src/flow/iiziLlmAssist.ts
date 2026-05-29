@@ -20,7 +20,10 @@ import type { IiziRoadsideCategory } from "./iiziDeterministicTypes.js";
  */
 
 const OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
-const ASSIST_TIMEOUT_MS = 2500;
+// Hard upper bound on how long the assist may delay a live turn. The model
+// normally answers in 300-700ms; if it is slower we abandon and let the
+// deterministic rules decide, so a slow/hung API can never stall the call.
+const ASSIST_TIMEOUT_MS = Number(process.env.IIZI_LLM_ASSIST_TIMEOUT_MS || "1200");
 
 export type IiziAssistIntentValue =
   | "roadside_assistance"

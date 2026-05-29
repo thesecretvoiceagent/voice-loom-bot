@@ -537,11 +537,22 @@ function parseOccupantCount(normalized: string): number | null {
 /** Minimum LLM confidence before its hint may override a non-exact rule result. */
 const IIZI_ASSIST_MIN_CONFIDENCE = 0.6;
 
+/** Higher bar before the LLM may push a turn into a terminal human-handoff route. */
+const IIZI_ASSIST_TERMINAL_MIN_CONFIDENCE = 0.75;
+
 /**
- * Resolve the effective issue intent + category, letting the LLM assist override
- * ONLY when the rule-based classifier was not a confident exact match. This keeps
- * deterministic exact trigger matches authoritative while letting the LLM rescue
- * garbled-STT cases (e.g. "reef on tühi" fuzzy-matched to the wrong category).
+ * Resolve the effective issue intent + category with conservative LLM assist.
+ *
+ * Safety policy (the LLM must never make the flow MORE likely to hang up):
+ *  - A confident exact rule match is always authoritative; the LLM is ignored.
+ *  - If both the rule and the LLM agree it is roadside, the LLM may only REFINE
+ *    the category (e.g. garbled "reef on tühi" → flat_tire instead of no_start),
+ *    which keeps the caller in the flow.
+ *  - If the rule was "unclear", the LLM may rescue it: → roadside continues the
+ *    flow freely; → non_roadside/unsafe (a terminal handoff) only with high
+ *    confidence.
+ *  - The LLM is NEVER allowed to flip a rule-confident roadside intent into a
+ *    terminal handoff, so a single misread cannot cut off a real roadside call.
  */
 function resolveAssistedIntent(
   c: IiziTranscriptClassification,
@@ -549,29 +560,50 @@ function resolveAssistedIntent(
   norm: string,
   callId: string | null,
 ): { intent: string; category: IiziRoadsideCategory; occupantRequired: boolean } {
-  let intent: string = c.finalBackendIntent;
-  let category: IiziRoadsideCategory = (c.triggerCategory ?? c.subCategory ?? "generic_roadside") as IiziRoadsideCategory;
-  let occupantRequired = c.occupantCountRequired;
+  const intent: string = c.finalBackendIntent;
+  const category: IiziRoadsideCategory = (c.triggerCategory ?? c.subCategory ?? "generic_roadside") as IiziRoadsideCategory;
+  const occupantRequired = c.occupantCountRequired;
 
   const a = assist?.intent;
-  const ruleIsExact = c.classificationMethod === "exact";
-  if (a && a.confidence >= IIZI_ASSIST_MIN_CONFIDENCE && !ruleIsExact) {
-    const categoryChanged =
-      a.value === "roadside_assistance" && a.category != null && a.category !== category;
-    if (a.value !== intent || categoryChanged) {
-      const fromCategory = category;
-      intent = a.value;
-      if (a.value === "roadside_assistance") {
-        category = (a.category ?? category ?? "generic_roadside") as IiziRoadsideCategory;
-        occupantRequired = computeOccupantRequirement(category, norm).required;
-      }
+  if (!a || a.confidence < IIZI_ASSIST_MIN_CONFIDENCE || c.classificationMethod === "exact") {
+    return { intent, category, occupantRequired };
+  }
+
+  // 1) Category refinement while staying roadside (keeps caller in the flow).
+  if (intent === "roadside_assistance" && a.value === "roadside_assistance" && a.category && a.category !== category) {
+    const refined = a.category;
+    const refinedOccupant = computeOccupantRequirement(refined, norm).required;
+    console.log(
+      `[IIZI-LLM] intent_assist_refined_category from=${category} to=${refined} ` +
+        `confidence=${a.confidence} ruleMethod=${c.classificationMethod} occupantRequired=${refinedOccupant} callId=${callId || "?"}`,
+    );
+    return { intent, category: refined, occupantRequired: refinedOccupant };
+  }
+
+  // 2) Rescue an unclear rule result.
+  if (intent === "unclear") {
+    if (a.value === "roadside_assistance") {
+      const rescuedCategory = (a.category ?? "generic_roadside") as IiziRoadsideCategory;
+      const rescuedOccupant = computeOccupantRequirement(rescuedCategory, norm).required;
       console.log(
-        `[IIZI-LLM] intent_assist_applied from=${c.finalBackendIntent}/${fromCategory} ` +
-          `to=${intent}/${category} confidence=${a.confidence} ruleMethod=${c.classificationMethod} ` +
-          `occupantRequired=${occupantRequired} callId=${callId || "?"}`,
+        `[IIZI-LLM] intent_assist_rescued_unclear to=roadside_assistance/${rescuedCategory} ` +
+          `confidence=${a.confidence} occupantRequired=${rescuedOccupant} callId=${callId || "?"}`,
       );
+      return { intent: "roadside_assistance", category: rescuedCategory, occupantRequired: rescuedOccupant };
+    }
+    if (
+      (a.value === "not_roadside_assistance" || a.value === "unsafe") &&
+      a.confidence >= IIZI_ASSIST_TERMINAL_MIN_CONFIDENCE
+    ) {
+      console.log(
+        `[IIZI-LLM] intent_assist_rescued_unclear to=${a.value} confidence=${a.confidence} callId=${callId || "?"}`,
+      );
+      return { intent: a.value, category, occupantRequired };
     }
   }
+
+  // Otherwise keep the rule result (never let the LLM flip a confident roadside
+  // intent into a terminal handoff).
   return { intent, category, occupantRequired };
 }
 

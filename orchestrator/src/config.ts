@@ -30,7 +30,11 @@ export const config = {
     // Numeric speed only applies to the legacy tts-1 / tts-1-hd models. The
     // gpt-4o-mini-tts model ignores `speed`; for it we steer pace via instructions.
     ttsSpeed: Number(process.env.OPENAI_TTS_SPEED || "1.3"),
-    ttsInstructions: process.env.OPENAI_TTS_INSTRUCTIONS || "",
+    ttsInstructions:
+      process.env.OPENAI_TTS_INSTRUCTIONS ||
+      "Räägi soojalt, rõõmsalt ja sõbralikult — naeratava, positiivse ja abivalmis tooniga. " +
+        "Hääl on energiline ja elav, kuid samas rahulik ja professionaalne. " +
+        "Räägi selges eesti keeles, kiires ja loomulikus tempos.",
     // Speech-to-text model for caller transcription. gpt-4o-mini-transcribe is
     // markedly more accurate than whisper-1 for short Estonian utterances, so
     // the deterministic classifier reacts to what the caller actually said.
