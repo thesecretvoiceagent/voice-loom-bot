@@ -206,6 +206,7 @@ type LiveTurnSettings = {
   post_playback_cooldown_ms: number;
   post_greeting_cooldown_ms: number;
   watchdog_commit_ms: number;
+  max_caller_utterance_ms: number;
   inbound_transcript_fallback_ms: number;
   no_audio_grace_ms: number;
   echo_recovery_cooldown_ms: number;
@@ -220,6 +221,7 @@ const DEFAULT_LIVE_TURN_SETTINGS: LiveTurnSettings = {
   post_playback_cooldown_ms: 1200,
   post_greeting_cooldown_ms: 150,
   watchdog_commit_ms: 2600,
+  max_caller_utterance_ms: 8000,
   inbound_transcript_fallback_ms: 900,
   no_audio_grace_ms: 450,
   echo_recovery_cooldown_ms: 2500,
@@ -238,6 +240,7 @@ const sanitizeLiveTurnSettings = (raw: unknown): LiveTurnSettings => {
     post_playback_cooldown_ms: clamp(typeof s.post_playback_cooldown_ms === "number" ? s.post_playback_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.post_playback_cooldown_ms, 0, 3000),
     post_greeting_cooldown_ms: clamp(typeof s.post_greeting_cooldown_ms === "number" ? s.post_greeting_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.post_greeting_cooldown_ms, 0, 1500),
     watchdog_commit_ms: clamp(typeof s.watchdog_commit_ms === "number" ? s.watchdog_commit_ms : DEFAULT_LIVE_TURN_SETTINGS.watchdog_commit_ms, 1000, 6000),
+    max_caller_utterance_ms: clamp(typeof s.max_caller_utterance_ms === "number" ? s.max_caller_utterance_ms : DEFAULT_LIVE_TURN_SETTINGS.max_caller_utterance_ms, 5000, 30000),
     inbound_transcript_fallback_ms: clamp(typeof s.inbound_transcript_fallback_ms === "number" ? s.inbound_transcript_fallback_ms : DEFAULT_LIVE_TURN_SETTINGS.inbound_transcript_fallback_ms, 300, 3000),
     no_audio_grace_ms: clamp(typeof s.no_audio_grace_ms === "number" ? s.no_audio_grace_ms : DEFAULT_LIVE_TURN_SETTINGS.no_audio_grace_ms, 200, 2000),
     echo_recovery_cooldown_ms: clamp(typeof s.echo_recovery_cooldown_ms === "number" ? s.echo_recovery_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.echo_recovery_cooldown_ms, 500, 5000),
@@ -798,6 +801,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let turnGateAcceptedFrames = 0;
   const turnGateDropCounts: Record<string, number> = {};
   let callerSpeechActive = false;
+  let callerSpeechStartedAt = 0;
   let lastAcceptedCallerAudioAt = 0;
   let iiziCallerTurnEnded = false;
   let lastIiziCallerTurnEndedAt = 0;
@@ -2260,12 +2264,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(`[IIZI-Deterministic] iiziCallerTurnEnded=true source=${source} callId=${callId}`);
   };
 
-  const tryCommitCallerAudio = (reason: string, delayMs = 80) => {
+  const tryCommitCallerAudio = (reason: string, delayMs = 80, force = false) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
       console.warn(`[Diag] audio commit skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} (callId=${callId})`);
       return false;
     }
-    const commitBlockReason = getCallerAudioBlockReason(true);
+    const commitBlockReason = force ? null : getCallerAudioBlockReason(true);
     if (commitBlockReason) {
       console.log(`[TurnGate] skip_empty_audio_commit reason=blocked_${commitBlockReason} frames=${inputFramesSinceLastCommit} callId=${callId}`);
       return false;
@@ -2295,6 +2299,27 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (blockReason) {
         console.log(`[TurnGate] watchdog skipped reason=${blockReason} source=${reason} callId=${callId}`);
         if (blockReason === "caller_still_speaking") {
+          // Hard cap: if the caller has been "speaking" continuously (e.g. background
+          // noise / rambling with no 1s silence gap) the server VAD never emits
+          // speech_stopped, so the watchdog would reschedule forever and the line
+          // hangs open. Force-end the turn once we cross max_caller_utterance_ms.
+          const speechElapsed = callerSpeechStartedAt > 0 ? Date.now() - callerSpeechStartedAt : 0;
+          if (
+            callerSpeechActive &&
+            speechElapsed >= liveTurnSettings.max_caller_utterance_ms &&
+            !activeResponseId &&
+            !greetingInProgress &&
+            !responsePlaybackMarkName
+          ) {
+            console.warn(
+              `[TurnGate] caller_utterance_hard_cap reached elapsedMs=${speechElapsed} max=${liveTurnSettings.max_caller_utterance_ms} forcing commit source=${reason} callId=${callId}`,
+            );
+            callerSpeechActive = false;
+            callerSpeechStartedAt = 0;
+            markIiziCallerTurnEnded("speech_stopped");
+            tryCommitCallerAudio(`watchdog-${reason}-hardcap`, 120, true);
+            return;
+          }
           const elapsed = lastAcceptedCallerAudioAt > 0 ? Date.now() - lastAcceptedCallerAudioAt : 0;
           const waitMs = Math.max(150, liveTurnSettings.silence_duration_ms - elapsed + 50);
           armCallerSpeechWatchdog(`${reason}-reschedule`, waitMs);
@@ -3234,7 +3259,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     );
     console.log(`[GreetingGate] init greetingInProgress=${greetingInProgress} callId=${callId}`);
     console.log(
-      `[TurnGate] loaded mode callId=${callId} strict=${strictTurnGateEnabled()} anti_barge_in=${antiBargeinEnabled} interrupt_response=${liveTurnSettings.interrupt_response} silence_duration_ms=${liveTurnSettings.silence_duration_ms} watchdog_commit_ms=${liveTurnSettings.watchdog_commit_ms}`
+      `[TurnGate] loaded mode callId=${callId} strict=${strictTurnGateEnabled()} anti_barge_in=${antiBargeinEnabled} interrupt_response=${liveTurnSettings.interrupt_response} silence_duration_ms=${liveTurnSettings.silence_duration_ms} watchdog_commit_ms=${liveTurnSettings.watchdog_commit_ms} max_caller_utterance_ms=${liveTurnSettings.max_caller_utterance_ms}`
     );
 
     // Inbound CRM prefetch: identify caller by phone number so the agent knows who's calling.
@@ -6053,6 +6078,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
             }
             speechStartedCount += 1;
+            if (!callerSpeechActive) callerSpeechStartedAt = Date.now();
             callerSpeechActive = true;
             if (initialGreetingResponseFinished && !greetingInProgress) {
               hasPostGreetingSpeechStarted = true;
@@ -6090,6 +6116,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             speechStoppedCount += 1;
             callerSpeechActive = false;
+            callerSpeechStartedAt = 0;
             clearCallerSpeechWatchdog();
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
             markIiziCallerTurnEnded("speech_stopped");

@@ -135,7 +135,7 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     ru: "Я еще не получила местоположение.",
   },
   "occupants.ask": {
-    et: "Mitu inimest on autos koos juhiga?",
+    et: "Mitu inimest on autos koos juhiga? Palun vastake täislausega.",
     en: "How many people are in the car including the driver?",
     ru: "Сколько человек в машине вместе с водителем?",
   },
