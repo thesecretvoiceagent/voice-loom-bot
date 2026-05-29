@@ -1027,6 +1027,7 @@ export interface IiziDeterministicTurnInput {
     | { type: "combined_sms_result"; success: boolean; alreadySent?: boolean }
     | { type: "form_submitted"; submittedReg?: string }
     | { type: "form_wait_timeout" }
+    | { type: "additional_info_timeout" }
     | { type: "vehicle_lookup_result"; match: boolean; coverageInvalid?: boolean }
     | { type: "location_confirmed"; address: string }
     | { type: "callback_sms_result"; success: boolean }
@@ -1440,7 +1441,21 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
           callId,
         );
       }
-      return { actions: [{ type: "none" }], transitionReason: "additional_info_awaiting" };
+      // This is the final optional courtesy question. The caller answered something
+      // that isn't a clean yes/no nor a long note (e.g. a short ambiguous reply or a
+      // garbled transcript). Never leave the line hanging here: acknowledge and close
+      // the call gracefully instead of waiting forever for a "better" answer.
+      bag.flags.pendingEndCallAfterLine = "closing.additional_info_declined";
+      console.log(
+        `[IIZI-Deterministic] additionalInfoAmbiguousClose=true callId=${callId || "?"}`,
+      );
+      return transition(
+        bag,
+        "CLOSING_END_PENDING",
+        "additional_info_ambiguous_close",
+        [{ type: "speak_exact", lineId: "closing.additional_info_declined" }],
+        callId,
+      );
     }
 
     if (state === "WAITING_FOR_ADDITIONAL_INFO_TEXT") {
@@ -1597,6 +1612,27 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       "NON_ROADSIDE_HUMAN_ROUTE",
       "form_wait_timeout",
       [{ type: "speak_exact", lineId: "handoff.human_followup" }],
+      callId,
+    );
+  }
+
+  if (event.type === "additional_info_timeout") {
+    // Caller went silent on the final "anything to add?" question. Don't leave the
+    // line open: close gracefully. Only act while still genuinely waiting for that
+    // answer so a late timer can never disrupt a flow that already moved on.
+    if (
+      bag.currentState !== "WAITING_FOR_ADDITIONAL_INFO_DECISION" &&
+      bag.currentState !== "WAITING_FOR_ADDITIONAL_INFO_TEXT"
+    ) {
+      return { actions: [{ type: "none" }], transitionReason: "additional_info_timeout_ignored" };
+    }
+    console.log(`[IIZI-Deterministic] additionalInfoTimeoutClose=true callId=${cid}`);
+    bag.flags.pendingEndCallAfterLine = "closing.additional_info_declined";
+    return transition(
+      bag,
+      "CLOSING_END_PENDING",
+      "additional_info_timeout",
+      [{ type: "speak_exact", lineId: "closing.additional_info_declined" }],
       callId,
     );
   }

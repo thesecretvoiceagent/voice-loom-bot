@@ -1577,6 +1577,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               expectedText: speak.text,
             };
             activeIiziExactSpeechDedupeKey = dedupeKey;
+            // A new scripted line is starting: the flow has moved on, so cancel any
+            // armed "anything to add?" silence watchdog (it is re-armed when that
+            // question itself finishes playing).
+            clearAdditionalInfoTimeout();
             // The line is now actively being spoken and is tracked by
             // iiziExactSpeechAwaitingPlayback. Clear any stale pendingIiziExactSpeech
             // (and its retry timer) now: confirmIiziExactSpeechPlayback only clears it
@@ -1795,10 +1799,44 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }, FORM_WAIT_TIMEOUT_MS);
   };
 
+  // Final "anything to add?" courtesy question. If the caller stays silent we never
+  // get a transcript, so the FSM is never nudged and the line would hang open. Arm a
+  // short timer once that question finishes playing; on expiry close the call.
+  const ADDITIONAL_INFO_TIMEOUT_MS = 10_000;
+  let additionalInfoTimeoutTimer: NodeJS.Timeout | null = null;
+  const clearAdditionalInfoTimeout = () => {
+    if (additionalInfoTimeoutTimer) {
+      clearTimeout(additionalInfoTimeoutTimer);
+      additionalInfoTimeoutTimer = null;
+    }
+  };
+  const armAdditionalInfoTimeout = () => {
+    clearAdditionalInfoTimeout();
+    if (!iiziDeterministicInbound()) return;
+    const st = iiziDetRef.current.currentState;
+    if (st !== "WAITING_FOR_ADDITIONAL_INFO_DECISION" && st !== "WAITING_FOR_ADDITIONAL_INFO_TEXT") {
+      return;
+    }
+    console.log(
+      `[IIZI-Deterministic] additionalInfoTimeoutArmed=true timeoutMs=${ADDITIONAL_INFO_TIMEOUT_MS} callId=${callId}`,
+    );
+    additionalInfoTimeoutTimer = setTimeout(() => {
+      additionalInfoTimeoutTimer = null;
+      if (!iiziDeterministicInbound()) return;
+      const cur = iiziDetRef.current.currentState;
+      if (cur !== "WAITING_FOR_ADDITIONAL_INFO_DECISION" && cur !== "WAITING_FOR_ADDITIONAL_INFO_TEXT") {
+        return;
+      }
+      console.warn(`[IIZI-Deterministic] additionalInfoTimeoutFired=true callId=${callId}`);
+      runIiziDeterministicSystemEvent({ type: "additional_info_timeout" });
+    }, ADDITIONAL_INFO_TIMEOUT_MS);
+  };
+
   const runIiziDeterministicSystemEvent = (
     event:
       | { type: "form_submitted"; submittedReg?: string }
       | { type: "form_wait_timeout" }
+      | { type: "additional_info_timeout" }
       | { type: "vehicle_lookup_result"; match: boolean; coverageInvalid?: boolean }
       | { type: "location_confirmed"; address: string }
       | { type: "callback_form_received" },
@@ -1807,6 +1845,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // the form, so cancel the form-wait timeout. (The timeout itself clears via its
     // own handler below.)
     if (event.type !== "form_wait_timeout") clearFormWaitTimeout();
+    if (event.type !== "additional_info_timeout") clearAdditionalInfoTimeout();
     const turn = reduceIiziDeterministicTurn({ callId, bag: iiziDetRef.current, event });
     enqueueIiziDeterministicActions(turn.actions);
   };
@@ -3139,6 +3178,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       console.log(
         `[IIZI-Deterministic] shortAnswerCooldown=true lineId=${lastConfirmedIiziSpeechLineId} callId=${callId}`,
       );
+    }
+    // The final "anything to add?" question (and its follow-up "what to add?") just
+    // finished playing. Start the silence watchdog so a mute caller can't wedge the
+    // call open forever.
+    if (
+      lastConfirmedIiziSpeechLineId === "closing.ask_additional_info" ||
+      lastConfirmedIiziSpeechLineId === "closing.ask_what_to_add"
+    ) {
+      armAdditionalInfoTimeout();
     }
     const defaultCooldownMs =
       greetingInProgress || justAskedShortAnswerQuestion
@@ -6175,6 +6223,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
             armCallerSpeechWatchdog("speech-started");
+            // Caller is answering — cancel the "anything to add?" silence watchdog so
+            // a reply that begins near the deadline isn't cut off mid-sentence.
+            clearAdditionalInfoTimeout();
             console.log(`[MediaStream] Speech started (callId=${callId}, responseId=${activeResponseId})`);
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && assistantPlaybackProtected()) {
               aiIsSpeaking = false;
@@ -6677,6 +6728,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     clearResponseDoneFallbackTimer();
     clearPendingInboundRecoveryAfterCancel();
     clearFormWaitTimeout();
+    clearAdditionalInfoTimeout();
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
       openaiWs.close();
     } else {
