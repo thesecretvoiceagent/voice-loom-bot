@@ -1561,6 +1561,20 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               expectedText: speak.text,
             };
             activeIiziExactSpeechDedupeKey = dedupeKey;
+            // The line is now actively being spoken and is tracked by
+            // iiziExactSpeechAwaitingPlayback. Clear any stale pendingIiziExactSpeech
+            // (and its retry timer) now: confirmIiziExactSpeechPlayback only clears it
+            // on an exact actionId match, but each retry mints a fresh actionId, so a
+            // blocked line would otherwise stay "pending" forever after it actually
+            // played — driving phantom auto-retries that collide with the next line.
+            // failIiziExactSpeechPlayback re-arms pending if this send produces no audio.
+            if (pendingIiziExactSpeech) {
+              pendingIiziExactSpeech = null;
+              if (pendingIiziExactSpeechRetryTimer) {
+                clearTimeout(pendingIiziExactSpeechRetryTimer);
+                pendingIiziExactSpeechRetryTimer = null;
+              }
+            }
             console.log(
               `[IIZI-Deterministic] pendingIiziExactSpeechSent=true actionId=${actionId} lineId=${lineIdToSpeak} callId=${callId}`,
             );
@@ -1609,6 +1623,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           },
         });
         enqueueIiziDeterministicActions(turn.actions);
+        if (iiziDetRef.current.currentState === "WAITING_FOR_FORM_SUBMITTED") {
+          armFormWaitTimeout();
+        }
         console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
         return { shouldPause: false };
       }
@@ -1734,13 +1751,46 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     enqueueIiziDeterministicActions(turn.actions);
   };
 
+  // ── Form-wait timeout ──────────────────────────────────────────────────────
+  // After the combined SMS is sent we enter WAITING_FOR_FORM_SUBMITTED and wait for
+  // the caller to fill the registration/location form. If they never do, the call
+  // would otherwise stay open indefinitely. Arm a hard timeout that hands the case
+  // to a human and ends the call.
+  const FORM_WAIT_TIMEOUT_MS = 120_000;
+  let formWaitTimeoutTimer: NodeJS.Timeout | null = null;
+  const clearFormWaitTimeout = () => {
+    if (formWaitTimeoutTimer) {
+      clearTimeout(formWaitTimeoutTimer);
+      formWaitTimeoutTimer = null;
+    }
+  };
+  const armFormWaitTimeout = () => {
+    clearFormWaitTimeout();
+    if (!iiziDeterministicInbound()) return;
+    console.log(
+      `[IIZI-Deterministic] formWaitTimeoutArmed=true timeoutMs=${FORM_WAIT_TIMEOUT_MS} callId=${callId}`,
+    );
+    formWaitTimeoutTimer = setTimeout(() => {
+      formWaitTimeoutTimer = null;
+      if (!iiziDeterministicInbound()) return;
+      if (iiziDetRef.current.currentState !== "WAITING_FOR_FORM_SUBMITTED") return;
+      console.warn(`[IIZI-Deterministic] formWaitTimeoutFired=true callId=${callId}`);
+      runIiziDeterministicSystemEvent({ type: "form_wait_timeout" });
+    }, FORM_WAIT_TIMEOUT_MS);
+  };
+
   const runIiziDeterministicSystemEvent = (
     event:
       | { type: "form_submitted"; submittedReg?: string }
+      | { type: "form_wait_timeout" }
       | { type: "vehicle_lookup_result"; match: boolean; coverageInvalid?: boolean }
       | { type: "location_confirmed"; address: string }
       | { type: "callback_form_received" },
   ) => {
+    // Any real flow-progressing system event means we're no longer idly waiting for
+    // the form, so cancel the form-wait timeout. (The timeout itself clears via its
+    // own handler below.)
+    if (event.type !== "form_wait_timeout") clearFormWaitTimeout();
     const turn = reduceIiziDeterministicTurn({ callId, bag: iiziDetRef.current, event });
     enqueueIiziDeterministicActions(turn.actions);
   };
@@ -6597,6 +6647,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     clearInboundNoAudioTimer();
     clearResponseDoneFallbackTimer();
     clearPendingInboundRecoveryAfterCancel();
+    clearFormWaitTimeout();
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
       openaiWs.close();
     } else {

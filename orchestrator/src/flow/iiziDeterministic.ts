@@ -1026,6 +1026,7 @@ export interface IiziDeterministicTurnInput {
     | { type: "user_transcript"; text: string; assist?: IiziTranscriptAssist }
     | { type: "combined_sms_result"; success: boolean; alreadySent?: boolean }
     | { type: "form_submitted"; submittedReg?: string }
+    | { type: "form_wait_timeout" }
     | { type: "vehicle_lookup_result"; match: boolean; coverageInvalid?: boolean }
     | { type: "location_confirmed"; address: string }
     | { type: "callback_sms_result"; success: boolean }
@@ -1580,6 +1581,24 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       `[IIZI-Deterministic] duplicateDataReceivedLineSuppressed=true reason=await_combined_vehicle_location_readback callId=${cid}`,
     );
     return transition(bag, "WAITING_FOR_VEHICLE_LOOKUP", "form_submitted", [{ type: "none" }], callId);
+  }
+
+  if (event.type === "form_wait_timeout") {
+    // Caller never submitted the registration/location form after the combined SMS.
+    // Don't leave the line hanging open forever: hand the case to a human and end
+    // the call. Only act while still waiting for the form; otherwise no-op so a late
+    // timer can never disrupt a flow that already progressed.
+    if (bag.currentState !== "WAITING_FOR_FORM_SUBMITTED" || bag.flags.formSubmitted) {
+      return { actions: [{ type: "none" }], transitionReason: "form_wait_timeout_ignored" };
+    }
+    console.log(`[IIZI-Deterministic] formWaitTimeoutHandoff=true callId=${cid}`);
+    return transition(
+      bag,
+      "NON_ROADSIDE_HUMAN_ROUTE",
+      "form_wait_timeout",
+      [{ type: "speak_exact", lineId: "handoff.human_followup" }],
+      callId,
+    );
   }
 
   if (event.type === "vehicle_lookup_result") {
