@@ -60,6 +60,12 @@ import {
 } from "../flow/iiziDeterministic.js";
 import { IIZI_LOCALIZED_LINES } from "../flow/iiziDeterministicLocales.js";
 import {
+  assistIntent,
+  assistCallback,
+  assistOccupant,
+  type IiziTranscriptAssist,
+} from "../flow/iiziLlmAssist.js";
+import {
   IIZI_DETERMINISTIC_VOICE_SPEED,
   IIZI_EXACT_SPEECH_TOOL_CHOICE,
   IIZI_EXACT_SPEECH_MAX_OUTPUT_TOKENS,
@@ -1665,11 +1671,56 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   };
 
-  const runIiziDeterministicUserTranscript = (text: string) => {
+  const computeIiziTranscriptAssist = async (text: string): Promise<IiziTranscriptAssist | undefined> => {
+    if (!config.openai.assistEnabled) return undefined;
+    const clean = (text || "").trim();
+    if (!clean) return undefined;
+    const state = iiziDetRef.current.currentState;
+    try {
+      if (state === "WAITING_FOR_ISSUE" || state === "CLASSIFY_INTENT" || state === "UNCLEAR_CLARIFY_ONCE") {
+        const intent = await assistIntent(clean);
+        if (intent) {
+          console.log(
+            `[IIZI-LLM] assistFetched=intent value=${intent.value} category=${intent.category ?? "null"} ` +
+              `confidence=${intent.confidence} callId=${callId}`,
+          );
+          return { intent };
+        }
+        return undefined;
+      }
+      if (state === "ASK_CALLBACK_SAME_NUMBER") {
+        const callback = await assistCallback(clean);
+        if (callback) {
+          console.log(
+            `[IIZI-LLM] assistFetched=callback value=${callback.value} confidence=${callback.confidence} callId=${callId}`,
+          );
+          return { callback };
+        }
+        return undefined;
+      }
+      if (state === "WAITING_FOR_OCCUPANT_COUNT" || state === "OCCUPANT_COUNT_REQUIRED") {
+        const occupantCount = await assistOccupant(clean);
+        if (occupantCount) {
+          console.log(
+            `[IIZI-LLM] assistFetched=occupant value=${occupantCount.value ?? "null"} ` +
+              `confidence=${occupantCount.confidence} callId=${callId}`,
+          );
+          return { occupantCount };
+        }
+        return undefined;
+      }
+    } catch (err) {
+      console.warn(`[IIZI-LLM] assistError state=${state} callId=${callId} err=${String(err)}`);
+    }
+    return undefined;
+  };
+
+  const runIiziDeterministicUserTranscript = async (text: string) => {
+    const assist = await computeIiziTranscriptAssist(text);
     const turn = reduceIiziDeterministicTurn({
       callId,
       bag: iiziDetRef.current,
-      event: { type: "user_transcript", text },
+      event: { type: "user_transcript", text, assist },
     });
     if (turn.remainingModelOwnedDecision) {
       console.log(
@@ -1756,7 +1807,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           `recoveredTranscript="${transcriptText.slice(0, 160)}" recoveryFedToBackend=true ` +
           `recoveryTriggeredModelResponse=false callId=${callId}`,
       );
-      runIiziDeterministicUserTranscript(transcriptText);
+      void runIiziDeterministicUserTranscript(transcriptText);
       return;
     }
     injectInboundTranscriptAsUserText(transcriptText, reason, transcriptSeq);
@@ -4180,7 +4231,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       greetingTokenLimitRaised = Boolean(greeting);
 
       const gaTranscription = {
-        model: "whisper-1",
+        model: config.openai.transcribeModel,
         // Lock STT to Estonian — most callers speak ET. Mixed-language STT
         // mangles plates like 484DLC → 484DLT, which breaks CRM lookups.
         language: "et",
@@ -4592,14 +4643,26 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 }
               }
               if (iiziDeterministicInbound()) {
-                runIiziDeterministicUserTranscript(transcriptText);
+                await runIiziDeterministicUserTranscript(transcriptText);
                 console.log(
                   `[IIZI-Deterministic] skip_model_user_transcript_response=true iiziBrainNextActionControl=false callId=${callId} itemId=${transcriptItemId}`,
                 );
                 retryPendingIiziExactSpeech("transcript_done");
                 markIiziCallerTurnEnded("transcript_completed");
               }
-              if (activeResponseId && !responseHasAudio && activeResponseReason !== "initial-greeting") {
+              // When the backend owns playback via TTS, the realtime model never
+              // emits response.created/audio.done and a scripted line legitimately
+              // takes ~1-3s to synthesize before any Twilio audio appears. The
+              // "no usable audio" stale-reset + transcript fallback below were built
+              // for realtime-model failures and would wrongly cancel a TTS turn
+              // mid-synthesis (discard_stale_playback). Skip them entirely here.
+              const ttsOwnsPlayback = config.openai.ttsEnabled && iiziDeterministicInbound();
+              if (
+                !ttsOwnsPlayback &&
+                activeResponseId &&
+                !responseHasAudio &&
+                activeResponseReason !== "initial-greeting"
+              ) {
                 console.warn(`[Diag-InboundTurn] new user transcript while previous response has no usable audio; resetting stale response state activeResponse=${activeResponseId} seq=${fallbackSeq} previousSeq=${activeResponseInboundTranscriptSeq} (callId=${callId})`);
                 clearInboundNoAudioTimer();
                 clearResponseDoneFallbackTimer();
@@ -4615,21 +4678,23 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 aiIsSpeaking = false;
               }
               console.log(`[Diag-InboundTurn] transcript.completed seq=${fallbackSeq} at=${new Date(latestCompletedInboundTranscript.at).toISOString()} text="${transcriptText.slice(0, 160)}" responseCreated=${responseCreatedCount} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
-              inboundTranscriptFallbackTimer = setTimeout(() => {
-                inboundTranscriptFallbackTimer = null;
-                if (fallbackSeq !== inboundTranscriptFallbackSeq || greetingInProgress) return;
-                if (activeResponseTwilioChunks > 0) return;
-                if (activeResponseId) {
-                  console.warn(`[Diag-InboundTurn] fallback active response has no usable Twilio audio yet; escalating seq=${fallbackSeq} activeResponse=${activeResponseId} openaiAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} (callId=${callId})`);
-                  triggerInboundTranscriptRecovery("inbound-transcript-fallback-active-no-audio", activeResponseId);
-                  return;
-                }
-                console.warn(`[Diag-InboundTurn] fallback scheduled fired seq=${fallbackSeq} reason=transcript-no-response activeResponse=${activeResponseId || "none"} text="${transcriptText.slice(0, 160)}" (callId=${callId})`);
-                triggerInboundTranscriptRecovery("inbound-transcript-fallback", null);
-              }, liveTurnSettings.inbound_transcript_fallback_ms);
-              console.log(
-                `[Diag-InboundTurn] fallback scheduled seq=${fallbackSeq} timeoutMs=${liveTurnSettings.inbound_transcript_fallback_ms} text="${transcriptText.slice(0, 160)}" (callId=${callId})`
-              );
+              if (!ttsOwnsPlayback) {
+                inboundTranscriptFallbackTimer = setTimeout(() => {
+                  inboundTranscriptFallbackTimer = null;
+                  if (fallbackSeq !== inboundTranscriptFallbackSeq || greetingInProgress) return;
+                  if (activeResponseTwilioChunks > 0) return;
+                  if (activeResponseId) {
+                    console.warn(`[Diag-InboundTurn] fallback active response has no usable Twilio audio yet; escalating seq=${fallbackSeq} activeResponse=${activeResponseId} openaiAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} (callId=${callId})`);
+                    triggerInboundTranscriptRecovery("inbound-transcript-fallback-active-no-audio", activeResponseId);
+                    return;
+                  }
+                  console.warn(`[Diag-InboundTurn] fallback scheduled fired seq=${fallbackSeq} reason=transcript-no-response activeResponse=${activeResponseId || "none"} text="${transcriptText.slice(0, 160)}" (callId=${callId})`);
+                  triggerInboundTranscriptRecovery("inbound-transcript-fallback", null);
+                }, liveTurnSettings.inbound_transcript_fallback_ms);
+                console.log(
+                  `[Diag-InboundTurn] fallback scheduled seq=${fallbackSeq} timeoutMs=${liveTurnSettings.inbound_transcript_fallback_ms} text="${transcriptText.slice(0, 160)}" (callId=${callId})`
+                );
+              }
             } else if (iiziDeterministicInbound()) {
               console.log(
                 `[IIZI-Deterministic] skip_model_user_transcript_response=true callId=${callId} itemId=${transcriptItemId}`,

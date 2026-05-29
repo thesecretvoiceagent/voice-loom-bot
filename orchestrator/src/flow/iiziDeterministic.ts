@@ -35,6 +35,7 @@ import {
 } from "./iiziDeterministicBroad.js";
 import type { IiziIncidentType, IiziLanguage, IiziRoadsideCategory } from "./iiziDeterministicTypes.js";
 export type { IiziLanguage, IiziRoadsideCategory, IiziIncidentType } from "./iiziDeterministicTypes.js";
+import type { IiziTranscriptAssist } from "./iiziLlmAssist.js";
 
 export {
   IIZI_DETERMINISTIC_AGENT_ID,
@@ -533,6 +534,47 @@ function parseOccupantCount(normalized: string): number | null {
   return null;
 }
 
+/** Minimum LLM confidence before its hint may override a non-exact rule result. */
+const IIZI_ASSIST_MIN_CONFIDENCE = 0.6;
+
+/**
+ * Resolve the effective issue intent + category, letting the LLM assist override
+ * ONLY when the rule-based classifier was not a confident exact match. This keeps
+ * deterministic exact trigger matches authoritative while letting the LLM rescue
+ * garbled-STT cases (e.g. "reef on tühi" fuzzy-matched to the wrong category).
+ */
+function resolveAssistedIntent(
+  c: IiziTranscriptClassification,
+  assist: IiziTranscriptAssist | undefined,
+  norm: string,
+  callId: string | null,
+): { intent: string; category: IiziRoadsideCategory; occupantRequired: boolean } {
+  let intent: string = c.finalBackendIntent;
+  let category: IiziRoadsideCategory = (c.triggerCategory ?? c.subCategory ?? "generic_roadside") as IiziRoadsideCategory;
+  let occupantRequired = c.occupantCountRequired;
+
+  const a = assist?.intent;
+  const ruleIsExact = c.classificationMethod === "exact";
+  if (a && a.confidence >= IIZI_ASSIST_MIN_CONFIDENCE && !ruleIsExact) {
+    const categoryChanged =
+      a.value === "roadside_assistance" && a.category != null && a.category !== category;
+    if (a.value !== intent || categoryChanged) {
+      const fromCategory = category;
+      intent = a.value;
+      if (a.value === "roadside_assistance") {
+        category = (a.category ?? category ?? "generic_roadside") as IiziRoadsideCategory;
+        occupantRequired = computeOccupantRequirement(category, norm).required;
+      }
+      console.log(
+        `[IIZI-LLM] intent_assist_applied from=${c.finalBackendIntent}/${fromCategory} ` +
+          `to=${intent}/${category} confidence=${a.confidence} ruleMethod=${c.classificationMethod} ` +
+          `occupantRequired=${occupantRequired} callId=${callId || "?"}`,
+      );
+    }
+  }
+  return { intent, category, occupantRequired };
+}
+
 function isExplicitCallerLanguageSwitch(normalized: string, raw: string): IiziLanguage | null {
   if (transcriptHasCyrillic(raw)) return "ru";
   if (/\b(in english|speak english|english please|inglise\s+keeles|räägi\s+inglise)\b/i.test(normalized)) {
@@ -906,7 +948,7 @@ export interface IiziDeterministicTurnInput {
   callId: string | null;
   event:
     | { type: "greeting_complete" }
-    | { type: "user_transcript"; text: string }
+    | { type: "user_transcript"; text: string; assist?: IiziTranscriptAssist }
     | { type: "combined_sms_result"; success: boolean; alreadySent?: boolean }
     | { type: "form_submitted"; submittedReg?: string }
     | { type: "vehicle_lookup_result"; match: boolean; coverageInvalid?: boolean }
@@ -981,10 +1023,11 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     if (state === "UNCLEAR_CLARIFY_ONCE") {
       const c = classifyIiziTranscript(event.text, bag, callId);
       logClassification(callId, c, state);
-      if (c.finalBackendIntent === "roadside_assistance") {
-        const category = c.triggerCategory ?? c.subCategory ?? "generic_roadside";
+      const resolved = resolveAssistedIntent(c, event.assist, norm, callId);
+      if (resolved.intent === "roadside_assistance") {
+        const category = resolved.category;
         bag.flags.incidentCategory = category;
-        bag.flags.occupantCountRequired = c.occupantCountRequired;
+        bag.flags.occupantCountRequired = resolved.occupantRequired;
         console.log(
           `[IIZI-Deterministic] roadsideStartChain=true incidentLineSpoken=true crmLineSpoken=true ` +
             `combinedSmsRequested=true callId=${callId || "?"}`,
@@ -997,7 +1040,7 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
           callId,
         );
       }
-      if (c.finalBackendIntent === "not_roadside_assistance") {
+      if (resolved.intent === "not_roadside_assistance") {
         return transition(
           bag,
           "NON_ROADSIDE_HUMAN_ROUTE",
@@ -1031,8 +1074,9 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       const c = classifyIiziTranscript(event.text, bag, callId);
       bag.lastClassificationLog = { ...c };
       logClassification(callId, c, bag.currentState);
+      const resolved = resolveAssistedIntent(c, event.assist, norm, callId);
 
-      if (c.finalBackendIntent === "unsafe") {
+      if (resolved.intent === "unsafe") {
         return transition(
           bag,
           "UNSAFE_HUMAN_ROUTE",
@@ -1041,7 +1085,7 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
           callId,
         );
       }
-      if (c.finalBackendIntent === "not_roadside_assistance") {
+      if (resolved.intent === "not_roadside_assistance") {
         return transition(
           bag,
           "NON_ROADSIDE_HUMAN_ROUTE",
@@ -1050,10 +1094,10 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
           callId,
         );
       }
-      if (c.finalBackendIntent === "roadside_assistance") {
-        const category = c.triggerCategory ?? c.subCategory ?? "generic_roadside";
+      if (resolved.intent === "roadside_assistance") {
+        const category = resolved.category;
         bag.flags.incidentCategory = category;
-        bag.flags.occupantCountRequired = c.occupantCountRequired;
+        bag.flags.occupantCountRequired = resolved.occupantRequired;
         console.log(
           `[IIZI-Deterministic] roadsideStartChain=true incidentLineSpoken=true crmLineSpoken=true ` +
             `combinedSmsRequested=true callId=${callId || "?"}`,
@@ -1066,7 +1110,7 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
           callId,
         );
       }
-      if (c.finalBackendIntent === "unclear") {
+      if (resolved.intent === "unclear") {
         if (bag.unclearCount >= 2 && bag.lastWeakRoadsideEvidenceCategory) {
           const category = bag.lastWeakRoadsideEvidenceCategory;
           bag.flags.incidentCategory = category;
@@ -1120,10 +1164,24 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
         return { actions: [{ type: "none" }], transitionReason: "callback_awaiting_transcript" };
       }
       const callbackIntent = classifyCallbackSameNumberIntent(norm);
-      const different = callbackIntent.intent === "different_number";
-      const same = callbackIntent.intent === "same_number";
+      let resolvedCallback = callbackIntent.intent;
+      const callbackAssist = event.assist?.callback;
+      if (
+        resolvedCallback === "unknown" &&
+        callbackAssist &&
+        callbackAssist.value !== "unknown" &&
+        callbackAssist.confidence >= IIZI_ASSIST_MIN_CONFIDENCE
+      ) {
+        console.log(
+          `[IIZI-LLM] callback_assist_applied from=unknown to=${callbackAssist.value} ` +
+            `confidence=${callbackAssist.confidence} callId=${callId || "?"}`,
+        );
+        resolvedCallback = callbackAssist.value;
+      }
+      const different = resolvedCallback === "different_number";
+      const same = resolvedCallback === "same_number";
       console.log(
-        `[IIZI-Deterministic] callbackIntent=${callbackIntent.intent} ` +
+        `[IIZI-Deterministic] callbackIntent=${resolvedCallback} ` +
           `callbackEvidence=${JSON.stringify(callbackIntent.evidence)} ` +
           `callbackDifferentNumberDetected=${different} callbackSameNumberConfirmed=${same} callId=${callId || "?"}`,
       );
@@ -1241,7 +1299,21 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     }
 
     if (state === "WAITING_FOR_OCCUPANT_COUNT" || state === "OCCUPANT_COUNT_REQUIRED") {
-      const n = parseOccupantCount(norm);
+      let n = parseOccupantCount(norm);
+      const occAssist = event.assist?.occupantCount;
+      if (
+        (n == null || n <= 0) &&
+        occAssist &&
+        occAssist.value != null &&
+        occAssist.value > 0 &&
+        occAssist.confidence >= IIZI_ASSIST_MIN_CONFIDENCE
+      ) {
+        console.log(
+          `[IIZI-LLM] occupant_assist_applied count=${occAssist.value} ` +
+            `confidence=${occAssist.confidence} callId=${callId || "?"}`,
+        );
+        n = occAssist.value;
+      }
       if (n != null && n > 0) {
         bag.flags.occupantCountConfirmed = true;
         console.log(`[IIZI-Deterministic] occupantCountParsed=true count=${n} callId=${callId || "?"}`);

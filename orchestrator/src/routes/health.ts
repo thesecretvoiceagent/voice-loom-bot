@@ -40,7 +40,7 @@ healthRouter.post("/diag/openai-realtime-self-test", async (req, res) => {
     audio_output_format: "audio/pcmu",
     voice,
     turn_detection: null,
-    input_audio_transcription: { model: "whisper-1", language: "et" },
+    input_audio_transcription: { model: config.openai.transcribeModel, language: "et" },
     tools_count: 0,
   };
 

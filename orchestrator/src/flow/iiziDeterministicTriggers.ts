@@ -291,6 +291,16 @@ export const IIZI_FUZZY_EXTRA: readonly { phrase: string; category: IiziRoadside
   { phrase: "rehv tuhi", category: "flat_tire" },
   { phrase: "rehv tyhi", category: "flat_tire" },
   { phrase: "autorehv katki", category: "flat_tire" },
+  // Common STT mishearings of "rehv" (tyre) as "reef"/"reff" — keep these on the
+  // flat_tire path so a flat tyre is never misread as a no-start (which would
+  // wrongly trigger the occupant-count question).
+  { phrase: "reef tuhi", category: "flat_tire" },
+  { phrase: "reef tyhi", category: "flat_tire" },
+  { phrase: "reef on tuhi", category: "flat_tire" },
+  { phrase: "reef on tyhi", category: "flat_tire" },
+  { phrase: "reef katki", category: "flat_tire" },
+  { phrase: "reff tuhi", category: "flat_tire" },
+  { phrase: "reff on tuhi", category: "flat_tire" },
   { phrase: "bensiinsajotsa", category: "out_of_fuel" },
   { phrase: "bensiinsaiotsa", category: "out_of_fuel" },
   { phrase: "bensiin otsas", category: "out_of_fuel" },

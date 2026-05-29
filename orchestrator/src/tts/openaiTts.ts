@@ -27,8 +27,13 @@ const SYNTH_TIMEOUT_MS = 8000;
 const MAX_CACHE_ENTRIES = 256;
 const mulawCache = new Map<string, Buffer>();
 
-const cacheKey = (model: string, voice: string, text: string): string =>
-  `${model}::${voice}::${text}`;
+const cacheKey = (
+  model: string,
+  voice: string,
+  speed: number,
+  instructions: string,
+  text: string,
+): string => `${model}::${voice}::${speed}::${instructions}::${text}`;
 
 const cacheGet = (key: string): Buffer | null => {
   const hit = mulawCache.get(key);
@@ -85,6 +90,89 @@ const pcm24kToMulaw8k = (pcm: Buffer): Buffer => {
   return out;
 };
 
+/**
+ * Speed up speech in the time domain WITHOUT changing pitch, using SOLA
+ * (Synchronous Overlap-Add with a cross-correlation alignment search).
+ *
+ * The gpt-4o-mini-tts / gpt-4o-tts models ignore the API `speed` parameter, so
+ * the only reliable way to make scripted lines play faster while keeping a
+ * natural (non-"chipmunk") voice is to time-compress the rendered PCM here.
+ * Operates on 24 kHz s16le mono PCM. `speed` > 1 compresses (faster). Returns
+ * the input unchanged for speed ~1 or inputs too short to process.
+ */
+const timeScalePcm16Mono = (pcm: Buffer, speed: number): Buffer => {
+  if (!Number.isFinite(speed) || speed <= 1.0001) return pcm;
+  const inSamples = Math.floor(pcm.length / 2);
+  // Window/hop tuned for 24 kHz speech.
+  const WIN = 256; // analysis/synthesis frame length (samples)
+  const Sa = 128; // analysis hop (advance through input)
+  const OVERLAP = 64; // crossfade length
+  const SEARCH = 64; // +/- correlation search radius
+  if (inSamples < WIN * 4) return pcm; // too short to bother
+
+  const x = new Float64Array(inSamples);
+  for (let i = 0; i < inSamples; i++) x[i] = pcm.readInt16LE(i * 2);
+
+  const alpha = 1 / speed; // output/input ratio (< 1 → shorter/faster)
+  const Ss = Math.max(1, Math.round(Sa * alpha)); // synthesis hop (advance through output)
+  const out = new Float64Array(Math.ceil(inSamples * alpha) + WIN + SEARCH + 16);
+
+  // Seed output with the first window verbatim.
+  for (let i = 0; i < WIN; i++) out[i] = x[i];
+  let outLen = WIN;
+
+  let m = 1;
+  for (;;) {
+    const inStart = m * Sa;
+    if (inStart + WIN > inSamples) break;
+    const nominal = m * Ss;
+
+    // Find the offset k that best aligns the new input frame's leading OVERLAP
+    // samples with the existing output around `nominal` (normalized x-corr).
+    let bestK = 0;
+    let bestR = -Infinity;
+    for (let k = -SEARCH; k <= SEARCH; k++) {
+      const op = nominal + k;
+      if (op < 0 || op + OVERLAP > outLen) continue;
+      let num = 0;
+      let den = 0;
+      for (let i = 0; i < OVERLAP; i++) {
+        const a = out[op + i];
+        const b = x[inStart + i];
+        num += a * b;
+        den += a * a;
+      }
+      const r = num / (Math.sqrt(den) + 1e-9);
+      if (r > bestR) {
+        bestR = r;
+        bestK = k;
+      }
+    }
+
+    const join = nominal + bestK;
+    if (join < 0) break;
+    // Crossfade OVERLAP samples, then append the remainder of the frame.
+    for (let i = 0; i < OVERLAP; i++) {
+      const f = i / (OVERLAP - 1); // 0 → 1
+      out[join + i] = out[join + i] * (1 - f) + x[inStart + i] * f;
+    }
+    for (let i = OVERLAP; i < WIN; i++) {
+      out[join + i] = x[inStart + i];
+    }
+    outLen = join + WIN;
+    m++;
+  }
+
+  const result = Buffer.allocUnsafe(outLen * 2);
+  for (let i = 0; i < outLen; i++) {
+    let s = Math.round(out[i]);
+    if (s > 32767) s = 32767;
+    else if (s < -32768) s = -32768;
+    result.writeInt16LE(s, i * 2);
+  }
+  return result;
+};
+
 export interface SynthResult {
   /** G.711 mu-law, 8 kHz, mono bytes ready to frame for Twilio. */
   mulaw: Buffer;
@@ -105,8 +193,16 @@ export const synthesizeMulaw8k = async (
 
   const model = opts?.model || config.openai.ttsModel;
   const voice = opts?.voice || config.openai.ttsVoice;
-  const key = cacheKey(model, voice, clean);
+  const speed = Number.isFinite(config.openai.ttsSpeed) ? config.openai.ttsSpeed : 1;
 
+  // The legacy tts-1 / tts-1-hd models accept a numeric `speed`. The newer
+  // gpt-4o-mini-tts / gpt-4o-tts models ignore it, so for those we time-compress
+  // the rendered PCM ourselves (pitch-preserving) to actually play faster.
+  const isLegacyTtsModel = model.startsWith("tts-1");
+  const instructions = (opts?.instructions || config.openai.ttsInstructions || "").trim();
+  const applyTimeStretch = !isLegacyTtsModel && speed > 1.0001;
+
+  const key = cacheKey(model, voice, speed, instructions, clean);
   const cached = cacheGet(key);
   if (cached) return { mulaw: cached, fromCache: true };
 
@@ -119,7 +215,8 @@ export const synthesizeMulaw8k = async (
       input: clean,
       response_format: "pcm",
     };
-    if (opts?.instructions) body.instructions = opts.instructions;
+    if (isLegacyTtsModel && speed && speed !== 1) body.speed = speed;
+    if (instructions) body.instructions = instructions;
     const res = await fetch(OPENAI_SPEECH_URL, {
       method: "POST",
       headers: {
@@ -133,8 +230,9 @@ export const synthesizeMulaw8k = async (
       const errText = await res.text().catch(() => "");
       throw new Error(`tts_http_${res.status}:${errText.slice(0, 200)}`);
     }
-    const pcm = Buffer.from(await res.arrayBuffer());
+    let pcm: Buffer = Buffer.from(await res.arrayBuffer());
     if (pcm.length < 2) throw new Error("tts_empty_audio");
+    if (applyTimeStretch) pcm = timeScalePcm16Mono(pcm, speed);
     const mulaw = pcm24kToMulaw8k(pcm);
     if (mulaw.length === 0) throw new Error("tts_empty_after_encode");
     cacheSet(key, mulaw);
