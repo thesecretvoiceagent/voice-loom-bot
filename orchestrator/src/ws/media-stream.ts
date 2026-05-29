@@ -607,6 +607,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let iiziExactSpeechAwaitingPlayback:
     | { lineId: string; dedupeKey: string; actionId: string; vars?: Record<string, string>; expectedText?: string }
     | null = null;
+  // Line id of the most recently confirmed exact-speech line. Used by
+  // maybeCompleteAiTurn to size the post-playback echo cooldown: after a short
+  // yes/no style question the caller answers instantly, so a long cooldown would
+  // swallow that answer (input_audio_buffer.clear drops it). For those lines we
+  // fall back to the same tiny cooldown the greeting uses.
+  let lastConfirmedIiziSpeechLineId: string | null = null;
+  // Scripted lines that ask for an immediate short caller answer. After these we
+  // must NOT drop the caller's reply in the echo-guard window.
+  const IIZI_SHORT_ANSWER_QUESTION_LINES = new Set<string>([
+    "callback.ask_same_number",
+    "callback.ask_same_number_clarify",
+    "occupants.ask",
+    "non_roadside.confirm_question",
+    "closing.ask_additional_info",
+  ]);
   // Speech-drift guard: enforce that the realtime model speaks the scripted exact line
   // verbatim. If it drifts (improvises, mirrors the caller, translates, hallucinates),
   // we flush the unplayed audio and re-issue the correct line. Kill-switch via env.
@@ -1139,6 +1154,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const confirmIiziExactSpeechPlayback = () => {
     if (!iiziExactSpeechAwaitingPlayback) return;
     const { lineId, dedupeKey, actionId } = iiziExactSpeechAwaitingPlayback;
+    lastConfirmedIiziSpeechLineId = lineId;
     console.log(
       `[IIZI-Deterministic] iiziExactSpeechSpoken=true lineId=${lineId} dedupeKey=${dedupeKey} callId=${callId}`,
     );
@@ -3112,9 +3128,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // caller's immediate reply ("tere" / "mul oli avarii"). Echo risk is minimal
     // because the greeting just finished playing and Twilio's mark confirmed it.
     // After normal AI turns we keep the longer cooldown to avoid echo loops.
-    const defaultCooldownMs = greetingInProgress
-      ? liveTurnSettings.post_greeting_cooldown_ms
-      : liveTurnSettings.post_playback_cooldown_ms;
+    // After a short yes/no style question the caller replies instantly, so the
+    // long echo cooldown (which clears the input buffer) would swallow that reply
+    // and deadlock the call. Use the tiny greeting-grade cooldown for those lines.
+    const justAskedShortAnswerQuestion =
+      !greetingInProgress &&
+      lastConfirmedIiziSpeechLineId !== null &&
+      IIZI_SHORT_ANSWER_QUESTION_LINES.has(lastConfirmedIiziSpeechLineId);
+    if (justAskedShortAnswerQuestion) {
+      console.log(
+        `[IIZI-Deterministic] shortAnswerCooldown=true lineId=${lastConfirmedIiziSpeechLineId} callId=${callId}`,
+      );
+    }
+    const defaultCooldownMs =
+      greetingInProgress || justAskedShortAnswerQuestion
+        ? liveTurnSettings.post_greeting_cooldown_ms
+        : liveTurnSettings.post_playback_cooldown_ms;
     const recoveryCooldownMs = effectivePostPlaybackCooldownMs(pendingRecoveryCooldownMs || defaultCooldownMs);
     pendingRecoveryCooldownMs = 0;
 
