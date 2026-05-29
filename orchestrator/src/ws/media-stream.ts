@@ -1330,11 +1330,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const sent = sendResponseCreate(
       "iizi-exact-speech",
       buildIiziDeterministicSpeechResponse("iizi-exact-speech", {
+        // Out-of-band: isolate this response from the conversation history so the
+        // model cannot "continue the dialogue" or decide what comes next. It only
+        // sees the verbatim instruction below and acts as a pure TTS engine. The
+        // backend FSM remains the sole authority over conversation flow.
+        conversation: "none",
         instructions:
           `You are a strict text-to-speech engine, not a conversational assistant. ` +
           `Output ONLY the exact text between the triple quotes, word for word, in Estonian. ` +
           `Do NOT translate it. Do NOT add, remove, reorder, or change any word. ` +
-          `Do NOT add greetings, filler, apologies, opinions, or ANY personal, emotional, or off-topic statements. ` +
+          `Do NOT add greetings, filler, apologies, opinions, questions, or ANY personal, emotional, or off-topic statements. ` +
+          `Do NOT answer or continue any conversation. Do NOT make any non-speech sounds (no breathing, sighs, static, or noises). ` +
           `NEVER speak English. NEVER talk about yourself. Do NOT call tools. ` +
           `If you are unsure, still output the text exactly as written and nothing else.\n"""\n${text}\n"""`,
         output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
@@ -1352,8 +1358,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const text = resolveIiziFillerLine(lineId);
     if (!text) return false;
     return sendResponseCreate("iizi-filler", {
+      conversation: "none",
       instructions:
-        `Speak ONLY this brief filler verbatim, then stop:\n"""\n${text}\n"""`,
+        `You are a strict text-to-speech engine. Speak ONLY this brief filler verbatim, then stop. ` +
+        `Do NOT add anything, do NOT continue any conversation, do NOT make non-speech sounds:\n"""\n${text}\n"""`,
       output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
     });
   };
