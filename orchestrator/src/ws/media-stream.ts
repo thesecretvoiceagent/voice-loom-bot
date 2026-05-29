@@ -27,6 +27,7 @@ import {
   type IiziBrainRuntimeState,
 } from "../flow/iiziBrain.js";
 import { fetchLatestEnabledBrainConfigRow } from "../agentBrainConfigRepo.js";
+import { synthesizeMulaw8k } from "../tts/openaiTts.js";
 import { recordIiziShadowTrace } from "../flow/trace.js";
 import type { AgentBrainConfig } from "../brain/agentBrainUiTypes.js";
 import { resolveAgentBrainConfigFromSettings, resolveRuntimeBrainUiFromSettings } from "../brain/agentBrainUiTypes.js";
@@ -1350,6 +1351,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       iiziExactSpeechLineId: lineId,
       iiziExactSpeechActionId: opts?.actionId ?? null,
       iiziExactSpeechDedupeKey: opts?.dedupeKey ?? null,
+      ttsText: text,
     });
     return { sent, blockedReason: sent ? null : lastResponseCreateBlockReason || "unknown_block", text };
   };
@@ -1357,13 +1359,17 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const speakFillerIizi = (lineId: string, reason: IiziFillerReason): boolean => {
     const text = resolveIiziFillerLine(lineId);
     if (!text) return false;
-    return sendResponseCreate("iizi-filler", {
-      conversation: "none",
-      instructions:
-        `You are a strict text-to-speech engine. Speak ONLY this brief filler verbatim, then stop. ` +
-        `Do NOT add anything, do NOT continue any conversation, do NOT make non-speech sounds:\n"""\n${text}\n"""`,
-      output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
-    });
+    return sendResponseCreate(
+      "iizi-filler",
+      {
+        conversation: "none",
+        instructions:
+          `You are a strict text-to-speech engine. Speak ONLY this brief filler verbatim, then stop. ` +
+          `Do NOT add anything, do NOT continue any conversation, do NOT make non-speech sounds:\n"""\n${text}\n"""`,
+        output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
+      },
+      { ttsText: text },
+    );
   };
 
   const enqueueIiziDeterministicActions = (actions: IiziDeterministicAction[]) => {
@@ -2250,6 +2256,135 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }, timeoutMs);
   };
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Deterministic TTS playback. For every scripted agent utterance we bypass the
+  // generative realtime model entirely: we synthesize the EXACT text via a real
+  // TTS endpoint and stream the resulting mu-law 8kHz bytes straight to Twilio.
+  // The audio literally *is* the script, so the model can never improvise or
+  // hallucinate the wording (0% drift). We mint a synthetic "response" lifecycle
+  // (activeResponseId = "tts:…") so the existing turn/mark/drain machinery keeps
+  // working unchanged: mark -> maybeCompleteAiTurn -> drain the FSM queue.
+  const isIiziTtsSpeechReason = (reason: string): boolean =>
+    reason === "initial-greeting" || reason === "iizi-exact-speech" || reason === "iizi-filler";
+  const TTS_MULAW_BYTES_PER_SEC = 8000;
+
+  const runIiziTtsPlayback = async (
+    ttsId: string,
+    reason: string,
+    text: string,
+    lineId: string | null,
+  ): Promise<void> => {
+    let mulaw: Buffer;
+    try {
+      const synth = await synthesizeMulaw8k(text);
+      mulaw = synth.mulaw;
+      console.log(
+        `[IIZI-TTS] synthesized reason=${reason} lineId=${lineId || "none"} bytes=${mulaw.length} ` +
+          `fromCache=${synth.fromCache} callId=${callId}`,
+      );
+    } catch (err) {
+      console.error(
+        `[IIZI-TTS] synthesis_failed reason=${reason} lineId=${lineId || "none"} ` +
+          `err=${String(err).slice(0, 200)} callId=${callId}`,
+      );
+      if (activeResponseId !== ttsId) return;
+      // Roll back the synthetic turn so the call doesn't freeze.
+      const wasGreeting = greetingInProgress;
+      resetResponseState();
+      aiIsSpeaking = false;
+      if (reason === "iizi-exact-speech") {
+        // Re-queue the line; the auto-retry will attempt synthesis again.
+        failIiziExactSpeechPlayback("tts_synthesis_failed");
+      } else if (wasGreeting) {
+        responseDoneReceived = true;
+        responseHasAudio = false;
+        responseAudioDone = true;
+        maybeCompleteAiTurn("tts-greeting-synth-failed");
+        return;
+      }
+      void drainIiziDeterministicNextActions();
+      return;
+    }
+
+    // The caller may have moved on (barge-in / hang-up / new turn) while we were
+    // synthesizing. Only stream if this synthetic turn is still the active one.
+    if (activeResponseId !== ttsId) {
+      console.warn(
+        `[IIZI-TTS] discard_stale_playback reason=${reason} lineId=${lineId || "none"} ` +
+          `active=${activeResponseId || "none"} callId=${callId}`,
+      );
+      return;
+    }
+    if (!streamSid || twilioWs.readyState !== WebSocket.OPEN) {
+      console.warn(`[IIZI-TTS] twilio_not_ready reason=${reason} callId=${callId}`);
+      resetResponseState();
+      aiIsSpeaking = false;
+      if (reason === "iizi-exact-speech") failIiziExactSpeechPlayback("tts_twilio_not_ready");
+      return;
+    }
+
+    responseHasAudio = mulaw.length > 0;
+    const FRAME = 160; // 20ms @ 8kHz mu-law
+    for (let offset = 0; offset < mulaw.length; offset += FRAME) {
+      const chunk = mulaw.subarray(offset, Math.min(offset + FRAME, mulaw.length));
+      try {
+        twilioWs.send(
+          JSON.stringify({ event: "media", streamSid, media: { payload: chunk.toString("base64") } }),
+        );
+        twilioOutboundFrames += 1;
+        if (reason !== "initial-greeting") userTwilioOutboundFrames += 1;
+        activeResponseTwilioChunks += 1;
+        activeResponseTwilioBytes += chunk.length;
+        if (!firstTwilioOutboundAt) firstTwilioOutboundAt = new Date().toISOString();
+      } catch (sendErr) {
+        twilioOutboundSendErrors += 1;
+        console.error(`[IIZI-TTS] twilio_send_error reason=${reason} callId=${callId}`, sendErr);
+      }
+    }
+
+    responseAudioDone = true;
+    responseDoneReceived = true;
+    console.log(
+      `[IIZI-TTS] playback_streamed reason=${reason} lineId=${lineId || "none"} ` +
+        `frames=${activeResponseTwilioChunks} bytes=${activeResponseTwilioBytes} callId=${callId}`,
+    );
+
+    // Mirror realtime "response.done": confirm the scripted line as spoken now
+    // (audio is fully buffered to Twilio). This sets FSM flags and arms the
+    // deterministic end_call-after-line, which maybeCompleteAiTurn reads once
+    // Twilio confirms playback via the mark below.
+    if (reason === "iizi-exact-speech") {
+      confirmIiziExactSpeechPlayback();
+    }
+
+    // Wait for Twilio to confirm playback actually finished, then the existing
+    // mark handler -> maybeCompleteAiTurn -> drain cycle resumes the FSM.
+    responsePlaybackMarkName = `tts-playback:${ttsId}:${Date.now()}`;
+    try {
+      twilioWs.send(
+        JSON.stringify({ event: "mark", streamSid, mark: { name: responsePlaybackMarkName } }),
+      );
+    } catch (sendErr) {
+      console.error(`[IIZI-TTS] twilio_mark_send_error reason=${reason} callId=${callId}`, sendErr);
+    }
+    // mu-law @ 8kHz => 8000 bytes per second of audio. Size the safety fallback to
+    // the actual clip length so a long readback is never cut off before Twilio's
+    // real playback mark arrives.
+    const playbackDurationMs = Math.ceil((mulaw.length / TTS_MULAW_BYTES_PER_SEC) * 1000);
+    const markTimeoutMs = playbackDurationMs + (greetingInProgress ? 2000 : 4000);
+    clearMarkFallback();
+    markFallbackTimer = setTimeout(() => {
+      if (responsePlaybackMarkName) {
+        console.warn(
+          `[IIZI-TTS] mark_fallback_fired reason=${reason} mark=${responsePlaybackMarkName} ` +
+            `playbackMs=${playbackDurationMs} callId=${callId}`,
+        );
+        responsePlaybackMarkName = null;
+        maybeCompleteAiTurn("tts-mark-fallback-timeout");
+      }
+    }, markTimeoutMs);
+  };
+
   const sendResponseCreate = (
     reason: string,
     response?: Record<string, unknown>,
@@ -2258,6 +2393,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       iiziExactSpeechLineId?: string | null;
       iiziExactSpeechActionId?: string | null;
       iiziExactSpeechDedupeKey?: string | null;
+      ttsText?: string | null;
     }
   ) => {
     if (iiziDeterministicInbound()) {
@@ -2402,6 +2538,36 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(
       `[Diag] response.create sent #${responseCreateSentCount} reason=${reason} itemId=${committedItemId || "none"} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`
     );
+
+    // Deterministic path: synthesize the exact text ourselves and stream it to
+    // Twilio instead of asking the generative model to "read it out loud". The
+    // model is never given the chance to improvise the wording.
+    const ttsText = typeof opts?.ttsText === "string" ? opts.ttsText.trim() : "";
+    const useTts =
+      config.openai.ttsEnabled &&
+      iiziDeterministicInbound() &&
+      isIiziTtsSpeechReason(reason) &&
+      ttsText.length > 0;
+    if (useTts) {
+      const ttsId = `tts:${reason}:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      activeResponseId = ttsId;
+      activeResponseReason = reason;
+      responseDoneReceived = false;
+      responseHasAudio = false;
+      responseAudioDone = false;
+      responseAudioDeltaLogged = false;
+      activeResponseTwilioChunks = 0;
+      activeResponseTwilioBytes = 0;
+      aiIsSpeaking = true;
+      if (reason === "iizi-exact-speech") activeIiziExactSpeechLineId = iiziExactSpeechLineId;
+      console.log(
+        `[IIZI-TTS] backendTtsTurnStarted=true reason=${reason} lineId=${iiziExactSpeechLineId || "none"} ` +
+          `ttsId=${ttsId} callId=${callId}`,
+      );
+      void runIiziTtsPlayback(ttsId, reason, ttsText, iiziExactSpeechLineId);
+      return true;
+    }
+
     openaiWs.send(JSON.stringify(response ? { type: "response.create", response } : { type: "response.create" }));
     return true;
   };
@@ -3761,6 +3927,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             "initial-greeting",
             Object.keys(greetingResponse).length > 0 ? greetingResponse : {},
           ),
+          { ttsText: greeting || null },
         );
       } else {
         sendResponseCreate("initial-greeting", Object.keys(greetingResponse).length > 0 ? greetingResponse : undefined);

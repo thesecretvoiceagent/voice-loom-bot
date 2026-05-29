@@ -19,6 +19,14 @@ export const config = {
   openai: {
     apiKey: process.env.OPENAI_API_KEY || "",
     realtimeModel: process.env.OPENAI_REALTIME_MODEL || "gpt-4o-realtime-preview-2024-12-17",
+    // Deterministic text-to-speech for scripted lines. When enabled, every agent
+    // utterance (greeting + every scripted line) is synthesized verbatim via this
+    // TTS endpoint and streamed straight to Twilio, so the generative model can
+    // never improvise or hallucinate the wording. The realtime model is then only
+    // used for listening (transcription/VAD).
+    ttsEnabled: (process.env.IIZI_TTS_ENABLED ?? "true").toLowerCase() !== "false",
+    ttsModel: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
+    ttsVoice: process.env.OPENAI_TTS_VOICE || "alloy",
     get isConfigured() {
       return !!this.apiKey;
     },
