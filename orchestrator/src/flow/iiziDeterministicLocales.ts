@@ -224,4 +224,24 @@ export const IIZI_LOCALIZED_LINES: LocalizedLineMap = {
     en: "Thank you. Our agent will take this into account and contact you shortly. Goodbye!",
     ru: "Спасибо. Наш сотрудник учтёт это и свяжется с вами в ближайшее время. До свидания!",
   },
+  "non_roadside.confirm_question": {
+    et: "Kas ma saan õigesti aru, et Teil on autoabiväline küsimus?",
+    en: "Do I understand correctly that your question is not about roadside assistance?",
+    ru: "Правильно ли я понимаю, что ваш вопрос не связан с помощью на дороге?",
+  },
+  "non_roadside.only_roadside_help": {
+    et: "Mina oskan aidata ainult autoabi küsimustes. Teie juhtum on edastatud inimesele, kes võtab Teiega ühendust viie kuni kümne minuti jooksul. Kas Teil on veel midagi lisada?",
+    en: "I can only help with roadside assistance questions. Your case has been forwarded to a person who will contact you within five to ten minutes. Do you have anything else to add?",
+    ru: "Я могу помочь только по вопросам помощи на дороге. Ваш случай передан сотруднику, который свяжется с вами в течение пяти–десяти минут. Хотите что-то добавить?",
+  },
+  "non_roadside.final_human": {
+    et: "Aitäh. Meie inimtöötaja võtab peagi ühendust.",
+    en: "Thank you. Our agent will contact you soon.",
+    ru: "Спасибо. Наш сотрудник скоро с вами свяжется.",
+  },
+  "handoff.human_requested": {
+    et: "Sain aru, et soovite inimtöötajaga rääkida. Edastan Teie sõnumi. Teiega võetakse ühendust viie kuni kümne minuti jooksul. Nägemist.",
+    en: "I understand you would like to speak with a human agent. I will forward your message. You will be contacted within five to ten minutes. Goodbye.",
+    ru: "Я поняла, что вы хотите поговорить с сотрудником. Я передам ваше сообщение. С вами свяжутся в течение пяти–десяти минут. До свидания.",
+  },
 };

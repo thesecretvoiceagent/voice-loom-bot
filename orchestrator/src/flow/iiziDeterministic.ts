@@ -50,6 +50,8 @@ export type IiziDeterministicState =
   | "CLASSIFY_INTENT"
   | "ROADSIDE_CONFIRMED"
   | "NON_ROADSIDE_HUMAN_ROUTE"
+  | "NON_ROADSIDE_CONFIRM"
+  | "NON_ROADSIDE_FINAL_INFO"
   | "UNCLEAR_CLARIFY_ONCE"
   | "UNSAFE_HUMAN_ROUTE"
   | "CRM_LOOKUP"
@@ -497,13 +499,54 @@ function transition(
   console.log(
     `[IIZI-Deterministic] currentState=${prev} nextState=${next} transitionReason=${reason} speechEpoch=${bag.speechEpoch} callId=${callId || "?"}`,
   );
+  // Terminal human-handoff routes: end the call after the final spoken line so the
+  // bot does not hang the line open after telling the caller a human will follow up.
+  if (TERMINAL_END_CALL_STATES.includes(next)) {
+    for (let i = actions.length - 1; i >= 0; i -= 1) {
+      const action = actions[i];
+      if (action.type === "speak_exact" && action.lineId) {
+        bag.flags.pendingEndCallAfterLine = action.lineId;
+        console.log(
+          `[IIZI-Deterministic] terminalEndCallAfterLine=true lineId=${action.lineId} state=${next} callId=${callId || "?"}`,
+        );
+        break;
+      }
+    }
+  }
   return { actions, transitionReason: reason };
 }
+
+/** Terminal handoff states whose final spoken line should be followed by hanging up. */
+const TERMINAL_END_CALL_STATES: readonly IiziDeterministicState[] = [
+  "NON_ROADSIDE_HUMAN_ROUTE",
+  "UNSAFE_HUMAN_ROUTE",
+  "VEHICLE_MISMATCH_HUMAN_ROUTE",
+  "INSURANCE_INACTIVE_HUMAN_ROUTE",
+];
 
 function parseYesNo(normalized: string): boolean | null {
   if (/\b(ei|mitte|no)\b/.test(normalized) && !/\b(jah|yes|jaa)\b/.test(normalized)) return false;
   if (/\b(jah|jaa|yes|ok|okei|sama)\b/.test(normalized)) return true;
   return null;
+}
+
+/**
+ * Detects an explicit caller request to be transferred to a live human agent
+ * (e.g. "ma tahaksin inimesega rääkida"). Kept conservative: requires both a
+ * "human" noun and a "talk/transfer" verb, or an unambiguous agent noun.
+ */
+function detectsExplicitHumanRequest(normalized: string): boolean {
+  if (/\b(operaator\w*|klienditeenindaja\w*|inimtootaja\w*)\b/.test(normalized)) return true;
+  if (/\b(elav|pa?ris)\s+inimene/.test(normalized)) return true;
+  const hasHumanNoun = /\binimese\w*\b/.test(normalized);
+  const hasTalkVerb = /(raaki|raagi|raagik|suhel|vestel|jutust|jutta|uhendu|operaatori)/.test(normalized);
+  if (hasHumanNoun && hasTalkVerb) return true;
+  // English / common fallbacks.
+  if (/\b(speak|talk|connect|transfer)\b.*\b(human|person|agent|someone|representative|operator)\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b(real|live)\s+(person|human|agent|operator)\b/.test(normalized)) return true;
+  return false;
 }
 
 function parseOccupantCount(normalized: string): number | null {
@@ -1053,6 +1096,15 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     }
 
     if (state === "UNCLEAR_CLARIFY_ONCE") {
+      if (detectsExplicitHumanRequest(norm)) {
+        return transition(
+          bag,
+          "NON_ROADSIDE_HUMAN_ROUTE",
+          "explicit_human_request",
+          [{ type: "speak_exact", lineId: "handoff.human_requested" }],
+          callId,
+        );
+      }
       const c = classifyIiziTranscript(event.text, bag, callId);
       logClassification(callId, c, state);
       const resolved = resolveAssistedIntent(c, event.assist, norm, callId);
@@ -1075,9 +1127,9 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       if (resolved.intent === "not_roadside_assistance") {
         return transition(
           bag,
-          "NON_ROADSIDE_HUMAN_ROUTE",
+          "NON_ROADSIDE_CONFIRM",
           "clarify_non_roadside",
-          [{ type: "speak_exact", lineId: "handoff.human_followup" }],
+          [{ type: "speak_exact", lineId: "non_roadside.confirm_question" }],
           callId,
         );
       }
@@ -1103,6 +1155,15 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
     }
 
     if (state === "WAITING_FOR_ISSUE" || state === "CLASSIFY_INTENT") {
+      if (detectsExplicitHumanRequest(norm)) {
+        return transition(
+          bag,
+          "NON_ROADSIDE_HUMAN_ROUTE",
+          "explicit_human_request",
+          [{ type: "speak_exact", lineId: "handoff.human_requested" }],
+          callId,
+        );
+      }
       const c = classifyIiziTranscript(event.text, bag, callId);
       bag.lastClassificationLog = { ...c };
       logClassification(callId, c, bag.currentState);
@@ -1120,9 +1181,9 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
       if (resolved.intent === "not_roadside_assistance") {
         return transition(
           bag,
-          "NON_ROADSIDE_HUMAN_ROUTE",
+          "NON_ROADSIDE_CONFIRM",
           "non_roadside",
-          [{ type: "speak_exact", lineId: "handoff.human_followup" }],
+          [{ type: "speak_exact", lineId: "non_roadside.confirm_question" }],
           callId,
         );
       }
@@ -1185,6 +1246,82 @@ export function reduceIiziDeterministicTurn(input: IiziDeterministicTurnInput): 
           callId,
         );
       }
+    }
+
+    if (state === "NON_ROADSIDE_CONFIRM") {
+      if (!hasMeaningfulCallerTranscript(norm)) {
+        return { actions: [{ type: "none" }], transitionReason: "non_roadside_confirm_awaiting_transcript" };
+      }
+      if (detectsExplicitHumanRequest(norm)) {
+        return transition(
+          bag,
+          "NON_ROADSIDE_HUMAN_ROUTE",
+          "explicit_human_request",
+          [{ type: "speak_exact", lineId: "handoff.human_requested" }],
+          callId,
+        );
+      }
+      const confirm = parseYesNo(norm);
+      // "Kas ma saan õigesti aru, et Teil on autoabiväline küsimus?"
+      // yes => caller confirms it is NOT roadside => final human handoff info.
+      if (confirm === true) {
+        return transition(
+          bag,
+          "NON_ROADSIDE_FINAL_INFO",
+          "non_roadside_confirmed",
+          [{ type: "speak_exact", lineId: "non_roadside.only_roadside_help" }],
+          callId,
+        );
+      }
+      // no / roadside evidence => it IS roadside, continue the normal flow.
+      const c = classifyIiziTranscript(event.text, bag, callId);
+      logClassification(callId, c, state);
+      const resolved = resolveAssistedIntent(c, event.assist, norm, callId);
+      if (resolved.intent === "roadside_assistance") {
+        const category = resolved.category;
+        bag.flags.incidentCategory = category;
+        bag.flags.occupantCountRequired = resolved.occupantRequired;
+        return transition(
+          bag,
+          "ROADSIDE_CONFIRMED",
+          "non_roadside_denied_roadside",
+          roadsideClassifiedActions(bag, category, norm),
+          callId,
+        );
+      }
+      if (confirm === false) {
+        // Caller says it is not a non-roadside question but gave no clear incident:
+        // re-ask what the roadside issue is.
+        return transition(
+          bag,
+          "WAITING_FOR_ISSUE",
+          "non_roadside_denied_unclear",
+          [{ type: "speak_exact", lineId: "intent.unclear_roadside_or_other" }],
+          callId,
+        );
+      }
+      // Ambiguous answer => treat as non-roadside and proceed to final info.
+      return transition(
+        bag,
+        "NON_ROADSIDE_FINAL_INFO",
+        "non_roadside_confirm_ambiguous",
+        [{ type: "speak_exact", lineId: "non_roadside.only_roadside_help" }],
+        callId,
+      );
+    }
+
+    if (state === "NON_ROADSIDE_FINAL_INFO") {
+      if (!hasMeaningfulCallerTranscript(norm)) {
+        return { actions: [{ type: "none" }], transitionReason: "non_roadside_final_awaiting_transcript" };
+      }
+      // Regardless of what the caller adds, acknowledge and end the call.
+      return transition(
+        bag,
+        "NON_ROADSIDE_HUMAN_ROUTE",
+        "non_roadside_final_human",
+        [{ type: "speak_exact", lineId: "non_roadside.final_human" }],
+        callId,
+      );
     }
 
     if (state === "SEND_CALLBACK_SMS" || state === "WAITING_FOR_CALLBACK_FORM") {
