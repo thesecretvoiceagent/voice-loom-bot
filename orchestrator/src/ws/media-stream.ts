@@ -27,7 +27,6 @@ import {
   type IiziBrainRuntimeState,
 } from "../flow/iiziBrain.js";
 import { fetchLatestEnabledBrainConfigRow } from "../agentBrainConfigRepo.js";
-import { synthesizeMulaw8k } from "../tts/openaiTts.js";
 import { recordIiziShadowTrace } from "../flow/trace.js";
 import type { AgentBrainConfig } from "../brain/agentBrainUiTypes.js";
 import { resolveAgentBrainConfigFromSettings, resolveRuntimeBrainUiFromSettings } from "../brain/agentBrainUiTypes.js";
@@ -48,23 +47,17 @@ import {
   resolveIiziExactLine,
   resolveIiziLocalizedLine,
   resolveIiziDeterministicExactLine,
-  IIZI_GENERIC_ROADSIDE_INCIDENT_ET,
   computeOccupantRequirement,
   resolveIiziFillerLine,
   maybeSpeakIiziFiller,
   iiziDeterministicAllowsModelEndCall,
   IIZI_MINIMAL_REALTIME_PROMPT,
+  IIZI_GENERIC_ROADSIDE_INCIDENT_ET,
   type IiziDeterministicAction,
   type IiziDeterministicStateBag,
   type IiziFillerReason,
+  type IiziLanguage,
 } from "../flow/iiziDeterministic.js";
-import { IIZI_LOCALIZED_LINES } from "../flow/iiziDeterministicLocales.js";
-import {
-  assistIntent,
-  assistCallback,
-  assistOccupant,
-  type IiziTranscriptAssist,
-} from "../flow/iiziLlmAssist.js";
 import {
   IIZI_DETERMINISTIC_VOICE_SPEED,
   IIZI_EXACT_SPEECH_TOOL_CHOICE,
@@ -206,7 +199,6 @@ type LiveTurnSettings = {
   post_playback_cooldown_ms: number;
   post_greeting_cooldown_ms: number;
   watchdog_commit_ms: number;
-  max_caller_utterance_ms: number;
   inbound_transcript_fallback_ms: number;
   no_audio_grace_ms: number;
   echo_recovery_cooldown_ms: number;
@@ -221,7 +213,6 @@ const DEFAULT_LIVE_TURN_SETTINGS: LiveTurnSettings = {
   post_playback_cooldown_ms: 1200,
   post_greeting_cooldown_ms: 150,
   watchdog_commit_ms: 2600,
-  max_caller_utterance_ms: 8000,
   inbound_transcript_fallback_ms: 900,
   no_audio_grace_ms: 450,
   echo_recovery_cooldown_ms: 2500,
@@ -240,7 +231,6 @@ const sanitizeLiveTurnSettings = (raw: unknown): LiveTurnSettings => {
     post_playback_cooldown_ms: clamp(typeof s.post_playback_cooldown_ms === "number" ? s.post_playback_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.post_playback_cooldown_ms, 0, 3000),
     post_greeting_cooldown_ms: clamp(typeof s.post_greeting_cooldown_ms === "number" ? s.post_greeting_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.post_greeting_cooldown_ms, 0, 1500),
     watchdog_commit_ms: clamp(typeof s.watchdog_commit_ms === "number" ? s.watchdog_commit_ms : DEFAULT_LIVE_TURN_SETTINGS.watchdog_commit_ms, 1000, 6000),
-    max_caller_utterance_ms: clamp(typeof s.max_caller_utterance_ms === "number" ? s.max_caller_utterance_ms : DEFAULT_LIVE_TURN_SETTINGS.max_caller_utterance_ms, 5000, 30000),
     inbound_transcript_fallback_ms: clamp(typeof s.inbound_transcript_fallback_ms === "number" ? s.inbound_transcript_fallback_ms : DEFAULT_LIVE_TURN_SETTINGS.inbound_transcript_fallback_ms, 300, 3000),
     no_audio_grace_ms: clamp(typeof s.no_audio_grace_ms === "number" ? s.no_audio_grace_ms : DEFAULT_LIVE_TURN_SETTINGS.no_audio_grace_ms, 200, 2000),
     echo_recovery_cooldown_ms: clamp(typeof s.echo_recovery_cooldown_ms === "number" ? s.echo_recovery_cooldown_ms : DEFAULT_LIVE_TURN_SETTINGS.echo_recovery_cooldown_ms, 500, 5000),
@@ -517,7 +507,8 @@ function greetingMayDiscloseDebt(greetingText: string): boolean {
 
 function buildGaAudioInput(opts: {
   turnDetection?: Record<string, unknown> | null;
-  transcription?: { model: string; language: string; prompt: string };
+  // language is optional: omitting it lets whisper auto-detect ET/EN/RU.
+  transcription?: { model: string; language?: string; prompt: string };
 }) {
   const input: Record<string, unknown> = { format: REALTIME_GA_ULAW_FORMAT };
   if (opts.transcription) input.transcription = opts.transcription;
@@ -605,34 +596,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let activeIiziExactSpeechLineId: string | null = null;
   let activeIiziExactSpeechDedupeKey: string | null = null;
   let iiziExactSpeechAwaitingPlayback:
-    | { lineId: string; dedupeKey: string; actionId: string; vars?: Record<string, string>; expectedText?: string }
+    | { lineId: string; dedupeKey: string; actionId: string; vars?: Record<string, string> }
     | null = null;
-  // Line id of the most recently confirmed exact-speech line. Used by
-  // maybeCompleteAiTurn to size the post-playback echo cooldown: after a short
-  // yes/no style question the caller answers instantly, so a long cooldown would
-  // swallow that answer (input_audio_buffer.clear drops it). For those lines we
-  // fall back to the same tiny cooldown the greeting uses.
-  let lastConfirmedIiziSpeechLineId: string | null = null;
-  // Scripted lines that ask for an immediate short caller answer. After these we
-  // must NOT drop the caller's reply in the echo-guard window.
-  const IIZI_SHORT_ANSWER_QUESTION_LINES = new Set<string>([
-    "callback.ask_same_number",
-    "callback.ask_same_number_clarify",
-    "occupants.ask",
-    "non_roadside.confirm_question",
-    "closing.ask_additional_info",
-  ]);
-  // Speech-drift guard: enforce that the realtime model speaks the scripted exact line
-  // verbatim. If it drifts (improvises, mirrors the caller, translates, hallucinates),
-  // we flush the unplayed audio and re-issue the correct line. Kill-switch via env.
-  const IIZI_SPEECH_GUARD_ENABLED =
-    (process.env.IIZI_SPEECH_GUARD || "").toLowerCase() !== "0" &&
-    (process.env.IIZI_SPEECH_GUARD || "").toLowerCase() !== "off";
-  const IIZI_SPEECH_GUARD_MAX_RETRIES = 2;
-  // Transcript captured for the currently active response (set at audio_transcript.done).
-  let activeResponseAssistantTranscript = "";
-  // Per-line drift re-issue counter, so a stubbornly drifting model cannot loop forever.
-  const iiziExactSpeechDriftRetries = new Map<string, number>();
   let trustedVehicleReadbackText: string = "";
   let trustedLocationReadbackText: string = "";
   let trustedRawLocationAddress: string = "";
@@ -816,7 +781,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   let turnGateAcceptedFrames = 0;
   const turnGateDropCounts: Record<string, number> = {};
   let callerSpeechActive = false;
-  let callerSpeechStartedAt = 0;
   let lastAcceptedCallerAudioAt = 0;
   let iiziCallerTurnEnded = false;
   let lastIiziCallerTurnEndedAt = 0;
@@ -1154,7 +1118,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
   const confirmIiziExactSpeechPlayback = () => {
     if (!iiziExactSpeechAwaitingPlayback) return;
     const { lineId, dedupeKey, actionId } = iiziExactSpeechAwaitingPlayback;
-    lastConfirmedIiziSpeechLineId = lineId;
     console.log(
       `[IIZI-Deterministic] iiziExactSpeechSpoken=true lineId=${lineId} dedupeKey=${dedupeKey} callId=${callId}`,
     );
@@ -1165,6 +1128,10 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (lineId === "vehicle_location.combined.readback") {
       iiziDetVehicleReadbackSpoken = true;
       iiziDetLocationReadbackSpoken = true;
+      vehicleReadbackDone = true;
+      locationReadbackDone = true;
+      console.log(`[IIZI-Pipeline] combined_readback_done callId=${callId}`);
+      void drainIiziDeterministicNextActions();
     }
     if (lineId === "vehicle.match_active.readback") {
       iiziDetVehicleReadbackSpoken = true;
@@ -1175,27 +1142,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
     if (lineId === "callback.different_number_sms_sent") {
       console.log(`[IIZI-Deterministic] callbackSmsLineSpoken=true callId=${callId}`);
-    }
-    // Deterministic hang-up: the FSM marks the final closing line. Once it has fully
-    // played (Twilio mark -> maybeCompleteAiTurn), end the call from the backend.
-    if (
-      iiziDetRef.current.flags.pendingEndCallAfterLine &&
-      lineId === iiziDetRef.current.flags.pendingEndCallAfterLine
-    ) {
-      console.log(
-        `[IIZI-Deterministic] backendEndCallAfterLine=true lineId=${lineId} callId=${callId}`,
-      );
-      iiziDetRef.current.flags.pendingEndCallAfterLine = null;
-      if (!pendingEndCall) {
-        pendingEndCall = {
-          reason: "iizi_backend_closing_complete",
-          closeText: "",
-          closeSpeechRequired: false,
-          closeResponseSent: false,
-        };
-        callEndingSource = "end_call_tool";
-        clearEndCallHangupTimer();
-      }
     }
     if (pendingIiziExactSpeech?.lineId === lineId && pendingIiziExactSpeech.actionId === actionId) {
       pendingIiziExactSpeech = null;
@@ -1277,9 +1223,25 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return { phrase: "kinnitatud", completeness, fullPresent: false };
   };
 
-  const buildTrustedLocationReadbackText = (): string => {
+  // Language-aware location readback sentence. ET output is byte-identical to the
+  // previous hard-coded behaviour; en/ru mirror the same structure for non-ET callers.
+  const localizedLocationReadbackLine = (
+    loc: { phrase: string; fullPresent: boolean },
+    lang: IiziLanguage,
+  ): string => {
+    if (!loc.fullPresent) {
+      if (lang === "ru") return "Местоположение подтверждено.";
+      if (lang === "en") return "The location is confirmed.";
+      return "Asukoht on kinnitatud.";
+    }
+    if (lang === "ru") return `Местоположение: ${loc.phrase}.`;
+    if (lang === "en") return `The location is ${loc.phrase}.`;
+    return `Asukoht on ${loc.phrase}.`;
+  };
+
+  const buildTrustedLocationReadbackText = (lang: IiziLanguage = "et"): string => {
     const loc = formatTrustedLocationAddressForReadback(trustedRawLocationAddress || "");
-    const text = loc.phrase === "kinnitatud" ? "Asukoht on kinnitatud." : `Asukoht on ${loc.phrase}.`;
+    const text = localizedLocationReadbackLine(loc, lang);
     console.log(
       `[IIZI-Deterministic] trustedLocationReadbackBuilt=true locationReadbackText="${text}" ` +
         `locationReadbackUsesTrustedEvent=true locationReadbackUsedFallback=${!loc.fullPresent} callId=${callId}`,
@@ -1287,7 +1249,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return text;
   };
 
-  const buildCombinedVehicleLocationReadbackText = (): string => {
+  const buildCombinedVehicleLocationReadbackText = (lang: IiziLanguage = "et"): string => {
     const make = (trustedVehicleFields.make || "").trim();
     const model = (trustedVehicleFields.model || "").trim();
     const year = (trustedVehicleFields.year || "").trim();
@@ -1296,15 +1258,30 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const rawAddr =
       trustedRawLocationAddress || iiziDetRef.current.flags.locationAddress || "";
     const loc = formatTrustedLocationAddressForReadback(rawAddr);
-    const segments: string[] = ["Sain Teie andmed kätte."];
     const vehicleCore = [make, model, year].filter(Boolean).join(" ").trim();
-    if (vehicleCore) segments.push(`Auto on ${vehicleCore}.`);
-    segments.push("Kindlustus on aktiivne.");
-    if (insurer) segments.push(`Kindlustusandja on ${insurer}.`);
-    if (coverType) segments.push(`Kaitse liik on ${coverType}.`);
-    segments.push(loc.phrase === "kinnitatud" ? "Asukoht on kinnitatud." : `Asukoht on ${loc.phrase}.`);
+    const segments: string[] = [];
+    if (lang === "ru") {
+      segments.push("Я получила ваши данные.");
+      if (vehicleCore) segments.push(`Автомобиль — ${vehicleCore}.`);
+      segments.push("Страховка активна.");
+      if (insurer) segments.push(`Страховщик — ${insurer}.`);
+      if (coverType) segments.push(`Тип покрытия — ${coverType}.`);
+    } else if (lang === "en") {
+      segments.push("I received your details.");
+      if (vehicleCore) segments.push(`The car is ${vehicleCore}.`);
+      segments.push("The insurance is active.");
+      if (insurer) segments.push(`The insurer is ${insurer}.`);
+      if (coverType) segments.push(`The cover type is ${coverType}.`);
+    } else {
+      segments.push("Sain Teie andmed kätte.");
+      if (vehicleCore) segments.push(`Auto on ${vehicleCore}.`);
+      segments.push("Kindlustus on aktiivne.");
+      if (insurer) segments.push(`Kindlustusandja on ${insurer}.`);
+      if (coverType) segments.push(`Kaitse liik on ${coverType}.`);
+    }
+    segments.push(localizedLocationReadbackLine(loc, lang));
     const text = segments.join(" ");
-    trustedLocationReadbackText = loc.phrase === "kinnitatud" ? "Asukoht on kinnitatud." : `Asukoht on ${loc.phrase}.`;
+    trustedLocationReadbackText = localizedLocationReadbackLine(loc, lang);
     console.log(
       `[IIZI-Deterministic] combinedVehicleLocationReadbackBuilt=true combinedVehicleLocationReadbackText="${text}" ` +
         `duplicateDataReceivedLineSuppressed=true callId=${callId}`,
@@ -1316,20 +1293,24 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     lineId: string,
     vars?: Record<string, string>,
     opts?: { actionId?: string; dedupeKey?: string; committedItemId?: string | null; exactText?: string | null },
-  ): { sent: boolean; blockedReason: string | null; text?: string } => {
+  ): { sent: boolean; blockedReason: string | null } => {
     let text: string | null = null;
+    // Sticky caller language drives which localized registry line is synthesized.
+    // Backend TTS (synthesizeMulaw8k) speaks whatever text/language we hand it, so
+    // resolving in the detected language is all that's needed for EN/RU output.
+    const exactLang: IiziLanguage = iiziDetRef.current.iiziLanguage;
     if (opts?.exactText && opts.exactText.trim()) {
       text = opts.exactText.trim();
     } else if (lineId === "vehicle_location.combined.readback") {
-      text = buildCombinedVehicleLocationReadbackText();
+      text = buildCombinedVehicleLocationReadbackText(exactLang);
     } else if (lineId === "vehicle.match_active.readback") {
       console.log(
         `[IIZI-Deterministic] duplicateDataReceivedLineSuppressed=true reason=legacy_vehicle_readback_use_combined callId=${callId}`,
       );
-      text = buildCombinedVehicleLocationReadbackText();
+      text = buildCombinedVehicleLocationReadbackText(exactLang);
     } else if (lineId === "location.received.readback") {
       if (iiziDetVehicleReadbackSpoken && !iiziDetLocationReadbackSpoken) {
-        text = trustedLocationReadbackText || buildTrustedLocationReadbackText();
+        text = trustedLocationReadbackText || buildTrustedLocationReadbackText(exactLang);
       } else {
         console.log(
           `[IIZI-Deterministic] duplicateDataReceivedLineSuppressed=true reason=location_readback_after_combined callId=${callId}`,
@@ -1337,14 +1318,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
         return { sent: false, blockedReason: "duplicate_location_readback" };
       }
     } else if (lineId === "incident.generic_roadside") {
-      text = IIZI_GENERIC_ROADSIDE_INCIDENT_ET;
+      text =
+        resolveIiziDeterministicExactLine(lineId, exactLang, vars, callId) ??
+        IIZI_GENERIC_ROADSIDE_INCIDENT_ET;
     } else {
-      text = resolveIiziDeterministicExactLine(
-        lineId,
-        iiziDetRef.current.flags.explicitCallerLanguage,
-        vars,
-        callId,
-      );
+      text = resolveIiziDeterministicExactLine(lineId, exactLang, vars, callId);
     }
     if (!text) {
       console.warn(`[IIZI-Deterministic] unknown line_id=${lineId} callId=${callId}`);
@@ -1357,19 +1335,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const sent = sendResponseCreate(
       "iizi-exact-speech",
       buildIiziDeterministicSpeechResponse("iizi-exact-speech", {
-        // Out-of-band: isolate this response from the conversation history so the
-        // model cannot "continue the dialogue" or decide what comes next. It only
-        // sees the verbatim instruction below and acts as a pure TTS engine. The
-        // backend FSM remains the sole authority over conversation flow.
-        conversation: "none",
         instructions:
-          `You are a strict text-to-speech engine, not a conversational assistant. ` +
-          `Output ONLY the exact text between the triple quotes, word for word, in Estonian. ` +
-          `Do NOT translate it. Do NOT add, remove, reorder, or change any word. ` +
-          `Do NOT add greetings, filler, apologies, opinions, questions, or ANY personal, emotional, or off-topic statements. ` +
-          `Do NOT answer or continue any conversation. Do NOT make any non-speech sounds (no breathing, sighs, static, or noises). ` +
-          `NEVER speak English. NEVER talk about yourself. Do NOT call tools. ` +
-          `If you are unsure, still output the text exactly as written and nothing else.\n"""\n${text}\n"""`,
+          `Speak ONLY the following sentence verbatim in ${
+            exactLang === "ru" ? "Russian" : exactLang === "en" ? "English" : "Estonian"
+          }. Do not add, remove, or change any words. ` +
+          `Do not call tools. Do not add filler.\n"""\n${text}\n"""`,
         output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
       }),
       {
@@ -1377,25 +1347,18 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       iiziExactSpeechLineId: lineId,
       iiziExactSpeechActionId: opts?.actionId ?? null,
       iiziExactSpeechDedupeKey: opts?.dedupeKey ?? null,
-      ttsText: text,
     });
-    return { sent, blockedReason: sent ? null : lastResponseCreateBlockReason || "unknown_block", text };
+    return { sent, blockedReason: sent ? null : lastResponseCreateBlockReason || "unknown_block" };
   };
 
   const speakFillerIizi = (lineId: string, reason: IiziFillerReason): boolean => {
     const text = resolveIiziFillerLine(lineId);
     if (!text) return false;
-    return sendResponseCreate(
-      "iizi-filler",
-      {
-        conversation: "none",
-        instructions:
-          `You are a strict text-to-speech engine. Speak ONLY this brief filler verbatim, then stop. ` +
-          `Do NOT add anything, do NOT continue any conversation, do NOT make non-speech sounds:\n"""\n${text}\n"""`,
-        output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
-      },
-      { ttsText: text },
-    );
+    return sendResponseCreate("iizi-filler", {
+      instructions:
+        `Speak ONLY this brief filler verbatim, then stop:\n"""\n${text}\n"""`,
+      output_modalities: [...REALTIME_GA_RESPONSE_MODALITIES],
+    });
   };
 
   const enqueueIiziDeterministicActions = (actions: IiziDeterministicAction[]) => {
@@ -1513,8 +1476,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.log(
                 `[IIZI-Deterministic] occupantAskBlockedReason=${waitingReasons.join("|") || "unknown"} callId=${callId}`,
               );
-              console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
-              return { shouldPause: false };
+              iiziDetPendingActions.unshift(action);
+              return { shouldPause: true, queuePauseReason: "blocked_waiting_for_occupant_gates" };
             }
           }
           let lineIdToSpeak = action.lineId;
@@ -1574,27 +1537,8 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               dedupeKey,
               actionId,
               vars: action.vars,
-              expectedText: speak.text,
             };
             activeIiziExactSpeechDedupeKey = dedupeKey;
-            // A new scripted line is starting: the flow has moved on, so cancel any
-            // armed "anything to add?" silence watchdog (it is re-armed when that
-            // question itself finishes playing).
-            clearAdditionalInfoTimeout();
-            // The line is now actively being spoken and is tracked by
-            // iiziExactSpeechAwaitingPlayback. Clear any stale pendingIiziExactSpeech
-            // (and its retry timer) now: confirmIiziExactSpeechPlayback only clears it
-            // on an exact actionId match, but each retry mints a fresh actionId, so a
-            // blocked line would otherwise stay "pending" forever after it actually
-            // played — driving phantom auto-retries that collide with the next line.
-            // failIiziExactSpeechPlayback re-arms pending if this send produces no audio.
-            if (pendingIiziExactSpeech) {
-              pendingIiziExactSpeech = null;
-              if (pendingIiziExactSpeechRetryTimer) {
-                clearTimeout(pendingIiziExactSpeechRetryTimer);
-                pendingIiziExactSpeechRetryTimer = null;
-              }
-            }
             console.log(
               `[IIZI-Deterministic] pendingIiziExactSpeechSent=true actionId=${actionId} lineId=${lineIdToSpeak} callId=${callId}`,
             );
@@ -1643,9 +1587,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           },
         });
         enqueueIiziDeterministicActions(turn.actions);
-        if (iiziDetRef.current.currentState === "WAITING_FOR_FORM_SUBMITTED") {
-          armFormWaitTimeout();
-        }
         console.log(`[IIZI-Deterministic] actionCompleted=${actionName} success=true callId=${callId}`);
         return { shouldPause: false };
       }
@@ -1712,56 +1653,11 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }
   };
 
-  const computeIiziTranscriptAssist = async (text: string): Promise<IiziTranscriptAssist | undefined> => {
-    if (!config.openai.assistEnabled) return undefined;
-    const clean = (text || "").trim();
-    if (!clean) return undefined;
-    const state = iiziDetRef.current.currentState;
-    try {
-      if (state === "WAITING_FOR_ISSUE" || state === "CLASSIFY_INTENT" || state === "UNCLEAR_CLARIFY_ONCE") {
-        const intent = await assistIntent(clean);
-        if (intent) {
-          console.log(
-            `[IIZI-LLM] assistFetched=intent value=${intent.value} category=${intent.category ?? "null"} ` +
-              `confidence=${intent.confidence} callId=${callId}`,
-          );
-          return { intent };
-        }
-        return undefined;
-      }
-      if (state === "ASK_CALLBACK_SAME_NUMBER") {
-        const callback = await assistCallback(clean);
-        if (callback) {
-          console.log(
-            `[IIZI-LLM] assistFetched=callback value=${callback.value} confidence=${callback.confidence} callId=${callId}`,
-          );
-          return { callback };
-        }
-        return undefined;
-      }
-      if (state === "WAITING_FOR_OCCUPANT_COUNT" || state === "OCCUPANT_COUNT_REQUIRED") {
-        const occupantCount = await assistOccupant(clean);
-        if (occupantCount) {
-          console.log(
-            `[IIZI-LLM] assistFetched=occupant value=${occupantCount.value ?? "null"} ` +
-              `confidence=${occupantCount.confidence} callId=${callId}`,
-          );
-          return { occupantCount };
-        }
-        return undefined;
-      }
-    } catch (err) {
-      console.warn(`[IIZI-LLM] assistError state=${state} callId=${callId} err=${String(err)}`);
-    }
-    return undefined;
-  };
-
-  const runIiziDeterministicUserTranscript = async (text: string) => {
-    const assist = await computeIiziTranscriptAssist(text);
+  const runIiziDeterministicUserTranscript = (text: string) => {
     const turn = reduceIiziDeterministicTurn({
       callId,
       bag: iiziDetRef.current,
-      event: { type: "user_transcript", text, assist },
+      event: { type: "user_transcript", text },
     });
     if (turn.remainingModelOwnedDecision) {
       console.log(
@@ -1771,81 +1667,13 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     enqueueIiziDeterministicActions(turn.actions);
   };
 
-  // ── Form-wait timeout ──────────────────────────────────────────────────────
-  // After the combined SMS is sent we enter WAITING_FOR_FORM_SUBMITTED and wait for
-  // the caller to fill the registration/location form. If they never do, the call
-  // would otherwise stay open indefinitely. Arm a hard timeout that hands the case
-  // to a human and ends the call.
-  const FORM_WAIT_TIMEOUT_MS = 120_000;
-  let formWaitTimeoutTimer: NodeJS.Timeout | null = null;
-  const clearFormWaitTimeout = () => {
-    if (formWaitTimeoutTimer) {
-      clearTimeout(formWaitTimeoutTimer);
-      formWaitTimeoutTimer = null;
-    }
-  };
-  const armFormWaitTimeout = () => {
-    clearFormWaitTimeout();
-    if (!iiziDeterministicInbound()) return;
-    console.log(
-      `[IIZI-Deterministic] formWaitTimeoutArmed=true timeoutMs=${FORM_WAIT_TIMEOUT_MS} callId=${callId}`,
-    );
-    formWaitTimeoutTimer = setTimeout(() => {
-      formWaitTimeoutTimer = null;
-      if (!iiziDeterministicInbound()) return;
-      if (iiziDetRef.current.currentState !== "WAITING_FOR_FORM_SUBMITTED") return;
-      console.warn(`[IIZI-Deterministic] formWaitTimeoutFired=true callId=${callId}`);
-      runIiziDeterministicSystemEvent({ type: "form_wait_timeout" });
-    }, FORM_WAIT_TIMEOUT_MS);
-  };
-
-  // Final "anything to add?" courtesy question. If the caller stays silent we never
-  // get a transcript, so the FSM is never nudged and the line would hang open. Arm a
-  // short timer once that question finishes playing; on expiry close the call.
-  const ADDITIONAL_INFO_TIMEOUT_MS = 10_000;
-  let additionalInfoTimeoutTimer: NodeJS.Timeout | null = null;
-  const clearAdditionalInfoTimeout = () => {
-    if (additionalInfoTimeoutTimer) {
-      clearTimeout(additionalInfoTimeoutTimer);
-      additionalInfoTimeoutTimer = null;
-    }
-  };
-  const armAdditionalInfoTimeout = () => {
-    clearAdditionalInfoTimeout();
-    if (!iiziDeterministicInbound()) return;
-    const st = iiziDetRef.current.currentState;
-    if (st !== "WAITING_FOR_ADDITIONAL_INFO_DECISION" && st !== "WAITING_FOR_ADDITIONAL_INFO_TEXT") {
-      return;
-    }
-    console.log(
-      `[IIZI-Deterministic] additionalInfoTimeoutArmed=true timeoutMs=${ADDITIONAL_INFO_TIMEOUT_MS} callId=${callId}`,
-    );
-    additionalInfoTimeoutTimer = setTimeout(() => {
-      additionalInfoTimeoutTimer = null;
-      if (!iiziDeterministicInbound()) return;
-      const cur = iiziDetRef.current.currentState;
-      if (cur !== "WAITING_FOR_ADDITIONAL_INFO_DECISION" && cur !== "WAITING_FOR_ADDITIONAL_INFO_TEXT") {
-        return;
-      }
-      console.warn(`[IIZI-Deterministic] additionalInfoTimeoutFired=true callId=${callId}`);
-      runIiziDeterministicSystemEvent({ type: "additional_info_timeout" });
-    }, ADDITIONAL_INFO_TIMEOUT_MS);
-  };
-
   const runIiziDeterministicSystemEvent = (
     event:
       | { type: "form_submitted"; submittedReg?: string }
-      | { type: "form_wait_timeout" }
-      | { type: "additional_info_timeout" }
       | { type: "vehicle_lookup_result"; match: boolean; coverageInvalid?: boolean }
       | { type: "location_confirmed"; address: string }
       | { type: "callback_form_received" },
   ) => {
-    // Any real flow-progressing system event means we're no longer idly waiting for
-    // the form, so cancel the form-wait timeout. (The timeout itself clears via its
-    // own handler below.)
-    if (event.type !== "form_wait_timeout") clearFormWaitTimeout();
-    if (event.type !== "additional_info_timeout") clearAdditionalInfoTimeout();
     const turn = reduceIiziDeterministicTurn({ callId, bag: iiziDetRef.current, event });
     enqueueIiziDeterministicActions(turn.actions);
   };
@@ -1916,7 +1744,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
           `recoveredTranscript="${transcriptText.slice(0, 160)}" recoveryFedToBackend=true ` +
           `recoveryTriggeredModelResponse=false callId=${callId}`,
       );
-      void runIiziDeterministicUserTranscript(transcriptText);
+      runIiziDeterministicUserTranscript(transcriptText);
       return;
     }
     injectInboundTranscriptAsUserText(transcriptText, reason, transcriptSeq);
@@ -2369,12 +2197,12 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(`[IIZI-Deterministic] iiziCallerTurnEnded=true source=${source} callId=${callId}`);
   };
 
-  const tryCommitCallerAudio = (reason: string, delayMs = 80, force = false) => {
+  const tryCommitCallerAudio = (reason: string, delayMs = 80) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) {
       console.warn(`[Diag] audio commit skipped reason=${reason} skip=openai_ws_not_open openaiState=${openaiWs?.readyState ?? "null"} (callId=${callId})`);
       return false;
     }
-    const commitBlockReason = force ? null : getCallerAudioBlockReason(true);
+    const commitBlockReason = getCallerAudioBlockReason(true);
     if (commitBlockReason) {
       console.log(`[TurnGate] skip_empty_audio_commit reason=blocked_${commitBlockReason} frames=${inputFramesSinceLastCommit} callId=${callId}`);
       return false;
@@ -2404,27 +2232,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       if (blockReason) {
         console.log(`[TurnGate] watchdog skipped reason=${blockReason} source=${reason} callId=${callId}`);
         if (blockReason === "caller_still_speaking") {
-          // Hard cap: if the caller has been "speaking" continuously (e.g. background
-          // noise / rambling with no 1s silence gap) the server VAD never emits
-          // speech_stopped, so the watchdog would reschedule forever and the line
-          // hangs open. Force-end the turn once we cross max_caller_utterance_ms.
-          const speechElapsed = callerSpeechStartedAt > 0 ? Date.now() - callerSpeechStartedAt : 0;
-          if (
-            callerSpeechActive &&
-            speechElapsed >= liveTurnSettings.max_caller_utterance_ms &&
-            !activeResponseId &&
-            !greetingInProgress &&
-            !responsePlaybackMarkName
-          ) {
-            console.warn(
-              `[TurnGate] caller_utterance_hard_cap reached elapsedMs=${speechElapsed} max=${liveTurnSettings.max_caller_utterance_ms} forcing commit source=${reason} callId=${callId}`,
-            );
-            callerSpeechActive = false;
-            callerSpeechStartedAt = 0;
-            markIiziCallerTurnEnded("speech_stopped");
-            tryCommitCallerAudio(`watchdog-${reason}-hardcap`, 120, true);
-            return;
-          }
           const elapsed = lastAcceptedCallerAudioAt > 0 ? Date.now() - lastAcceptedCallerAudioAt : 0;
           const waitMs = Math.max(150, liveTurnSettings.silence_duration_ms - elapsed + 50);
           armCallerSpeechWatchdog(`${reason}-reschedule`, waitMs);
@@ -2437,135 +2244,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     }, timeoutMs);
   };
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Deterministic TTS playback. For every scripted agent utterance we bypass the
-  // generative realtime model entirely: we synthesize the EXACT text via a real
-  // TTS endpoint and stream the resulting mu-law 8kHz bytes straight to Twilio.
-  // The audio literally *is* the script, so the model can never improvise or
-  // hallucinate the wording (0% drift). We mint a synthetic "response" lifecycle
-  // (activeResponseId = "tts:…") so the existing turn/mark/drain machinery keeps
-  // working unchanged: mark -> maybeCompleteAiTurn -> drain the FSM queue.
-  const isIiziTtsSpeechReason = (reason: string): boolean =>
-    reason === "initial-greeting" || reason === "iizi-exact-speech" || reason === "iizi-filler";
-  const TTS_MULAW_BYTES_PER_SEC = 8000;
-
-  const runIiziTtsPlayback = async (
-    ttsId: string,
-    reason: string,
-    text: string,
-    lineId: string | null,
-  ): Promise<void> => {
-    let mulaw: Buffer;
-    try {
-      const synth = await synthesizeMulaw8k(text);
-      mulaw = synth.mulaw;
-      console.log(
-        `[IIZI-TTS] synthesized reason=${reason} lineId=${lineId || "none"} bytes=${mulaw.length} ` +
-          `fromCache=${synth.fromCache} callId=${callId}`,
-      );
-    } catch (err) {
-      console.error(
-        `[IIZI-TTS] synthesis_failed reason=${reason} lineId=${lineId || "none"} ` +
-          `err=${String(err).slice(0, 200)} callId=${callId}`,
-      );
-      if (activeResponseId !== ttsId) return;
-      // Roll back the synthetic turn so the call doesn't freeze.
-      const wasGreeting = greetingInProgress;
-      resetResponseState();
-      aiIsSpeaking = false;
-      if (reason === "iizi-exact-speech") {
-        // Re-queue the line; the auto-retry will attempt synthesis again.
-        failIiziExactSpeechPlayback("tts_synthesis_failed");
-      } else if (wasGreeting) {
-        responseDoneReceived = true;
-        responseHasAudio = false;
-        responseAudioDone = true;
-        maybeCompleteAiTurn("tts-greeting-synth-failed");
-        return;
-      }
-      void drainIiziDeterministicNextActions();
-      return;
-    }
-
-    // The caller may have moved on (barge-in / hang-up / new turn) while we were
-    // synthesizing. Only stream if this synthetic turn is still the active one.
-    if (activeResponseId !== ttsId) {
-      console.warn(
-        `[IIZI-TTS] discard_stale_playback reason=${reason} lineId=${lineId || "none"} ` +
-          `active=${activeResponseId || "none"} callId=${callId}`,
-      );
-      return;
-    }
-    if (!streamSid || twilioWs.readyState !== WebSocket.OPEN) {
-      console.warn(`[IIZI-TTS] twilio_not_ready reason=${reason} callId=${callId}`);
-      resetResponseState();
-      aiIsSpeaking = false;
-      if (reason === "iizi-exact-speech") failIiziExactSpeechPlayback("tts_twilio_not_ready");
-      return;
-    }
-
-    responseHasAudio = mulaw.length > 0;
-    const FRAME = 160; // 20ms @ 8kHz mu-law
-    for (let offset = 0; offset < mulaw.length; offset += FRAME) {
-      const chunk = mulaw.subarray(offset, Math.min(offset + FRAME, mulaw.length));
-      try {
-        twilioWs.send(
-          JSON.stringify({ event: "media", streamSid, media: { payload: chunk.toString("base64") } }),
-        );
-        twilioOutboundFrames += 1;
-        if (reason !== "initial-greeting") userTwilioOutboundFrames += 1;
-        activeResponseTwilioChunks += 1;
-        activeResponseTwilioBytes += chunk.length;
-        if (!firstTwilioOutboundAt) firstTwilioOutboundAt = new Date().toISOString();
-      } catch (sendErr) {
-        twilioOutboundSendErrors += 1;
-        console.error(`[IIZI-TTS] twilio_send_error reason=${reason} callId=${callId}`, sendErr);
-      }
-    }
-
-    responseAudioDone = true;
-    responseDoneReceived = true;
-    console.log(
-      `[IIZI-TTS] playback_streamed reason=${reason} lineId=${lineId || "none"} ` +
-        `frames=${activeResponseTwilioChunks} bytes=${activeResponseTwilioBytes} callId=${callId}`,
-    );
-
-    // Mirror realtime "response.done": confirm the scripted line as spoken now
-    // (audio is fully buffered to Twilio). This sets FSM flags and arms the
-    // deterministic end_call-after-line, which maybeCompleteAiTurn reads once
-    // Twilio confirms playback via the mark below.
-    if (reason === "iizi-exact-speech") {
-      confirmIiziExactSpeechPlayback();
-    }
-
-    // Wait for Twilio to confirm playback actually finished, then the existing
-    // mark handler -> maybeCompleteAiTurn -> drain cycle resumes the FSM.
-    responsePlaybackMarkName = `tts-playback:${ttsId}:${Date.now()}`;
-    try {
-      twilioWs.send(
-        JSON.stringify({ event: "mark", streamSid, mark: { name: responsePlaybackMarkName } }),
-      );
-    } catch (sendErr) {
-      console.error(`[IIZI-TTS] twilio_mark_send_error reason=${reason} callId=${callId}`, sendErr);
-    }
-    // mu-law @ 8kHz => 8000 bytes per second of audio. Size the safety fallback to
-    // the actual clip length so a long readback is never cut off before Twilio's
-    // real playback mark arrives.
-    const playbackDurationMs = Math.ceil((mulaw.length / TTS_MULAW_BYTES_PER_SEC) * 1000);
-    const markTimeoutMs = playbackDurationMs + (greetingInProgress ? 2000 : 4000);
-    clearMarkFallback();
-    markFallbackTimer = setTimeout(() => {
-      if (responsePlaybackMarkName) {
-        console.warn(
-          `[IIZI-TTS] mark_fallback_fired reason=${reason} mark=${responsePlaybackMarkName} ` +
-            `playbackMs=${playbackDurationMs} callId=${callId}`,
-        );
-        responsePlaybackMarkName = null;
-        maybeCompleteAiTurn("tts-mark-fallback-timeout");
-      }
-    }, markTimeoutMs);
-  };
-
   const sendResponseCreate = (
     reason: string,
     response?: Record<string, unknown>,
@@ -2574,7 +2252,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       iiziExactSpeechLineId?: string | null;
       iiziExactSpeechActionId?: string | null;
       iiziExactSpeechDedupeKey?: string | null;
-      ttsText?: string | null;
     }
   ) => {
     if (iiziDeterministicInbound()) {
@@ -2719,36 +2396,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     console.log(
       `[Diag] response.create sent #${responseCreateSentCount} reason=${reason} itemId=${committedItemId || "none"} activeResponseBefore=${activeResponseId || "none"} (callId=${callId})`
     );
-
-    // Deterministic path: synthesize the exact text ourselves and stream it to
-    // Twilio instead of asking the generative model to "read it out loud". The
-    // model is never given the chance to improvise the wording.
-    const ttsText = typeof opts?.ttsText === "string" ? opts.ttsText.trim() : "";
-    const useTts =
-      config.openai.ttsEnabled &&
-      iiziDeterministicInbound() &&
-      isIiziTtsSpeechReason(reason) &&
-      ttsText.length > 0;
-    if (useTts) {
-      const ttsId = `tts:${reason}:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      activeResponseId = ttsId;
-      activeResponseReason = reason;
-      responseDoneReceived = false;
-      responseHasAudio = false;
-      responseAudioDone = false;
-      responseAudioDeltaLogged = false;
-      activeResponseTwilioChunks = 0;
-      activeResponseTwilioBytes = 0;
-      aiIsSpeaking = true;
-      if (reason === "iizi-exact-speech") activeIiziExactSpeechLineId = iiziExactSpeechLineId;
-      console.log(
-        `[IIZI-TTS] backendTtsTurnStarted=true reason=${reason} lineId=${iiziExactSpeechLineId || "none"} ` +
-          `ttsId=${ttsId} callId=${callId}`,
-      );
-      void runIiziTtsPlayback(ttsId, reason, ttsText, iiziExactSpeechLineId);
-      return true;
-    }
-
     openaiWs.send(JSON.stringify(response ? { type: "response.create", response } : { type: "response.create" }));
     return true;
   };
@@ -2842,78 +2489,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       .toLowerCase()
       .replace(/[^\p{L}\p{N}]+/gu, " ")
       .trim();
-
-  // Conservative check: did the model actually speak the scripted exact line, or did it
-  // drift (improvise / mirror the caller / translate / hallucinate)? We compare token
-  // multisets. The spoken transcript must contain (nearly) all the scripted words AND must
-  // not contain a meaningful amount of extra words that were not in the script. We bias
-  // toward NOT flagging (fail open) when we cannot confidently tell, so we never re-issue
-  // a line that was actually fine.
-  const detectIiziExactSpeechDrift = (
-    expected: string,
-    actual: string,
-  ): { drift: boolean; reason: string; coverage: number; extras: number } => {
-    const expTokens = normalizeTranscript(expected).split(" ").filter(Boolean);
-    const actTokens = normalizeTranscript(actual).split(" ").filter(Boolean);
-    // No transcript to verify against -> cannot judge -> do not flag.
-    if (expTokens.length === 0 || actTokens.length === 0) {
-      return { drift: false, reason: "no_transcript", coverage: 1, extras: 0 };
-    }
-    const expCounts = new Map<string, number>();
-    for (const t of expTokens) expCounts.set(t, (expCounts.get(t) || 0) + 1);
-    const actCounts = new Map<string, number>();
-    for (const t of actTokens) actCounts.set(t, (actCounts.get(t) || 0) + 1);
-    // How many scripted tokens are present in the spoken output (coverage).
-    let covered = 0;
-    for (const [tok, need] of expCounts) {
-      covered += Math.min(need, actCounts.get(tok) || 0);
-    }
-    const coverage = covered / expTokens.length;
-    // How many spoken tokens were NOT part of the script (extra/improvised words).
-    let extra = 0;
-    for (const [tok, have] of actCounts) {
-      extra += Math.max(0, have - (expCounts.get(tok) || 0));
-    }
-    const extraRatio = extra / actTokens.length;
-    // Drift if the model dropped a meaningful chunk of the script, OR padded the line
-    // with a meaningful chunk of unscripted words (the classic mirror/hallucination).
-    const missingChunk = coverage < 0.7;
-    const extraChunk = extraRatio > 0.35 && extra >= 3;
-    const drift = missingChunk || extraChunk;
-    const reason = missingChunk
-      ? `missing_script_words coverage=${coverage.toFixed(2)}`
-      : extraChunk
-        ? `extra_words extraRatio=${extraRatio.toFixed(2)} extra=${extra}`
-        : "match";
-    return { drift, reason, coverage, extras: extra };
-  };
-
-  // The full "line base": every scripted sentence the bot is ever allowed to say
-  // (across all languages). The speech guard uses this so that auto-retry / audio
-  // flushing only ever targets genuine off-script hallucinations. If the model
-  // happens to speak a DIFFERENT but still permitted scripted line (e.g. the
-  // handoff line in the closing slot), we must NOT cut it mid-sentence — we let it
-  // finish and simply re-issue the line we actually expected.
-  let cachedAllowedLineTexts: string[] | null = null;
-  const allowedLineTextsNormalized = (): string[] => {
-    if (cachedAllowedLineTexts) return cachedAllowedLineTexts;
-    const out: string[] = [];
-    for (const byLang of Object.values(IIZI_LOCALIZED_LINES)) {
-      for (const text of Object.values(byLang)) {
-        const norm = normalizeTranscript(text);
-        if (norm) out.push(norm);
-      }
-    }
-    cachedAllowedLineTexts = out;
-    return out;
-  };
-  const spokenMatchesAllowedLine = (actual: string): boolean => {
-    if (!normalizeTranscript(actual)) return false;
-    for (const candidate of allowedLineTextsNormalized()) {
-      if (!detectIiziExactSpeechDrift(candidate, actual).drift) return true;
-    }
-    return false;
-  };
 
   const startInboundAudioCooldown = (ms: number, reason: string) => {
     inboundAudioCooldownUntil = Math.max(inboundAudioCooldownUntil, Date.now() + ms);
@@ -3167,31 +2742,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     // caller's immediate reply ("tere" / "mul oli avarii"). Echo risk is minimal
     // because the greeting just finished playing and Twilio's mark confirmed it.
     // After normal AI turns we keep the longer cooldown to avoid echo loops.
-    // After a short yes/no style question the caller replies instantly, so the
-    // long echo cooldown (which clears the input buffer) would swallow that reply
-    // and deadlock the call. Use the tiny greeting-grade cooldown for those lines.
-    const justAskedShortAnswerQuestion =
-      !greetingInProgress &&
-      lastConfirmedIiziSpeechLineId !== null &&
-      IIZI_SHORT_ANSWER_QUESTION_LINES.has(lastConfirmedIiziSpeechLineId);
-    if (justAskedShortAnswerQuestion) {
-      console.log(
-        `[IIZI-Deterministic] shortAnswerCooldown=true lineId=${lastConfirmedIiziSpeechLineId} callId=${callId}`,
-      );
-    }
-    // The final "anything to add?" question (and its follow-up "what to add?") just
-    // finished playing. Start the silence watchdog so a mute caller can't wedge the
-    // call open forever.
-    if (
-      lastConfirmedIiziSpeechLineId === "closing.ask_additional_info" ||
-      lastConfirmedIiziSpeechLineId === "closing.ask_what_to_add"
-    ) {
-      armAdditionalInfoTimeout();
-    }
-    const defaultCooldownMs =
-      greetingInProgress || justAskedShortAnswerQuestion
-        ? liveTurnSettings.post_greeting_cooldown_ms
-        : liveTurnSettings.post_playback_cooldown_ms;
+    const defaultCooldownMs = greetingInProgress
+      ? liveTurnSettings.post_greeting_cooldown_ms
+      : liveTurnSettings.post_playback_cooldown_ms;
     const recoveryCooldownMs = effectivePostPlaybackCooldownMs(pendingRecoveryCooldownMs || defaultCooldownMs);
     pendingRecoveryCooldownMs = 0;
 
@@ -3386,7 +2939,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     );
     console.log(`[GreetingGate] init greetingInProgress=${greetingInProgress} callId=${callId}`);
     console.log(
-      `[TurnGate] loaded mode callId=${callId} strict=${strictTurnGateEnabled()} anti_barge_in=${antiBargeinEnabled} interrupt_response=${liveTurnSettings.interrupt_response} silence_duration_ms=${liveTurnSettings.silence_duration_ms} watchdog_commit_ms=${liveTurnSettings.watchdog_commit_ms} max_caller_utterance_ms=${liveTurnSettings.max_caller_utterance_ms}`
+      `[TurnGate] loaded mode callId=${callId} strict=${strictTurnGateEnabled()} anti_barge_in=${antiBargeinEnabled} interrupt_response=${liveTurnSettings.interrupt_response} silence_duration_ms=${liveTurnSettings.silence_duration_ms} watchdog_commit_ms=${liveTurnSettings.watchdog_commit_ms}`
     );
 
     // Inbound CRM prefetch: identify caller by phone number so the agent knows who's calling.
@@ -3750,7 +3303,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 if (justLocationConfirmed) {
                   const addr = (row.location_address || "").toString().slice(0, 300);
                   trustedRawLocationAddress = addr;
-                  trustedLocationReadbackText = buildTrustedLocationReadbackText();
+                  trustedLocationReadbackText = buildTrustedLocationReadbackText(
+                    iiziDetRef.current.iiziLanguage,
+                  );
                   console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
                   if (useCombinedRegLocationSms) {
                     console.log(`[IIZI-CombinedSMS] location confirmed callId=${callId}`);
@@ -4130,7 +3685,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             "initial-greeting",
             Object.keys(greetingResponse).length > 0 ? greetingResponse : {},
           ),
-          { ttsText: greeting || null },
         );
       } else {
         sendResponseCreate("initial-greeting", Object.keys(greetingResponse).length > 0 ? greetingResponse : undefined);
@@ -4383,11 +3937,9 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
       greetingTokenLimitRaised = Boolean(greeting);
 
       const gaTranscription = {
-        model: config.openai.transcribeModel,
-        // Lock STT to Estonian — most callers speak ET. Mixed-language STT
-        // mangles plates like 484DLC → 484DLT, which breaks CRM lookups.
+        model: "whisper-1",
         language: "et",
-        prompt: "Eesti keelne kõne. Auto registreerimismärgid on kujul kolm numbrit ja kolm tähte, näiteks 484DLC, 495BJS, 606BSB, 130XMS.",
+        prompt: "Estonian speech. Car plates look like 484DLC, 495BJS, 606BSB, 130XMS.",
       };
       const sessionUpdate: any = {
         type: "session.update",
@@ -4474,7 +4026,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             clearPendingUserResponseTimer();
             responseCreatedCount += 1;
             activeResponseId = event.response?.id || null;
-            activeResponseAssistantTranscript = "";
             if (lastCommittedUserItemId) {
               responseCreateSentForItemIds.add(lastCommittedUserItemId);
             }
@@ -4688,7 +4239,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               console.warn(`[Diag] OpenAI beta transcript event type=${event.type} — GA expects response.output_audio_transcript.done (callId=${callId})`);
             }
             const assistantTranscript = (event.transcript || "").toString();
-            activeResponseAssistantTranscript = assistantTranscript;
             console.log(`[MediaStream] AI said (callId=${callId}): ${assistantTranscript}`);
             transcriptLines.push(`[Agent]: ${assistantTranscript}`);
             if (callDirection === "inbound" && activeResponseReason !== "initial-greeting") {
@@ -4795,25 +4345,22 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 }
               }
               if (iiziDeterministicInbound()) {
-                await runIiziDeterministicUserTranscript(transcriptText);
+                runIiziDeterministicUserTranscript(transcriptText);
                 console.log(
                   `[IIZI-Deterministic] skip_model_user_transcript_response=true iiziBrainNextActionControl=false callId=${callId} itemId=${transcriptItemId}`,
                 );
                 retryPendingIiziExactSpeech("transcript_done");
                 markIiziCallerTurnEnded("transcript_completed");
               }
-              // When the backend owns playback via TTS, the realtime model never
-              // emits response.created/audio.done and a scripted line legitimately
-              // takes ~1-3s to synthesize before any Twilio audio appears. The
-              // "no usable audio" stale-reset + transcript fallback below were built
-              // for realtime-model failures and would wrongly cancel a TTS turn
-              // mid-synthesis (discard_stale_playback). Skip them entirely here.
-              const ttsOwnsPlayback = config.openai.ttsEnabled && iiziDeterministicInbound();
               if (
-                !ttsOwnsPlayback &&
                 activeResponseId &&
                 !responseHasAudio &&
-                activeResponseReason !== "initial-greeting"
+                activeResponseReason !== "initial-greeting" &&
+                // Never tear down an in-flight deterministic exact-speech response.
+                // Its audio arrives a beat after response.create; resetting here
+                // discarded the audio (response_mismatch) AND stalled the action
+                // queue, which is what made the bot go silent mid-flow.
+                activeResponseReason !== "iizi-exact-speech"
               ) {
                 console.warn(`[Diag-InboundTurn] new user transcript while previous response has no usable audio; resetting stale response state activeResponse=${activeResponseId} seq=${fallbackSeq} previousSeq=${activeResponseInboundTranscriptSeq} (callId=${callId})`);
                 clearInboundNoAudioTimer();
@@ -4830,23 +4377,21 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 aiIsSpeaking = false;
               }
               console.log(`[Diag-InboundTurn] transcript.completed seq=${fallbackSeq} at=${new Date(latestCompletedInboundTranscript.at).toISOString()} text="${transcriptText.slice(0, 160)}" responseCreated=${responseCreatedCount} activeResponse=${activeResponseId || "none"} (callId=${callId})`);
-              if (!ttsOwnsPlayback) {
-                inboundTranscriptFallbackTimer = setTimeout(() => {
-                  inboundTranscriptFallbackTimer = null;
-                  if (fallbackSeq !== inboundTranscriptFallbackSeq || greetingInProgress) return;
-                  if (activeResponseTwilioChunks > 0) return;
-                  if (activeResponseId) {
-                    console.warn(`[Diag-InboundTurn] fallback active response has no usable Twilio audio yet; escalating seq=${fallbackSeq} activeResponse=${activeResponseId} openaiAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} (callId=${callId})`);
-                    triggerInboundTranscriptRecovery("inbound-transcript-fallback-active-no-audio", activeResponseId);
-                    return;
-                  }
-                  console.warn(`[Diag-InboundTurn] fallback scheduled fired seq=${fallbackSeq} reason=transcript-no-response activeResponse=${activeResponseId || "none"} text="${transcriptText.slice(0, 160)}" (callId=${callId})`);
-                  triggerInboundTranscriptRecovery("inbound-transcript-fallback", null);
-                }, liveTurnSettings.inbound_transcript_fallback_ms);
-                console.log(
-                  `[Diag-InboundTurn] fallback scheduled seq=${fallbackSeq} timeoutMs=${liveTurnSettings.inbound_transcript_fallback_ms} text="${transcriptText.slice(0, 160)}" (callId=${callId})`
-                );
-              }
+              inboundTranscriptFallbackTimer = setTimeout(() => {
+                inboundTranscriptFallbackTimer = null;
+                if (fallbackSeq !== inboundTranscriptFallbackSeq || greetingInProgress) return;
+                if (activeResponseTwilioChunks > 0) return;
+                if (activeResponseId) {
+                  console.warn(`[Diag-InboundTurn] fallback active response has no usable Twilio audio yet; escalating seq=${fallbackSeq} activeResponse=${activeResponseId} openaiAudio=${responseHasAudio} twilioChunks=${activeResponseTwilioChunks} (callId=${callId})`);
+                  triggerInboundTranscriptRecovery("inbound-transcript-fallback-active-no-audio", activeResponseId);
+                  return;
+                }
+                console.warn(`[Diag-InboundTurn] fallback scheduled fired seq=${fallbackSeq} reason=transcript-no-response activeResponse=${activeResponseId || "none"} text="${transcriptText.slice(0, 160)}" (callId=${callId})`);
+                triggerInboundTranscriptRecovery("inbound-transcript-fallback", null);
+              }, liveTurnSettings.inbound_transcript_fallback_ms);
+              console.log(
+                `[Diag-InboundTurn] fallback scheduled seq=${fallbackSeq} timeoutMs=${liveTurnSettings.inbound_transcript_fallback_ms} text="${transcriptText.slice(0, 160)}" (callId=${callId})`
+              );
             } else if (iiziDeterministicInbound()) {
               console.log(
                 `[IIZI-Deterministic] skip_model_user_transcript_response=true callId=${callId} itemId=${transcriptItemId}`,
@@ -6113,55 +5658,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 failIiziExactSpeechPlayback("max_output_tokens_cut", finishReason, outputTokens);
               } else if (!hasUsableAudio) {
                 failIiziExactSpeechPlayback("no_audio");
-              } else if (IIZI_SPEECH_GUARD_ENABLED && iiziExactSpeechAwaitingPlayback?.expectedText) {
-                const lineId = iiziExactSpeechAwaitingPlayback.lineId;
-                const expected = iiziExactSpeechAwaitingPlayback.expectedText;
-                const verdict = detectIiziExactSpeechDrift(expected, activeResponseAssistantTranscript);
-                if (!verdict.drift) {
-                  // The expected scripted line was spoken correctly.
-                  iiziExactSpeechDriftRetries.delete(lineId);
-                  confirmIiziExactSpeechPlayback();
-                } else {
-                  const attempts = iiziExactSpeechDriftRetries.get(lineId) || 0;
-                  if (attempts >= IIZI_SPEECH_GUARD_MAX_RETRIES) {
-                    console.warn(
-                      `[IIZI-SpeechGuard] driftDetected=true lineId=${lineId} reason=${verdict.reason} ` +
-                        `attempts=${attempts} action=give_up (max retries reached, accepting output) callId=${callId}`,
-                    );
-                    iiziExactSpeechDriftRetries.delete(lineId);
-                    confirmIiziExactSpeechPlayback();
-                  } else {
-                    iiziExactSpeechDriftRetries.set(lineId, attempts + 1);
-                    // Distinguish a genuine off-script hallucination from a permitted
-                    // scripted line spoken in the wrong slot. We only ever flush (cut)
-                    // audio for true hallucinations. A permitted line is left to finish
-                    // playing — we just re-issue the line we actually expected.
-                    const spokeAnotherAllowedLine = spokenMatchesAllowedLine(
-                      activeResponseAssistantTranscript,
-                    );
-                    if (spokeAnotherAllowedLine) {
-                      console.warn(
-                        `[IIZI-SpeechGuard] driftDetected=true lineId=${lineId} reason=${verdict.reason} ` +
-                          `attempt=${attempts + 1}/${IIZI_SPEECH_GUARD_MAX_RETRIES} type=permitted_other_line ` +
-                          `expected="${expected.slice(0, 120)}" actual="${activeResponseAssistantTranscript.slice(0, 120)}" ` +
-                          `action=reissue_no_flush (let the permitted line finish) callId=${callId}`,
-                      );
-                    } else {
-                      console.warn(
-                        `[IIZI-SpeechGuard] driftDetected=true lineId=${lineId} reason=${verdict.reason} ` +
-                          `attempt=${attempts + 1}/${IIZI_SPEECH_GUARD_MAX_RETRIES} type=hallucination ` +
-                          `expected="${expected.slice(0, 120)}" actual="${activeResponseAssistantTranscript.slice(0, 120)}" ` +
-                          `action=flush_and_reissue callId=${callId}`,
-                      );
-                      // Off-script hallucination: flush the unplayed (drifted) audio.
-                      if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-                        aiIsSpeaking = false;
-                        twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
-                      }
-                    }
-                    failIiziExactSpeechPlayback("output_drift");
-                  }
-                }
               } else {
                 confirmIiziExactSpeechPlayback();
               }
@@ -6205,7 +5701,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               }
             }
             speechStartedCount += 1;
-            if (!callerSpeechActive) callerSpeechStartedAt = Date.now();
             callerSpeechActive = true;
             if (initialGreetingResponseFinished && !greetingInProgress) {
               hasPostGreetingSpeechStarted = true;
@@ -6223,9 +5718,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
               break;
             }
             armCallerSpeechWatchdog("speech-started");
-            // Caller is answering — cancel the "anything to add?" silence watchdog so
-            // a reply that begins near the deadline isn't cut off mid-sentence.
-            clearAdditionalInfoTimeout();
             console.log(`[MediaStream] Speech started (callId=${callId}, responseId=${activeResponseId})`);
             if (streamSid && twilioWs.readyState === WebSocket.OPEN && assistantPlaybackProtected()) {
               aiIsSpeaking = false;
@@ -6246,7 +5738,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
             }
             speechStoppedCount += 1;
             callerSpeechActive = false;
-            callerSpeechStartedAt = 0;
             clearCallerSpeechWatchdog();
             console.log(`[Diag] speech_stopped #${speechStoppedCount} (callId=${callId})`);
             markIiziCallerTurnEnded("speech_stopped");
@@ -6727,8 +6218,6 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     clearInboundNoAudioTimer();
     clearResponseDoneFallbackTimer();
     clearPendingInboundRecoveryAfterCancel();
-    clearFormWaitTimeout();
-    clearAdditionalInfoTimeout();
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
       openaiWs.close();
     } else {
