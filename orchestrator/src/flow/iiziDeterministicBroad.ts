@@ -125,11 +125,22 @@ const MECHANICAL_TOKENS = [
   "течет", "масло", "генератор", "перегревается",
 ];
 
+function tokenAppearsAsWord(normalized: string, token: string): boolean {
+  if (!token) return false;
+  // Anchor the token to a word start (string start or whitespace) instead of a
+  // raw substring match. This stops short tokens from matching mid-word (e.g.
+  // "oli" inside "policies", "auto" inside "autobiography") while still allowing
+  // trailing characters so Estonian inflections match (e.g. "auto" in "autoga",
+  // "rehv" in "rehvi", "aku" in "akut").
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|\\s)${escaped}`).test(normalized);
+}
+
 function collectMatchingTokens(normalized: string, tokens: readonly string[]): string[] {
   const found: string[] = [];
   for (const t of tokens) {
     const n = normalizeTriggerPhrase(t);
-    if (n && normalized.includes(n)) found.push(n);
+    if (n && tokenAppearsAsWord(normalized, n)) found.push(n);
   }
   return [...new Set(found)];
 }
