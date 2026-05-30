@@ -57,6 +57,7 @@ import {
   type IiziDeterministicAction,
   type IiziDeterministicStateBag,
   type IiziFillerReason,
+  type IiziLanguage,
 } from "../flow/iiziDeterministic.js";
 import { IIZI_LOCALIZED_LINES } from "../flow/iiziDeterministicLocales.js";
 import {
@@ -1277,9 +1278,23 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return { phrase: "kinnitatud", completeness, fullPresent: false };
   };
 
-  const buildTrustedLocationReadbackText = (): string => {
+  const localizedLocationReadbackLine = (
+    loc: { phrase: string; fullPresent: boolean },
+    lang: IiziLanguage,
+  ): string => {
+    if (!loc.fullPresent) {
+      if (lang === "ru") return "Местоположение подтверждено.";
+      if (lang === "en") return "The location is confirmed.";
+      return "Asukoht on kinnitatud.";
+    }
+    if (lang === "ru") return `Местоположение: ${loc.phrase}.`;
+    if (lang === "en") return `The location is ${loc.phrase}.`;
+    return `Asukoht on ${loc.phrase}.`;
+  };
+
+  const buildTrustedLocationReadbackText = (lang: IiziLanguage = "et"): string => {
     const loc = formatTrustedLocationAddressForReadback(trustedRawLocationAddress || "");
-    const text = loc.phrase === "kinnitatud" ? "Asukoht on kinnitatud." : `Asukoht on ${loc.phrase}.`;
+    const text = localizedLocationReadbackLine(loc, lang);
     console.log(
       `[IIZI-Deterministic] trustedLocationReadbackBuilt=true locationReadbackText="${text}" ` +
         `locationReadbackUsesTrustedEvent=true locationReadbackUsedFallback=${!loc.fullPresent} callId=${callId}`,
@@ -1287,7 +1302,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     return text;
   };
 
-  const buildCombinedVehicleLocationReadbackText = (): string => {
+  const buildCombinedVehicleLocationReadbackText = (lang: IiziLanguage = "et"): string => {
     const make = (trustedVehicleFields.make || "").trim();
     const model = (trustedVehicleFields.model || "").trim();
     const year = (trustedVehicleFields.year || "").trim();
@@ -1296,15 +1311,31 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     const rawAddr =
       trustedRawLocationAddress || iiziDetRef.current.flags.locationAddress || "";
     const loc = formatTrustedLocationAddressForReadback(rawAddr);
-    const segments: string[] = ["Sain Teie andmed kätte."];
+    const locationLine = localizedLocationReadbackLine(loc, lang);
     const vehicleCore = [make, model, year].filter(Boolean).join(" ").trim();
-    if (vehicleCore) segments.push(`Auto on ${vehicleCore}.`);
-    segments.push("Kindlustus on aktiivne.");
-    if (insurer) segments.push(`Kindlustusandja on ${insurer}.`);
-    if (coverType) segments.push(`Kaitse liik on ${coverType}.`);
-    segments.push(loc.phrase === "kinnitatud" ? "Asukoht on kinnitatud." : `Asukoht on ${loc.phrase}.`);
+    const segments: string[] = [];
+    if (lang === "ru") {
+      segments.push("Я получила ваши данные.");
+      if (vehicleCore) segments.push(`Автомобиль — ${vehicleCore}.`);
+      segments.push("Страховка активна.");
+      if (insurer) segments.push(`Страховая компания — ${insurer}.`);
+      if (coverType) segments.push(`Тип покрытия — ${coverType}.`);
+    } else if (lang === "en") {
+      segments.push("I have received your details.");
+      if (vehicleCore) segments.push(`The vehicle is ${vehicleCore}.`);
+      segments.push("The insurance is active.");
+      if (insurer) segments.push(`The insurer is ${insurer}.`);
+      if (coverType) segments.push(`The cover type is ${coverType}.`);
+    } else {
+      segments.push("Sain Teie andmed kätte.");
+      if (vehicleCore) segments.push(`Auto on ${vehicleCore}.`);
+      segments.push("Kindlustus on aktiivne.");
+      if (insurer) segments.push(`Kindlustusandja on ${insurer}.`);
+      if (coverType) segments.push(`Kaitse liik on ${coverType}.`);
+    }
+    segments.push(locationLine);
     const text = segments.join(" ");
-    trustedLocationReadbackText = loc.phrase === "kinnitatud" ? "Asukoht on kinnitatud." : `Asukoht on ${loc.phrase}.`;
+    trustedLocationReadbackText = locationLine;
     console.log(
       `[IIZI-Deterministic] combinedVehicleLocationReadbackBuilt=true combinedVehicleLocationReadbackText="${text}" ` +
         `duplicateDataReceivedLineSuppressed=true callId=${callId}`,
@@ -1321,15 +1352,15 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
     if (opts?.exactText && opts.exactText.trim()) {
       text = opts.exactText.trim();
     } else if (lineId === "vehicle_location.combined.readback") {
-      text = buildCombinedVehicleLocationReadbackText();
+      text = buildCombinedVehicleLocationReadbackText(iiziDetRef.current.iiziLanguage);
     } else if (lineId === "vehicle.match_active.readback") {
       console.log(
         `[IIZI-Deterministic] duplicateDataReceivedLineSuppressed=true reason=legacy_vehicle_readback_use_combined callId=${callId}`,
       );
-      text = buildCombinedVehicleLocationReadbackText();
+      text = buildCombinedVehicleLocationReadbackText(iiziDetRef.current.iiziLanguage);
     } else if (lineId === "location.received.readback") {
       if (iiziDetVehicleReadbackSpoken && !iiziDetLocationReadbackSpoken) {
-        text = trustedLocationReadbackText || buildTrustedLocationReadbackText();
+        text = trustedLocationReadbackText || buildTrustedLocationReadbackText(iiziDetRef.current.iiziLanguage);
       } else {
         console.log(
           `[IIZI-Deterministic] duplicateDataReceivedLineSuppressed=true reason=location_readback_after_combined callId=${callId}`,
@@ -3752,7 +3783,7 @@ export function handleTwilioMediaStream(twilioWs: WebSocket) {
                 if (justLocationConfirmed) {
                   const addr = (row.location_address || "").toString().slice(0, 300);
                   trustedRawLocationAddress = addr;
-                  trustedLocationReadbackText = buildTrustedLocationReadbackText();
+                  trustedLocationReadbackText = buildTrustedLocationReadbackText(iiziDetRef.current.iiziLanguage);
                   console.log(`[MediaStream] Location confirmed (callId=${callId}): "${addr}"`);
                   if (useCombinedRegLocationSms) {
                     console.log(`[IIZI-CombinedSMS] location confirmed callId=${callId}`);

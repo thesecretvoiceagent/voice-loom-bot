@@ -313,8 +313,15 @@ export const IIZI_FUZZY_EXTRA: readonly { phrase: string; category: IiziRoadside
 ];
 
 export const IIZI_EN_LANG_HINTS: readonly string[] = [
+  // Roadside-specific phrases.
   "accident", "insurance", "tow", "flat tire", "won't", "wont", "car won't", "need help",
   "broken", "leaking", "someone is", "i had", "my car",
+  // General English words/phrases so a plain English sentence (e.g. a non-roadside
+  // question) is detected as EN even without a roadside keyword. Chosen to avoid
+  // collisions with Estonian ("on", "number") and Russian-latin tokens.
+  "the", "you", "your", "yeah", "hello", "have", "what", "with", "this", "that",
+  "about", "question", "website", "please", "thank", "english", "help me",
+  "i need", "i want", "i have", "i am", "do you", "can you", "could you", "would",
 ];
 
 export const IIZI_ET_LANG_HINTS: readonly string[] = [
