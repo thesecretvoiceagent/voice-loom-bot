@@ -310,7 +310,7 @@ export function detectIiziLanguage(
       switchReason: currentLang !== "et" ? "estonian_keywords" : null,
     };
   }
-  if (ruScore >= 2) {
+  if (ruScore >= 2 || (ruScore >= 1 && etScore === 0 && enScore === 0)) {
     return {
       lang: "ru",
       method: "keyword",
@@ -349,17 +349,27 @@ function applyLanguageFromClassification(
     matchedAliasLanguage = "ru";
     triggerIndexSource = "default";
     languageSwitchReason = prev !== "ru" ? "cyrillic_script" : null;
-  } else if (two.matchedAliasLanguage) {
-    detectedLanguage = two.matchedAliasLanguage;
-    languageDetectionMethod = "exact";
-    languageSwitchReason = "trigger_phrase_language";
   } else {
     const det = detectIiziLanguage(rawTranscript, normalizedTranscript, prev);
-    detectedLanguage = det.lang;
-    languageDetectionMethod = det.method;
-    languageSwitchReason = det.switchReason;
-    matchedAliasLanguage = null;
-    triggerIndexSource = "default";
+    if (det.lang === "ru" && det.method === "keyword") {
+      // Strong Latin RU signal ("chopped Estonian that looks like Russian")
+      // wins over an ET-indexed trigger alias so RU callers continue in RU.
+      detectedLanguage = "ru";
+      languageDetectionMethod = "keyword";
+      languageSwitchReason = det.switchReason;
+      matchedAliasLanguage = "ru";
+      triggerIndexSource = "default";
+    } else if (two.matchedAliasLanguage) {
+      detectedLanguage = two.matchedAliasLanguage;
+      languageDetectionMethod = "exact";
+      languageSwitchReason = "trigger_phrase_language";
+    } else {
+      detectedLanguage = det.lang;
+      languageDetectionMethod = det.method;
+      languageSwitchReason = det.switchReason;
+      matchedAliasLanguage = null;
+      triggerIndexSource = "default";
+    }
   }
 
   const explicitSwitch = isExplicitCallerLanguageSwitch(normalizedTranscript, rawTranscript);

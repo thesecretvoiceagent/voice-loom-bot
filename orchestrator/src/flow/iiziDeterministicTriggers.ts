@@ -322,5 +322,20 @@ export const IIZI_ET_LANG_HINTS: readonly string[] = [
 ];
 
 export const IIZI_RU_LANG_HINTS: readonly string[] = [
+  // Cyrillic (kept for the rare case Whisper emits Cyrillic).
   "машина", "нужен", "авария", "страхов", "эвакуатор", "не заводится",
+  // Latin / "chopped Estonian that looks like Russian" — what Whisper(et)
+  // typically emits for spoken Russian. Lets us detect RU callers and keep
+  // the deterministic flow in Russian even without any Cyrillic output.
+  "pomogite", "pamagite", "pomos", "pomosh", "pomoshch", "pomosc",
+  "mashina", "masina", "masinu", "mashinu", "mašina",
+  "slomalas", "slamalas", "slomal", "slomalsja",
+  "zavoditsa", "zavoditsja", "ne zavoditsa", "ne zavoditsja",
+  "evakuator", "evakuaator", "avarija", "avaria",
+  "koleso", "kaleso", "spustilo", "spustila", "spustilos",
+  "akkumulator", "akumulator", "akkumuljator",
+  "zdrastvuite", "zdravstvuite", "zdrastvujte",
+  "pozalusta", "pozhalusta", "pazalusta", "spasibo",
+  "nuzhna", "nuzna", "nuzhen", "nuzen", "nado",
+  "ne rabotaet", "ne mogu", "benzin", "strahovka",
 ];
