@@ -1,8 +1,14 @@
 import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, Info, Shield, Building2 } from "lucide-react";
+import { LayoutDashboard, Bot, Phone, BarChart3, Settings, Megaphone, Info, Shield, Building2, Lock } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { UserMenu } from "./UserMenu";
+import { logoutAppAccess } from "@/components/auth/PasswordGate";
+
+async function handleLockApp() {
+  await logoutAppAccess();
+  window.location.reload();
+}
 
 const navigation = [
   { name: "About", href: "/about", icon: Info },
@@ -98,6 +104,14 @@ export function Sidebar() {
               </div>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={handleLockApp}
+            className="mt-3 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-foreground"
+          >
+            <Lock className="h-3.5 w-3.5" />
+            Lock app
+          </button>
         </div>
       </div>
     </aside>

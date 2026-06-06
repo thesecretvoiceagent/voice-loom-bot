@@ -24,7 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Plus, KeyRound, Trash2, Copy, Bot, ExternalLink, Phone, ArrowRight } from "lucide-react";
+import { Loader2, Plus, KeyRound, Trash2, Copy, Bot, ExternalLink, Phone, ArrowRight, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 interface TenantRow {
@@ -68,6 +68,12 @@ export default function TenantsAdmin() {
 
   // Delete confirm
   const [deleteTenant, setDeleteTenant] = useState<TenantRow | null>(null);
+
+  // Edit (rename) dialog
+  const [editTenant, setEditTenant] = useState<TenantRow | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editSlug, setEditSlug] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   // Password reveal dialog
   const [revealedPassword, setRevealedPassword] = useState<{
@@ -155,6 +161,48 @@ export default function TenantsAdmin() {
     setAddOpen(false);
     setNewSlug("");
     setNewName("");
+    await fetchAll();
+  };
+
+  const openEdit = (t: TenantRow) => {
+    setEditTenant(t);
+    setEditName(t.name);
+    setEditSlug(t.slug);
+  };
+
+  const handleEdit = async () => {
+    if (!editTenant) return;
+    const slug = editSlug.trim().toLowerCase();
+    const name = editName.trim();
+    if (!slug || !name) {
+      toast.error("Slug and name are required");
+      return;
+    }
+    if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(slug) || slug.length < 2 || slug.length > 50) {
+      toast.error("Slug must be lowercase, alphanumeric and dashes only (2-50 chars)");
+      return;
+    }
+    setSavingEdit(true);
+    const { error } = await supabase
+      .from("tenants")
+      .update({ name, slug })
+      .eq("id", editTenant.id);
+    setSavingEdit(false);
+    if (error) {
+      toast.error(
+        error.code === "23505"
+          ? `Slug "${slug}" is already taken`
+          : error.message
+      );
+      return;
+    }
+    const slugChanged = slug !== editTenant.slug;
+    toast.success(
+      slugChanged
+        ? `Updated. New URL: app.beyondcode.ai/${slug} (old link no longer works)`
+        : `Updated "${name}"`
+    );
+    setEditTenant(null);
     await fetchAll();
   };
 
@@ -339,6 +387,14 @@ export default function TenantsAdmin() {
                   >
                     <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
                     Access
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => openEdit(t)}
+                  >
+                    <Pencil className="h-3.5 w-3.5 mr-1.5" />
+                    Edit
                   </Button>
                   <Button
                     size="sm"
@@ -563,6 +619,56 @@ export default function TenantsAdmin() {
             </Button>
             <Button onClick={handleAdd} disabled={adding}>
               {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit (rename) tenant */}
+      <Dialog
+        open={!!editTenant}
+        onOpenChange={(o) => !o && setEditTenant(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit account</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Display name</Label>
+              <Input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                placeholder="Acme Corp"
+                autoFocus
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Slug (login URL / username)</Label>
+              <Input
+                value={editSlug}
+                onChange={(e) => setEditSlug(e.target.value)}
+                placeholder="acme"
+                className="font-mono"
+              />
+              <p className="text-xs text-muted-foreground">
+                Workspace URL: app.beyondcode.ai/{editSlug || "slug"}
+                {editTenant && editSlug.trim().toLowerCase() !== editTenant.slug && (
+                  <span className="block text-destructive mt-1">
+                    Changing the slug breaks the old link and signs out existing
+                    sessions. The account password and assigned agents are
+                    unaffected.
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditTenant(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleEdit} disabled={savingEdit}>
+              {savingEdit ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
             </Button>
           </DialogFooter>
         </DialogContent>

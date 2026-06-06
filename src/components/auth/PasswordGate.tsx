@@ -3,65 +3,114 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Lock, Shield } from "lucide-react";
+import { Lock, Shield, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
-const ACCESS_PASSWORD = "Kuh26uTa!";
-// Bump the version suffix any time you want to force every device to re-enter
-// the password (e.g. password change, suspected leak). Old keys are also
-// proactively cleared below.
-const STORAGE_KEY = "bc_access_granted_v2";
-const LEGACY_STORAGE_KEYS = ["bc_access_granted_v1"];
+// The access password is validated SERVER-SIDE (see server.js /api/app-auth/*).
+// It is never present in this bundle. On success the server sets a signed,
+// HTTP-only session cookie, so we only ever ask the server whether the current
+// visitor is authenticated.
+//
+// In local Vite dev (`npm run dev`) there is no Node server backing these
+// endpoints, so we explicitly bypass the gate. This bypass only exists in dev
+// builds — production builds always enforce the server check.
+const DEV_BYPASS = import.meta.env.DEV;
 
-export function isAccessGranted(): boolean {
+async function logoutAppAccess(): Promise<void> {
   try {
-    // Clear any legacy keys so old sessions cannot bypass the new gate.
-    for (const k of LEGACY_STORAGE_KEYS) {
-      try { localStorage.removeItem(k); } catch { /* ignore */ }
-      try { sessionStorage.removeItem(k); } catch { /* ignore */ }
-    }
-    return sessionStorage.getItem(STORAGE_KEY) === "1" || localStorage.getItem(STORAGE_KEY) === "1";
+    await fetch("/api/app-auth/logout", { method: "POST", credentials: "include" });
   } catch {
-    return false;
+    /* ignore */
   }
 }
+
+// Exposed so a logout control elsewhere (e.g. the sidebar) can clear the gate.
+export { logoutAppAccess };
 
 interface PasswordGateProps {
   children: React.ReactNode;
 }
 
 export const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
-  const [granted, setGranted] = useState<boolean>(() => isAccessGranted());
+  const [granted, setGranted] = useState<boolean>(false);
+  const [checking, setChecking] = useState<boolean>(true);
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    // Re-check on mount in case storage changed
-    setGranted(isAccessGranted());
+    let active = true;
+
+    if (DEV_BYPASS) {
+      console.warn("[PasswordGate] Dev build — access gate bypassed locally.");
+      setGranted(true);
+      setChecking(false);
+      return;
+    }
+
+    (async () => {
+      try {
+        const res = await fetch("/api/app-auth/status", { credentials: "include" });
+        const data = await res.json();
+        if (active) setGranted(Boolean(data?.authenticated));
+      } catch {
+        if (active) setGranted(false);
+      } finally {
+        if (active) setChecking(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
-    if (password === ACCESS_PASSWORD) {
+    try {
+      const res = await fetch("/api/app-auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ password, remember }),
+      });
+
+      if (res.ok) {
+        setGranted(true);
+        toast.success("Access granted");
+        return;
+      }
+
+      let error = "";
       try {
-        if (remember) {
-          localStorage.setItem(STORAGE_KEY, "1");
-        } else {
-          sessionStorage.setItem(STORAGE_KEY, "1");
-        }
+        error = (await res.json())?.error ?? "";
       } catch {
         /* ignore */
       }
-      setGranted(true);
-      toast.success("Access granted");
-    } else {
-      toast.error("Incorrect password");
-      setPassword("");
+
+      if (res.status === 503 || error === "auth_not_configured") {
+        toast.error("Access is not configured yet. Contact your administrator.");
+      } else if (res.status === 429 || error === "too_many_attempts") {
+        toast.error("Too many attempts. Please wait a few minutes and try again.");
+      } else {
+        toast.error("Incorrect password");
+        setPassword("");
+      }
+    } catch {
+      toast.error("Could not reach the server. Please try again.");
+    } finally {
+      setSubmitting(false);
     }
-    setSubmitting(false);
   };
+
+  if (checking) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
 
   if (granted) return <>{children}</>;
 

@@ -4,4 +4,17 @@ services:
     env: node
     rootDir: /
     buildCommand: npm install --legacy-peer-deps && npm run build
-    startCommand: npx serve -s dist -l 3000
+    # server.js serves the static SPA AND the app-access gate (/api/app-auth/*).
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Shared app password for app.beyondcode.ai. Set the real value in the
+      # Render dashboard (Environment tab) — never commit it.
+      - key: APP_ACCESS_PASSWORD
+        sync: false
+      # Optional: dedicated secret used to sign the session cookie.
+      # If unset, APP_ACCESS_PASSWORD is used as the signing key.
+      - key: APP_SESSION_SECRET
+        sync: false
