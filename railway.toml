@@ -1,0 +1,10 @@
+# Railway web service — app.beyondcode.ai (dashboard UI + password gate)
+# Create a service pointing at repo ROOT (not /orchestrator).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/healthz"
+restartPolicyType = "ON_FAILURE"
