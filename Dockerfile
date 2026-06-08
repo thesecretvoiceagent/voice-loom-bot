@@ -3,13 +3,27 @@
 
 FROM node:22-slim AS builder
 WORKDIR /app
+
+ARG VITE_API_BASE_URL
+ARG VITE_SUPABASE_URL
+ARG VITE_SUPABASE_PUBLISHABLE_KEY
+ARG VITE_SUPABASE_PROJECT_ID
+
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
+ENV VITE_SUPABASE_PUBLISHABLE_KEY=$VITE_SUPABASE_PUBLISHABLE_KEY
+ENV VITE_SUPABASE_PROJECT_ID=$VITE_SUPABASE_PROJECT_ID
+
 COPY package.json package-lock.json ./
 RUN npm install --legacy-peer-deps
 COPY index.html vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.json ./
 COPY postcss.config.js tailwind.config.ts components.json ./
 COPY public ./public
 COPY src ./src
-RUN npm run build
+RUN test -n "$VITE_SUPABASE_URL" \
+  && test -n "$VITE_SUPABASE_PUBLISHABLE_KEY" \
+  && test -n "$VITE_SUPABASE_PROJECT_ID" \
+  && npm run build
 
 FROM node:22-slim
 WORKDIR /app
