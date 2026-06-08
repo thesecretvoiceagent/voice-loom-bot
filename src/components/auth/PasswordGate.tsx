@@ -15,6 +15,27 @@ import { toast } from "sonner";
 // endpoints, so we explicitly bypass the gate. This bypass only exists in dev
 // builds — production builds always enforce the server check.
 const DEV_BYPASS = import.meta.env.DEV;
+const AUTH_STATUS_TIMEOUT_MS = 8000;
+
+async function fetchAuthStatus(): Promise<{ authenticated: boolean; configured?: boolean } | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AUTH_STATUS_TIMEOUT_MS);
+  try {
+    const res = await fetch("/api/app-auth/status", {
+      credentials: "include",
+      signal: controller.signal,
+    });
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      return null;
+    }
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function logoutAppAccess(): Promise<void> {
   try {
@@ -37,6 +58,7 @@ export const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [serverUnavailable, setServerUnavailable] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -49,15 +71,16 @@ export const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
     }
 
     (async () => {
-      try {
-        const res = await fetch("/api/app-auth/status", { credentials: "include" });
-        const data = await res.json();
-        if (active) setGranted(Boolean(data?.authenticated));
-      } catch {
-        if (active) setGranted(false);
-      } finally {
-        if (active) setChecking(false);
+      const data = await fetchAuthStatus();
+      if (!active) return;
+      if (data == null) {
+        setServerUnavailable(true);
+        setGranted(false);
+      } else {
+        setServerUnavailable(false);
+        setGranted(Boolean(data.authenticated));
       }
+      setChecking(false);
     })();
 
     return () => {
@@ -131,6 +154,14 @@ export const PasswordGate: React.FC<PasswordGateProps> = ({ children }) => {
             <CardDescription className="text-center">Password protected area</CardDescription>
           </CardHeader>
           <CardContent>
+            {serverUnavailable && (
+              <p className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                Auth server not reachable. Railway start command must be{" "}
+                <code className="font-mono text-xs">node server.js</code> (not{" "}
+                <code className="font-mono text-xs">npx serve</code>). Redeploy
+                after setting <code className="font-mono text-xs">APP_ACCESS_PASSWORD</code>.
+              </p>
+            )}
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="access-password">Password</Label>
