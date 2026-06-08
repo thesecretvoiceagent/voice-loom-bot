@@ -14,6 +14,8 @@ RUN npm run build
 FROM node:22-slim
 WORKDIR /app
 ENV NODE_ENV=production
+# package.json required: server.js uses ESM import syntax ("type": "module")
+COPY package.json ./
 COPY server.js ./
 COPY --from=builder /app/dist ./dist
 EXPOSE 3000

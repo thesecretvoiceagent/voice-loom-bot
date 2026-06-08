@@ -231,8 +231,8 @@ createServer(async (req, res) => {
     }
   })()
 
-  // Unauthenticated, machine-friendly health check for the platform.
-  if (pathname === '/healthz') {
+  // Unauthenticated health checks (Railway / load balancers)
+  if (pathname === '/healthz' || pathname === '/health') {
     return sendJson(res, 200, { ok: true })
   }
 
@@ -245,8 +245,8 @@ createServer(async (req, res) => {
   }
 
   return serveStatic(req, res, pathname)
-}).listen(port, () => {
-  console.log(`Server running on port ${port}`)
+}).listen(port, '0.0.0.0', () => {
+  console.log(`Server running on http://0.0.0.0:${port}`)
   if (!ACCESS_PASSWORD) {
     console.warn('[app-auth] WARNING: APP_ACCESS_PASSWORD is not set — the app gate will reject all logins')
   }

@@ -5,7 +5,10 @@ import { config, getDeploymentIdentity } from "../config.js";
 export const healthRouter = Router();
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
-healthRouter.get("/health", (_req, res) => {
+healthRouter.get("/health", healthHandler);
+healthRouter.get("/healthz", healthHandler);
+
+function healthHandler(_req: import("express").Request, res: import("express").Response) {
   res.json({
     ok: true,
     service: "orchestrator",
@@ -26,7 +29,7 @@ healthRouter.get("/health", (_req, res) => {
       },
     },
   });
-});
+}
 
 healthRouter.post("/diag/openai-realtime-self-test", async (req, res) => {
   const correlationId = crypto.randomUUID();

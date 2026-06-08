@@ -1,0 +1,10 @@
+# Orchestrator service (Twilio / OpenAI voice pipeline)
+# Railway: set Root Directory = /orchestrator for this service.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+restartPolicyType = "ON_FAILURE"

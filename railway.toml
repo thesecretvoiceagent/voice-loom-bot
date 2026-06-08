@@ -1,5 +1,9 @@
-# Railway web service — app.beyondcode.ai (dashboard UI + password gate)
-# Create a service pointing at repo ROOT (not /orchestrator).
+# Web frontend service ONLY (app.beyondcode.ai dashboard + password gate)
+#
+# Create a SEPARATE Railway service for this — do NOT reuse the orchestrator
+# service (voice-loom-bot). Point Root Directory to repo root (/).
+#
+# Orchestrator healthcheck lives in orchestrator/railway.toml (/health).
 
 [build]
 builder = "DOCKERFILE"
@@ -7,4 +11,5 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 healthcheckPath = "/healthz"
+healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
