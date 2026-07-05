@@ -160,18 +160,19 @@ async function ensureAnonClientForDemoSave() {
   await supabase.auth.signOut({ scope: "local" });
 }
 
-async function saveAgentViaEdge(body: Record<string, unknown>) {
-  const { data, error } = await supabase.functions.invoke("agent-save", { body });
-  if (error) {
-    const msg = error.message || "";
-    if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
-      throw new Error(
-        "agent-save function not deployed. Run: supabase functions deploy agent-save",
-      );
-    }
-    throw error;
+async function saveAgentViaServer(body: Record<string, unknown>) {
+  const res = await fetch("/api/agents/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data: Record<string, unknown> = {};
+  try {
+    data = await res.json();
+  } catch {
+    /* ignore */
   }
-  if (!data?.ok) {
+  if (!res.ok || !data?.ok) {
     throw new Error(formatSaveError(data, "Failed to save agent"));
   }
   return data as { ok: true; id?: string; agent?: Record<string, unknown> };
@@ -594,7 +595,7 @@ export default function CreateAgent() {
       await ensureAnonClientForDemoSave();
 
       if (editId) {
-        const saveResult = await saveAgentViaEdge({
+        const saveResult = await saveAgentViaServer({
           action: "update",
           id: editId,
           payload: agentData,
@@ -668,7 +669,7 @@ export default function CreateAgent() {
         }
         const insertPayload: Record<string, unknown> = { ...agentData, user_id: ownerUserId };
         if (tenantId) insertPayload.tenant_id = tenantId;
-        await saveAgentViaEdge({
+        await saveAgentViaServer({
           action: "insert",
           payload: insertPayload,
         });
@@ -700,7 +701,7 @@ export default function CreateAgent() {
           ? ({ ...data.settings } as Record<string, unknown>)
           : {};
       const nextSettings = { ...existingSettings, brainUi };
-      await saveAgentViaEdge({
+      await saveAgentViaServer({
         action: "update",
         id: editId,
         payload: { settings: nextSettings },
