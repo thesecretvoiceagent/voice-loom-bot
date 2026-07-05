@@ -147,6 +147,36 @@ const timezones = [
 /** Used when saving agents without a Supabase session (demo / anon RLS). */
 const DEMO_OWNER_USER_ID = "00000000-0000-4000-8000-000000000001";
 
+function formatSaveError(err: unknown, fallback = "Failed to save agent"): string {
+  if (err && typeof err === "object") {
+    const e = err as { message?: string; details?: string; hint?: string; error?: string };
+    return [e.error, e.message, e.details, e.hint].filter(Boolean).join(" — ") || fallback;
+  }
+  return err instanceof Error ? err.message : fallback;
+}
+
+async function ensureAnonClientForDemoSave() {
+  // Stale JWTs make Supabase use the authenticated role and RLS blocks demo writes.
+  await supabase.auth.signOut({ scope: "local" });
+}
+
+async function saveAgentViaEdge(body: Record<string, unknown>) {
+  const { data, error } = await supabase.functions.invoke("agent-save", { body });
+  if (error) {
+    const msg = error.message || "";
+    if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
+      throw new Error(
+        "agent-save function not deployed. Run: supabase functions deploy agent-save",
+      );
+    }
+    throw error;
+  }
+  if (!data?.ok) {
+    throw new Error(formatSaveError(data, "Failed to save agent"));
+  }
+  return data as { ok: true; id?: string; agent?: Record<string, unknown> };
+}
+
 type LiveTurnSettings = {
   vad_threshold: number;
   silence_duration_ms: number;
@@ -561,23 +591,18 @@ export default function CreateAgent() {
     };
 
     try {
+      await ensureAnonClientForDemoSave();
+
       if (editId) {
-        // Update + return the FULL row so we can verify what actually persisted.
-        const { data, error } = await supabase
-          .from("agents")
-          .update(agentData as any)
-          .eq("id", editId)
-          .select("*");
-        if (error) {
-          console.error("[CreateAgent] Update error:", error);
-          throw error;
+        const saveResult = await saveAgentViaEdge({
+          action: "update",
+          id: editId,
+          payload: agentData,
+        });
+        const saved = saveResult.agent;
+        if (!saved) {
+          throw new Error("Update returned no agent row");
         }
-        if (!data || data.length === 0) {
-          throw new Error(
-            "Update affected 0 rows. You may not have permission, or the agent was deleted. Try refreshing.",
-          );
-        }
-        const saved = data[0] as any;
         console.log("[CreateAgent] Saved row:", saved);
 
         // Re-hydrate ALL editable state from DB so the UI reflects exactly what's stored.
@@ -643,17 +668,17 @@ export default function CreateAgent() {
         }
         const insertPayload: Record<string, unknown> = { ...agentData, user_id: ownerUserId };
         if (tenantId) insertPayload.tenant_id = tenantId;
-        const { error } = await supabase
-          .from("agents")
-          .insert(insertPayload);
-        if (error) throw error;
+        await saveAgentViaEdge({
+          action: "insert",
+          payload: insertPayload,
+        });
         toast.success("Agent created");
         const tenantSlug = searchParams.get("tenantSlug") || routeTenantSlug;
         navigate(tenantSlug ? `/${tenantSlug}/agents` : "/agents");
       }
     } catch (err) {
       console.error("[CreateAgent] Save failed:", err);
-      toast.error(err instanceof Error ? err.message : "Failed to save agent");
+      toast.error(formatSaveError(err));
     } finally {
       setSaving(false);
     }
@@ -666,6 +691,7 @@ export default function CreateAgent() {
     }
     setSavingBrainUi(true);
     try {
+      await ensureAnonClientForDemoSave();
       const { data, error } = await supabase.from("agents").select("settings").eq("id", editId).single();
       if (error) throw error;
       if (!data) throw new Error("Agent not found");
@@ -674,13 +700,16 @@ export default function CreateAgent() {
           ? ({ ...data.settings } as Record<string, unknown>)
           : {};
       const nextSettings = { ...existingSettings, brainUi };
-      const { error: upError } = await supabase.from("agents").update({ settings: nextSettings }).eq("id", editId);
-      if (upError) throw upError;
+      await saveAgentViaEdge({
+        action: "update",
+        id: editId,
+        payload: { settings: nextSettings },
+      });
       setRawAgentSettings((prev) => ({ ...prev, brainUi }));
       toast.success("Brain configuration saved");
     } catch (err) {
       console.error("[CreateAgent] Save brain config failed:", err);
-      toast.error(err instanceof Error ? err.message : "Failed to save brain configuration");
+      toast.error(formatSaveError(err, "Failed to save brain configuration"));
     } finally {
       setSavingBrainUi(false);
     }
