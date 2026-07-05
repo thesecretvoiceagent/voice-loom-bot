@@ -144,6 +144,9 @@ const timezones = [
   { value: "UTC", label: "UTC" },
 ];
 
+/** Used when saving agents without a Supabase session (demo / anon RLS). */
+const DEMO_OWNER_USER_ID = "00000000-0000-4000-8000-000000000001";
+
 type LiveTurnSettings = {
   vad_threshold: number;
   silence_duration_ms: number;
@@ -236,7 +239,10 @@ function matchesIiziRoadsideHeuristicText(args: {
 }
 
 export default function CreateAgent() {
-  const { type } = useParams<{ type: "inbound" | "outbound" }>();
+  const { type, tenantSlug: routeTenantSlug } = useParams<{
+    type: "inbound" | "outbound";
+    tenantSlug?: string;
+  }>();
   const [searchParams] = useSearchParams();
   const editId = searchParams.get("edit");
   const navigate = useNavigate();
@@ -472,22 +478,26 @@ export default function CreateAgent() {
       return;
     }
     const tenantParam = searchParams.get("tenant");
-    // Resolve owner user_id: prefer logged-in user, otherwise fall back to
-    // an existing agent's owner in the same tenant (so workspace clients
-    // who only authed via the tenant password can still create agents).
+    // Resolve owner user_id: logged-in user, existing agent in tenant, any agent, or demo placeholder.
     let ownerUserId: string | null = user?.id ?? null;
-    // For edits we don't need a user_id (we keep the existing owner).
-    // For inserts, fall back to an existing agent's owner in the same tenant,
-    // or to ANY existing agent's owner (admin gate without Supabase session).
     if (!editId && !ownerUserId) {
-      if (tenantParam) {
+      let tenantIdForLookup = tenantParam;
+      if (!tenantIdForLookup && routeTenantSlug) {
+        const { data: tenantRow } = await supabase
+          .from("tenants")
+          .select("id")
+          .eq("slug", routeTenantSlug.toLowerCase())
+          .maybeSingle();
+        tenantIdForLookup = tenantRow?.id ?? null;
+      }
+      if (tenantIdForLookup) {
         const { data: existing } = await supabase
           .from("agents")
           .select("user_id")
-          .eq("tenant_id", tenantParam)
+          .eq("tenant_id", tenantIdForLookup)
           .limit(1)
           .maybeSingle();
-        ownerUserId = (existing as any)?.user_id ?? null;
+        ownerUserId = (existing as { user_id?: string } | null)?.user_id ?? null;
       }
       if (!ownerUserId) {
         const { data: anyAgent } = await supabase
@@ -495,11 +505,10 @@ export default function CreateAgent() {
           .select("user_id")
           .limit(1)
           .maybeSingle();
-        ownerUserId = (anyAgent as any)?.user_id ?? null;
+        ownerUserId = (anyAgent as { user_id?: string } | null)?.user_id ?? null;
       }
       if (!ownerUserId) {
-        toast.error("Cannot resolve owner — create at least one agent while signed in first.");
-        return;
+        ownerUserId = DEMO_OWNER_USER_ID;
       }
     }
 
@@ -623,14 +632,23 @@ export default function CreateAgent() {
         }
         // Stay on the edit page.
       } else {
-        const insertPayload: any = { ...agentData, user_id: ownerUserId };
-        if (tenantParam) insertPayload.tenant_id = tenantParam;
+        let tenantId = tenantParam;
+        if (!tenantId && routeTenantSlug) {
+          const { data: tenantRow } = await supabase
+            .from("tenants")
+            .select("id")
+            .eq("slug", routeTenantSlug.toLowerCase())
+            .maybeSingle();
+          tenantId = tenantRow?.id ?? null;
+        }
+        const insertPayload: Record<string, unknown> = { ...agentData, user_id: ownerUserId };
+        if (tenantId) insertPayload.tenant_id = tenantId;
         const { error } = await supabase
           .from("agents")
           .insert(insertPayload);
         if (error) throw error;
         toast.success("Agent created");
-        const tenantSlug = searchParams.get("tenantSlug");
+        const tenantSlug = searchParams.get("tenantSlug") || routeTenantSlug;
         navigate(tenantSlug ? `/${tenantSlug}/agents` : "/agents");
       }
     } catch (err) {
