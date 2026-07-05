@@ -8,9 +8,7 @@ import {
   Phone,
   BarChart3,
   Megaphone,
-  LogOut,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 
 const tenantNav = [
   { name: "Dashboard", to: "", icon: LayoutDashboard, end: true },
@@ -21,7 +19,7 @@ const tenantNav = [
 ];
 
 function TenantSidebar() {
-  const { tenant, signOut } = useTenant();
+  const { tenant } = useTenant();
   const { tenantSlug } = useParams<{ tenantSlug: string }>();
   if (!tenant) return null;
 
@@ -86,15 +84,6 @@ function TenantSidebar() {
           >
             ← Back to main
           </Link>
-          <Button
-            onClick={signOut}
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start"
-          >
-            <LogOut className="h-4 w-4 mr-2" />
-            Sign out
-          </Button>
         </div>
       </div>
     </aside>

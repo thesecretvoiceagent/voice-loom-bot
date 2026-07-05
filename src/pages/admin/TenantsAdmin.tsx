@@ -123,9 +123,9 @@ export default function TenantsAdmin() {
   if (!user || !isAdmin) {
     return (
       <Card className="p-8 text-center max-w-md mx-auto mt-12">
-        <h1 className="text-xl font-bold text-destructive">Access denied</h1>
+        <h1 className="text-xl font-bold text-destructive">Admin only</h1>
         <p className="text-sm text-muted-foreground mt-2">
-          You need admin role to manage tenants.
+          Tenant management is for administrators. Use the main dashboard for agent demos.
         </p>
         <Link
           to="/"

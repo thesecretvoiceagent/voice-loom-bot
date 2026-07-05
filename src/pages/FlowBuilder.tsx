@@ -205,10 +205,9 @@ function FlowBuilderInner() {
   };
 
   const handleCreateWithTemplate = async (templateIndex: number) => {
-    if (!user) return;
     try {
       const template = FLOW_TEMPLATES[templateIndex];
-      const created = await createFlow(user.id);
+      const created = await createFlow(user?.id ?? crypto.randomUUID());
       if (created) {
         await saveFlow(template.nodes, template.edges);
         setNodes(template.nodes);

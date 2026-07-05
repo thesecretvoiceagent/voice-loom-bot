@@ -12,17 +12,19 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
-import { LogOut, Settings, User, Shield } from 'lucide-react';
+import { Settings, User, Shield } from 'lucide-react';
 
 export const UserMenu: React.FC = () => {
-  const { user, profile, role, signOut } = useAuth();
+  const { user, profile, role } = useAuth();
   const navigate = useNavigate();
 
   if (!user) {
     return (
-      <Button variant="outline" onClick={() => navigate('/auth')}>
-        Sign In
-      </Button>
+      <Avatar className="h-10 w-10">
+        <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">
+          BC
+        </AvatarFallback>
+      </Avatar>
     );
   }
 
@@ -47,11 +49,6 @@ export const UserMenu: React.FC = () => {
       default:
         return 'secondary';
     }
-  };
-
-  const handleSignOut = async () => {
-    await signOut();
-    navigate('/auth');
   };
 
   return (
@@ -91,11 +88,6 @@ export const UserMenu: React.FC = () => {
         <DropdownMenuItem onClick={() => navigate('/settings')}>
           <Settings className="mr-2 h-4 w-4" />
           Settings
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={handleSignOut} className="text-destructive">
-          <LogOut className="mr-2 h-4 w-4" />
-          Sign Out
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

@@ -61,11 +61,7 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       setTenant(data);
-      // Check existing session
-      const stored = sessionStorage.getItem(sessionKey(data.slug));
-      if (stored === data.id) {
-        setAuthenticated(true);
-      }
+      setAuthenticated(true);
       setLoading(false);
     })();
 
